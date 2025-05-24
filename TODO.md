@@ -1,0 +1,3 @@
+- There are multiple KeyValue type (Attributes's KeyValue, Context's KeyValuePair, Baggage's BaggageEntry). Make the interfaces on these more consistent.
+- There should be some builders for the more complex configuration cases. This is in regard to setting up the providers, but it also applies to anything that would make sense to have builders.
+- Should the global logger provider stuff in the API be more of an API and pointer, with more of the logic moved to the SDK? It feels like there is too much logic in the global providers at this point.

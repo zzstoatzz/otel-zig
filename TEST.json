@@ -1,0 +1,109 @@
+{
+  "resourceMetrics": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "telemetry.sdk.name",
+            "value": { "stringValue": "opentelemetry" }
+          },
+          {
+            "key": "telemetry.sdk.language",
+            "value": { "stringValue": "zig" }
+          },
+          {
+            "key": "telemetry.sdk.version",
+            "value": { "stringValue": "0.1.0" }
+          }
+        ]
+      },
+      "scopeMetrics": [
+        {
+          "scope": {
+            "name": "otlp.metrics.demo",
+            "version": "1.0.0",
+            "attributes": []
+          },
+          "metrics": [
+            {
+              "name": "http.server.request_count",
+              "description": "Total number of HTTP requests",
+              "unit": "1",
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "timeUnixNano": "1749379096606813000",
+                    "asInt": 10
+                  }
+                ],
+                "aggregationTemporality": 2,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "http.server.request_duration",
+              "description": "Total time spent processing requests",
+              "unit": "ms",
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "timeUnixNano": "1749379096606813000",
+                    "asDouble": 9.5e2
+                  }
+                ],
+                "aggregationTemporality": 2,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "http.server.active_requests",
+              "description": "Number of active HTTP requests",
+              "unit": "1",
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "timeUnixNano": "1749379096606813000",
+                    "asInt": 0
+                  }
+                ],
+                "aggregationTemporality": 2,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "process.runtime.memory_max",
+              "description": "max memory available",
+              "unit": "MiB",
+              "gauge": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "timeUnixNano": "1749379096606813000",
+                    "asDouble": 2.4576e4
+                  }
+                ]
+              }
+            },
+            {
+              "name": "process.runtime.cpu_usage",
+              "description": "Current CPU usage percentage",
+              "unit": "%",
+              "gauge": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "timeUnixNano": "1749379096606813000",
+                    "asDouble": 4.52e1
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
