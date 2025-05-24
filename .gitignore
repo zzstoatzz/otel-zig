@@ -1,0 +1,18 @@
+# Build artifacts
+.zig-cache/
+zig-out/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
