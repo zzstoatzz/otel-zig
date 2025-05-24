@@ -5,9 +5,14 @@ zig-out/
 # IDE files
 .vscode/
 .idea/
+.zed/
 *.swp
 *.swo
 *~
+
+# Zed editor
+.zed-settings.json
+.zed-keymap.json
 
 # OS files
 .DS_Store
@@ -16,3 +21,10 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+
+# Log files
+*.log
+
+# Coverage reports
+*.gcov
+*.profdata
