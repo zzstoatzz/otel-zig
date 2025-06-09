@@ -1,10 +1,10 @@
 //! OpenTelemetry Context Key Implementation
-//! 
+//!
 //! This module provides compile-time generated context keys that offer type safety
 //! and zero-runtime-overhead access to context values.
 
 const std = @import("std");
-const Baggage = @import("../baggage/baggage.zig").Baggage;
+const BaggageKeyValue = @import("../baggage/baggage.zig").BaggageKeyValue;
 
 /// Context value types that can be stored in a context.
 /// This is a simplified version without span/baggage references.
@@ -15,7 +15,7 @@ pub const ContextValue = union(enum) {
     unsigned: u64,
     float: f64,
     string: []const u8,
-    baggage: Baggage,
+    baggage: []BaggageKeyValue,
 
     /// Create a ContextValue from a typed value
     pub fn from(value: anytype) ContextValue {
@@ -26,11 +26,11 @@ pub const ContextValue = union(enum) {
             u64 => .{ .unsigned = value },
             f64 => .{ .float = value },
             []const u8 => .{ .string = value },
-            Baggage => .{ .baggage = value },
+            []BaggageKeyValue => .{ .baggage = value },
             comptime_int => .{ .integer = @as(i64, value) },
             comptime_float => .{ .float = @as(f64, value) },
-            else => @compileError("Unsupported context value type: " ++ @typeName(T) ++ 
-                ". Supported types: bool, i64, u64, f64, []const u8, Baggage"),
+            else => @compileError("Unsupported context value type: " ++ @typeName(T) ++
+                ". Supported types: bool, i64, u64, f64, []const u8, []BaggageKeyValue"),
         };
     }
 
@@ -42,7 +42,7 @@ pub const ContextValue = union(enum) {
             u64 => self == .unsigned,
             f64 => self == .float,
             []const u8 => self == .string,
-            Baggage => self == .baggage,
+            []BaggageKeyValue => self == .baggage,
             else => false,
         };
     }
@@ -70,19 +70,17 @@ pub const ContextValue = union(enum) {
                 .string => |v| v,
                 else => null,
             },
-            Baggage => switch (self) {
+            []BaggageKeyValue => switch (self) {
                 .baggage => |v| v,
                 else => null,
             },
             else => null,
         };
     }
-
-
 };
 
 /// Generate a compile-time context key with type safety and optimization.
-/// 
+///
 /// This function runs at compile time and returns a type that contains
 /// all the key information and specialized methods for that specific key.
 ///
@@ -101,9 +99,9 @@ pub fn ContextKey(comptime T: type, comptime name: []const u8) type {
 
         // Validate supported types
         switch (T) {
-            bool, i64, u64, f64, []const u8, Baggage => {},
-            else => @compileError("Unsupported context key type: " ++ @typeName(T) ++ 
-                ". Supported types: bool, i64, u64, f64, []const u8, Baggage"),
+            bool, i64, u64, f64, []const u8, []BaggageKeyValue => {},
+            else => @compileError("Unsupported context key type: " ++ @typeName(T) ++
+                ". Supported types: bool, i64, u64, f64, []const u8, []BaggageKeyValue"),
         }
     }
 
@@ -122,13 +120,13 @@ pub fn ContextKey(comptime T: type, comptime name: []const u8) type {
             // Include both name and type name to ensure uniqueness
             var hash: u64 = 0xcbf29ce484222325;
             const type_name = @typeName(T);
-            
+
             // Hash the type name first
             for (type_name) |byte| {
                 hash ^= byte;
                 hash *%= 0x100000001b3;
             }
-            
+
             // Then hash the key name
             for (name) |byte| {
                 hash ^= byte;
@@ -146,7 +144,7 @@ pub fn ContextKey(comptime T: type, comptime name: []const u8) type {
                 u64 => ContextValue{ .unsigned = value },
                 f64 => ContextValue{ .float = value },
                 []const u8 => ContextValue{ .string = value },
-                Baggage => ContextValue{ .baggage = value },
+                []BaggageKeyValue => ContextValue{ .baggage = value },
                 else => unreachable, // Compile-time validation prevents this
             };
         }
@@ -234,7 +232,7 @@ test "ContextKey creation and properties" {
 
 test "ContextKey value wrapping and unwrapping" {
     const testing = std.testing;
-    
+
     const StringKey = ContextKey([]const u8, "user.id");
     const IntKey = ContextKey(i64, "request.timeout");
     const BoolKey = ContextKey(bool, "debug.enabled");
@@ -275,7 +273,7 @@ test "ContextKey value wrapping and unwrapping" {
 
 test "ContextKey value validation" {
     const testing = std.testing;
-    
+
     const StringKey = ContextKey([]const u8, "test.key");
     const IntKey = ContextKey(i64, "test.int");
 
@@ -297,7 +295,7 @@ test "ContextKey value validation" {
 
 test "ContextKey createValue convenience method" {
     const testing = std.testing;
-    
+
     const StringKey = ContextKey([]const u8, "test.string");
     const IntKey = ContextKey(i64, "test.int");
 
@@ -313,13 +311,13 @@ test "ContextKey createValue convenience method" {
 
 test "ContextKey formatting" {
     const testing = std.testing;
-    
+
     const TestKey = ContextKey([]const u8, "debug.test");
-    
+
     var buf: [256]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
     try std.fmt.format(fbs.writer(), "{}", .{TestKey{}});
-    
+
     const result = fbs.getWritten();
     try testing.expect(std.mem.indexOf(u8, result, "debug.test") != null);
     try testing.expect(std.mem.indexOf(u8, result, "[]const u8") != null);
@@ -372,10 +370,10 @@ test "ContextValue is method" {
 // Test that keys with same name but different types have different IDs
 test "ContextKey different types same name" {
     const testing = std.testing;
-    
+
     const StringKey = ContextKey([]const u8, "same.name");
     const IntKey = ContextKey(i64, "same.name");
-    
+
     // Different types should produce different key IDs even with same name
     try testing.expect(StringKey.key_id != IntKey.key_id);
 }
@@ -384,7 +382,7 @@ test "ContextKey different types same name" {
 // test "compile errors" {
 //     // Empty key name
 //     const EmptyKey = ContextKey([]const u8, "");
-//     
+//
 //     // Unsupported type
 //     const BadKey = ContextKey(*u32, "bad.key");
 // }

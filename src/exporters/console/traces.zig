@@ -11,7 +11,7 @@ const std = @import("std");
 const otel_api = @import("otel-api");
 const otel_sdk = @import("otel-sdk");
 
-const ExportResult = otel_sdk.logs.ExportResult;
+const ExportResult = otel_api.common.ExportResult;
 const ConsoleExporterConfig = @import("root.zig").ConsoleExporterConfig;
 
 /// Console trace exporter implementation (placeholder)
@@ -67,7 +67,7 @@ pub fn createTraceExporterWithConfig(config: ConsoleExporterConfig) *ConsoleTrac
 
 test "ConsoleTraceExporter placeholder" {
     const testing = std.testing;
-    
+
     var exporter = ConsoleTraceExporter.init(.{});
     defer exporter.deinit();
 

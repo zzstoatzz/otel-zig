@@ -14,18 +14,11 @@ const std = @import("std");
 pub const Context = @import("context.zig").Context;
 pub const ContextKey = @import("context_key.zig").ContextKey;
 
-
 // Re-export propagation types
 pub const TextMapCarrier = @import("propagation.zig").TextMapCarrier;
 pub const TextMapPropagator = @import("propagation.zig").TextMapPropagator;
 pub const NoopPropagator = @import("propagation.zig").NoopPropagator;
 
-test "context api module compilation" {
-    _ = std.testing;
-    _ = Context;
-    _ = ContextKey;
-
-    _ = TextMapCarrier;
-    _ = TextMapPropagator;
-    _ = NoopPropagator;
+test {
+    std.testing.refAllDecls(@This());
 }

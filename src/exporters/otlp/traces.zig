@@ -10,7 +10,7 @@ const std = @import("std");
 const otel_api = @import("otel-api");
 const otel_sdk = @import("otel-sdk");
 
-const ExportResult = otel_sdk.logs.ExportResult;
+const ExportResult = otel_api.common.ExportResult;
 const OtlpExporterConfig = @import("root.zig").OtlpExporterConfig;
 
 /// OTLP trace exporter implementation (placeholder)
@@ -49,7 +49,7 @@ pub const OtlpTraceExporter = struct {
         // 5. Handle retries
 
         _ = spans;
-        
+
         // Placeholder: simulate successful export
         return .success;
     }
@@ -71,7 +71,7 @@ pub const OtlpTraceExporter = struct {
 
         self.is_shutdown = true;
         _ = timeout_ms;
-        
+
         // TODO: Close connections, clean up resources
         return .success;
     }
@@ -92,7 +92,7 @@ pub fn createTraceExporterWithConfig(allocator: std.mem.Allocator, config: OtlpE
 test "OtlpTraceExporter placeholder" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     var exporter = OtlpTraceExporter.init(allocator, .{});
     defer exporter.deinit();
 

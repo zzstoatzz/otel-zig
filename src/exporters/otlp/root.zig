@@ -109,45 +109,6 @@ pub const ProtocolConfig = struct {
     metrics_path: []const u8 = "/v1/metrics",
 };
 
-// Factory functions
-pub const createLogExporter = @import("logs.zig").createLogExporter;
-pub const createTraceExporter = @import("traces.zig").createTraceExporter;
-pub const createMetricExporter = @import("metrics.zig").createMetricExporter;
-pub const createMetricExporterWithConfig = @import("metrics.zig").createMetricExporterWithConfig;
-pub const wrapAsMetricExporter = @import("metrics.zig").wrapAsMetricExporter;
-
-// Convenience functions with default config
-pub fn createDefaultLogExporter() *OtlpLogExporter {
-    return createLogExporter(.{
-        .endpoint = "http://localhost:4318",
-        .transport = .http_json,
-    });
-}
-
-pub fn createDefaultTraceExporter() *OtlpTraceExporter {
-    return createTraceExporter(.{
-        .endpoint = "http://localhost:4318",
-        .transport = .http_json,
-    });
-}
-
-pub fn createDefaultMetricExporter() *OtlpMetricExporter {
-    return createMetricExporter(.{
-        .endpoint = "http://localhost:4318",
-        .transport = .http_json,
-    });
-}
-
-test "otlp exporters module compilation" {
-    _ = std.testing;
-    _ = OtlpLogExporter;
-    _ = OtlpTraceExporter;
-    _ = OtlpMetricExporter;
-    _ = Transport;
-    _ = OtlpExporterConfig;
-    _ = Header;
-    _ = CompressionMethod;
-    _ = TlsConfig;
-    _ = RetryConfig;
-    _ = ProtocolConfig;
+test {
+    std.testing.refAllDecls(@This());
 }

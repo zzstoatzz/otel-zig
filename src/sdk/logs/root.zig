@@ -14,13 +14,13 @@
 //! ## Usage
 //! ```zig
 //! const otel_sdk = @import("otel-sdk");
-//! 
+//!
 //! // Create a logging pipeline
 //! const exporter = otel_sdk.logs.createConsoleExporter();
 //! const processor = otel_sdk.logs.createSimpleProcessor(.{
 //!     .exporter = exporter,
 //! });
-//! 
+//!
 //! var provider = otel_sdk.logs.createProvider(allocator, .{
 //!     .processor = processor,
 //! });
@@ -28,36 +28,29 @@
 
 const std = @import("std");
 
-// Import SDK-specific implementations
-const otel_api = @import("otel-api");
+// Core log data types
+pub const LogRecord = @import("log_record.zig").LogRecord;
 
-// SDK Logger types  
-pub const Logger = @import("logger.zig").Logger;
+// SDK Logger types
 pub const StandardLogger = @import("logger.zig").StandardLogger;
-pub const CustomLogger = @import("logger.zig").CustomLogger;
 
 // SDK Logger Provider types
-pub const LoggerProvider = @import("logger_provider.zig").LoggerProvider;
 pub const StandardLoggerProvider = @import("logger_provider.zig").StandardLoggerProvider;
-pub const createStandardLogger = @import("logger.zig").createStandardLogger;
 
-// Re-export processor types (if they exist)
-pub const LogProcessor = @import("processor.zig").LogProcessor;
-pub const SimpleLogProcessor = @import("simple_processor.zig").SimpleLogProcessor;
-pub const createSimpleProcessor = @import("simple_processor.zig").createSimpleProcessor;
+// Re-export processor types
+const processor_zig = @import("processor.zig");
+pub const LogProcessor = processor_zig.LogProcessor;
+pub const SimpleLogProcessor = processor_zig.SimpleLogProcessor;
+pub const BridgeLogProcessor = processor_zig.BridgeLogProcessor;
 
 // Re-export exporter interface
-pub const LogExporter = @import("exporter.zig").LogExporter;
-pub const ExportResult = @import("exporter.zig").ExportResult;
+const exporter_zig = @import("exporter.zig");
+pub const LogExporter = exporter_zig.LogExporter;
+pub const BridgeLogExporter = exporter_zig.BridgeLogExporter;
+
+// Re-export the setup helper functions
+pub const createSimpleSyncLogging = @import("setup.zig").createSimpleSyncLogging;
 
 test "logs sdk module compilation" {
-    _ = std.testing;
-    _ = Logger;
-    _ = StandardLogger;
-    _ = CustomLogger;
-    _ = LoggerProvider;
-    _ = StandardLoggerProvider;
-    _ = LogProcessor;
-    _ = SimpleLogProcessor;
-    _ = LogExporter;
+    std.testing.refAllDecls(@This());
 }

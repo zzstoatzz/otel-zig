@@ -7,8 +7,8 @@ const std = @import("std");
 const otel_api = @import("otel-api");
 const otel_sdk = @import("otel-sdk");
 
-const LogRecord = otel_api.logs.LogRecord;
-const ExportResult = otel_sdk.logs.ExportResult;
+const LogRecord = otel_sdk.logs.LogRecord;
+const ExportResult = otel_api.common.ExportResult;
 const OtlpExporterConfig = @import("root.zig").OtlpExporterConfig;
 const Resource = otel_sdk.resource.Resource;
 
@@ -78,7 +78,7 @@ pub const OtlpLogExporter = struct {
         self.http_client.deinit();
     }
 
-    pub fn @"export"(self: *OtlpLogExporter, records: []const LogRecord, resource: *const Resource) ExportResult {
+    pub fn exportRecords(self: *OtlpLogExporter, records: []const LogRecord, resource: Resource) ExportResult {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -188,7 +188,7 @@ pub const OtlpLogExporter = struct {
 };
 
 /// Convert LogRecords to OTLP format JSON
-fn convertToOtlpFormat(allocator: std.mem.Allocator, records: []const LogRecord, resource: *const Resource) ![]u8 {
+fn convertToOtlpFormat(allocator: std.mem.Allocator, records: []const LogRecord, resource: Resource) ![]u8 {
     // Convert LogRecords to OTLP ResourceLogs format
     var otlp_log_records = try allocator.alloc(OtlpLogRecord, records.len);
     defer allocator.free(otlp_log_records);
@@ -454,7 +454,7 @@ test "OtlpLogExporter basic functionality" {
             .severity_number = .info,
             .body = .{ .string = "test log message" },
             .timestamp_ns = 1234567890000000000,
-            .attributes = &[_]otel_api.common.KeyValue{
+            .attributes = &[_]otel_api.common.AttributeKeyValue{
                 .{ .key = "test.key", .value = .{ .string = "test.value" } },
             },
         },
@@ -465,7 +465,7 @@ test "OtlpLogExporter basic functionality" {
     defer arena.deinit();
 
     const test_resource = try otel_sdk.resource.getDefaultResource(arena.allocator());
-    const json_data = try convertToOtlpFormat(arena.allocator(), &records, &test_resource);
+    const json_data = try convertToOtlpFormat(arena.allocator(), &records, test_resource);
     defer arena.allocator().free(json_data);
 
     try testing.expect(json_data.len > 0);
@@ -483,6 +483,6 @@ test "OtlpLogExporter basic functionality" {
     try testing.expectEqual(ExportResult.success, shutdown_result);
 
     // Should reject exports after shutdown
-    const result_after_shutdown = exporter.@"export"(&records, &test_resource);
+    const result_after_shutdown = exporter.exportRecords(&records, test_resource);
     try testing.expectEqual(ExportResult.failure, result_after_shutdown);
 }

@@ -4,43 +4,14 @@
 //! It includes concrete implementations of meters, instruments, and providers
 //! that can be used to collect and export metrics.
 //!
-//! ## Components
-//! - `MeterProvider` - Creates and manages meters
-//! - `Meter` - Creates metric instruments
-//! - `Counter` - Monotonic sum instrument
-//! - `UpDownCounter` - Non-monotonic sum instrument
-//! - `Gauge` - Last value instrument
 //!
-//! ## Usage
-//! ```zig
-//! const otel_sdk = @import("otel-sdk");
-//! const metrics = otel_sdk.metrics;
-//!
-//! // Create a meter provider
-//! var provider = try metrics.createProvider(allocator);
-//! defer provider.deinit();
-//!
-//! // Get a meter
-//! const meter = try provider.getMeterWithName("my.service");
-//!
-//! // Create instruments
-//! const counter = try meter.createCounterI64("requests.total", "Total requests", "1");
-//! counter.add(ctx, 1, &attributes);
-//! ```
-//!
-//! See: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/metrics/sdk.md
-
 const std = @import("std");
 
 // MeterProvider exports
-pub const MeterProvider = @import("meter_provider.zig").MeterProvider;
 pub const StandardMeterProvider = @import("meter_provider.zig").StandardMeterProvider;
-pub const createProvider = @import("meter_provider.zig").createProvider;
-pub const createProviderWithResource = @import("meter_provider.zig").createProviderWithResource;
 
 // Meter exports
 pub const StandardMeter = @import("meter.zig").StandardMeter;
-pub const createStandardMeter = @import("meter.zig").createStandardMeter;
 
 // Instrument exports
 pub const StandardCounter = @import("instruments.zig").StandardCounter;
@@ -55,15 +26,21 @@ pub const LastValueAggregation = @import("instruments.zig").LastValueAggregation
 pub const processor = @import("processor.zig");
 pub const MetricProcessor = processor.MetricProcessor;
 pub const SimpleMetricProcessor = processor.SimpleMetricProcessor;
-pub const PeriodicMetricProcessor = processor.PeriodicMetricProcessor;
-pub const MetricExporter = processor.MetricExporter;
-pub const MetricData = processor.MetricData;
-pub const MetricDataPoint = processor.MetricDataPoint;
-pub const MetricType = processor.MetricType;
-pub const MetricValue = processor.MetricValue;
-pub const createSimpleProcessor = processor.createSimpleProcessor;
-pub const createPeriodicProcessor = processor.createPeriodicProcessor;
+pub const BridgeMetricProcessor = processor.BridgeMetricProcessor;
+
+const data_zig = @import("data.zig");
+pub const MetricData = data_zig.MetricData;
+pub const MetricDataPoint = data_zig.MetricDataPoint;
+pub const MetricType = data_zig.MetricType;
+pub const MetricValue = data_zig.MetricValue;
+
+const exporter_zig = @import("exporter.zig");
+pub const MetricExporter = exporter_zig.MetricExporter;
+pub const BridgeMetricExporter = exporter_zig.BridgeMetricExporter;
+
+// Re-export the setup helper functions
+pub const createSimpleSyncMetrics = @import("setup.zig").createSimpleSyncMetrics;
 
 test {
-    @import("std").testing.refAllDecls(@This());
+    std.testing.refAllDecls(@This());
 }

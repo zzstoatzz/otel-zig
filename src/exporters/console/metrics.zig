@@ -11,7 +11,7 @@ const std = @import("std");
 const otel_api = @import("otel-api");
 const otel_sdk = @import("otel-sdk");
 
-const ExportResult = otel_sdk.logs.ExportResult;
+const ExportResult = otel_api.common.ExportResult;
 const ConsoleExporterConfig = @import("root.zig").ConsoleExporterConfig;
 
 /// Console metric exporter implementation (placeholder)
@@ -33,9 +33,10 @@ pub const ConsoleMetricExporter = struct {
         _ = self;
     }
 
-    pub fn @"export"(self: *ConsoleMetricExporter, metrics: []const otel_api.metrics.Meter) ExportResult {
+    pub fn exportMetrics(self: *ConsoleMetricExporter, metrics: std.ArrayList(otel_sdk.metrics.MetricData)) ExportResult {
+        defer metrics.deinit(); // Free the ArrayList memory
         _ = self;
-        _ = metrics;
+        _ = metrics.items; // Access items for placeholder
         // TODO: Implement when metrics API is available
         return .success;
     }
@@ -67,7 +68,7 @@ pub fn createMetricExporterWithConfig(config: ConsoleExporterConfig) *ConsoleMet
 
 test "ConsoleMetricExporter placeholder" {
     const testing = std.testing;
-    
+
     var exporter = ConsoleMetricExporter.init(.{});
     defer exporter.deinit();
 

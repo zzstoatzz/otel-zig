@@ -62,6 +62,30 @@ pub const AttributeValue = union(enum) {
         };
     }
 
+    /// Hash the AttributeValue for use in hash maps
+    pub fn hash(self: AttributeValue, hasher: *std.hash.Wyhash) void {
+        // Hash the type tag first to distinguish different types
+        const tag = @as(u8, @intFromEnum(@as(std.meta.Tag(AttributeValue), self)));
+        hasher.update(std.mem.asBytes(&tag));
+
+        switch (self) {
+            .bool => |v| hasher.update(std.mem.asBytes(&v)),
+            .int => |v| hasher.update(std.mem.asBytes(&v)),
+            .float => |v| hasher.update(std.mem.asBytes(&v)),
+            .string => |v| hasher.update(v),
+            .bool_array => |v| hasher.update(std.mem.sliceAsBytes(v)),
+            .int_array => |v| hasher.update(std.mem.sliceAsBytes(v)),
+            .float_array => |v| hasher.update(std.mem.sliceAsBytes(v)),
+            .string_array => |v| {
+                for (v) |str| {
+                    hasher.update(str);
+                    // Add separator to distinguish ["ab", "c"] from ["a", "bc"]
+                    hasher.update(&[_]u8{0});
+                }
+            },
+        }
+    }
+
     /// Get the type tag as a string for debugging
     pub fn getTypeName(self: AttributeValue) []const u8 {
         return switch (self) {
@@ -247,24 +271,15 @@ test "AttributeValue formatting" {
 
 /// A key-value pair used for attributes and other OpenTelemetry contexts.
 /// This is a simple non-owning structure that holds references to data.
-pub const KeyValue = struct {
+pub const AttributeKeyValue = struct {
     /// The attribute key (non-owning string slice)
     key: []const u8,
 
     /// The attribute value (non-owning)
     value: AttributeValue,
 
-    /// Create a new KeyValue pair
-    pub fn init(key: []const u8, value: AttributeValue) KeyValue {
-        return .{
-            .key = key,
-            .value = value,
-        };
-    }
-
-    /// Create a new KeyValue, but deep copy the key and the value with the
-    /// provided allocator.
-    pub fn initOwned(allocator: std.mem.Allocator, key: []const u8, value: AttributeValue) !KeyValue {
+    /// Deep copy an AttributeKeyValue. Must call `deinitOwned` on the return instance.
+    pub fn initOwned(allocator: std.mem.Allocator, key: []const u8, value: AttributeValue) !AttributeKeyValue {
         const owned_key = try allocator.dupe(u8, key);
         errdefer allocator.free(owned_key);
         const owned_value: AttributeValue = switch (value) {
@@ -290,8 +305,17 @@ pub const KeyValue = struct {
         };
     }
 
-    /// Destroy the KeyValue. Must use the same allocator used in `initOwned`
-    pub fn deinitOwned(self: KeyValue, allocator: std.mem.Allocator) void {
+    /// Deep copy a slice of AttributeKeyValue.
+    pub fn initOwnedSlice(allocator: std.mem.Allocator, unowned: []const AttributeKeyValue) ![]AttributeKeyValue {
+        var owned = try allocator.alloc(AttributeKeyValue, unowned.len);
+        for (0..unowned.len) |h| {
+            owned[h] = try initOwned(allocator, unowned[h].key, unowned[h].value);
+        }
+        return owned;
+    }
+
+    /// Destroy a deep copied AttributeKeyValue.
+    pub fn deinitOwned(self: AttributeKeyValue, allocator: std.mem.Allocator) void {
         allocator.free(self.key);
         switch (self.value) {
             .bool, .int, .float => {},
@@ -306,21 +330,29 @@ pub const KeyValue = struct {
         }
     }
 
-    /// Destroy a KeyValue slice. Helper function to deal with the
-    /// KeyValues and the slice.
-    pub fn deinitOwnedSlice(allocator: std.mem.Allocator, slice: []const KeyValue) void {
+    /// Destroy a deep copied slice of AttributeKeyValue.
+    pub fn deinitOwnedSlice(allocator: std.mem.Allocator, slice: []const AttributeKeyValue) void {
         for (0..slice.len) |h| slice[h].deinitOwned(allocator);
         allocator.free(slice);
     }
 
-    /// Compare two KeyValue pairs for equality
-    pub fn eql(self: KeyValue, other: KeyValue) bool {
+    /// Compare two AttributeKeyValue pairs for equality.
+    ///
+    /// Equality is defined as a byte comparison on the key and
+    /// invoking the equal opretor for the value.
+    pub fn eql(self: AttributeKeyValue, other: AttributeKeyValue) bool {
         return std.mem.eql(u8, self.key, other.key) and self.value.eql(other.value);
     }
 
-    /// Format the KeyValue for debugging/logging
+    /// Hash the AttributeKeyValue for use in hash maps
+    pub fn hash(self: AttributeKeyValue, hasher: *std.hash.Wyhash) void {
+        hasher.update(self.key);
+        self.value.hash(hasher);
+    }
+
+    /// Format the AttributeKeyValue for debugging/logging
     pub fn format(
-        self: KeyValue,
+        self: AttributeKeyValue,
         comptime fmt: []const u8,
         options: std.fmt.FormatOptions,
         writer: anytype,
@@ -332,12 +364,12 @@ pub const KeyValue = struct {
     }
 };
 
-// Convenience functions for creating KeyValue arrays
-/// Create a KeyValue array from compile-time tuples
-pub fn fromTuples(comptime tuples: anytype) [tuples.len]KeyValue {
-    var result: [tuples.len]KeyValue = undefined;
+// Convenience functions for creating AttributeKeyValue arrays
+/// Create a AttributeKeyValue array from compile-time tuples
+pub fn fromTuples(comptime tuples: anytype) [tuples.len]AttributeKeyValue {
+    var result: [tuples.len]AttributeKeyValue = undefined;
     inline for (tuples, 0..) |tuple, i| {
-        result[i] = KeyValue.init(tuple[0], tuple[1]);
+        result[i] = AttributeKeyValue{ .key = tuple[0], .value = tuple[1] };
     }
     return result;
 }
@@ -346,23 +378,23 @@ pub fn fromTuples(comptime tuples: anytype) [tuples.len]KeyValue {
 test "KeyValue creation and basic operations" {
     const testing = std.testing;
 
-    const kv1 = KeyValue.init("service.name", .{ .string = "my-service" });
+    const kv1 = AttributeKeyValue{ .key = "service.name", .value = .{ .string = "my-service" } };
     try testing.expectEqualStrings("service.name", kv1.key);
     try testing.expectEqualStrings("my-service", kv1.value.string);
 
-    const kv2 = KeyValue.init("version", .{ .string = "1.0.0" });
+    const kv2 = AttributeKeyValue{ .key = "version", .value = .{ .string = "1.0.0" } };
     try testing.expectEqualStrings("version", kv2.key);
     try testing.expectEqualStrings("1.0.0", kv2.value.string);
 
-    const kv3 = KeyValue.init("port", .{ .int = 8080 });
+    const kv3 = AttributeKeyValue{ .key = "port", .value = .{ .int = 8080 } };
     try testing.expectEqualStrings("port", kv3.key);
     try testing.expect(kv3.value.int == 8080);
 
-    const kv4 = KeyValue.init("debug", .{ .bool = true });
+    const kv4 = AttributeKeyValue{ .key = "debug", .value = .{ .bool = true } };
     try testing.expectEqualStrings("debug", kv4.key);
     try testing.expect(kv4.value.bool == true);
 
-    const kv5 = KeyValue.init("ratio", .{ .float = 0.95 });
+    const kv5 = AttributeKeyValue{ .key = "ratio", .value = .{ .float = 0.95 } };
     try testing.expectEqualStrings("ratio", kv5.key);
     try testing.expect(kv5.value.float == 0.95);
 }
@@ -370,10 +402,10 @@ test "KeyValue creation and basic operations" {
 test "KeyValue equality comparison" {
     const testing = std.testing;
 
-    const kv1 = KeyValue.init("name", .{ .string = "test" });
-    const kv2 = KeyValue.init("name", .{ .string = "test" });
-    const kv3 = KeyValue.init("name", .{ .string = "different" });
-    const kv4 = KeyValue.init("different", .{ .string = "test" });
+    const kv1 = AttributeKeyValue{ .key = "name", .value = .{ .string = "test" } };
+    const kv2 = AttributeKeyValue{ .key = "name", .value = .{ .string = "test" } };
+    const kv3 = AttributeKeyValue{ .key = "name", .value = .{ .string = "different" } };
+    const kv4 = AttributeKeyValue{ .key = "different", .value = .{ .string = "test" } };
 
     try testing.expect(kv1.eql(kv2));
     try testing.expect(!kv1.eql(kv3));
@@ -385,20 +417,20 @@ test "KeyValue formatting" {
 
     var buf: [256]u8 = undefined;
 
-    const kv1 = KeyValue.init("service.name", .{ .string = "my-service" });
+    const kv1 = AttributeKeyValue{ .key = "service.name", .value = .{ .string = "my-service" } };
     const str1 = try std.fmt.bufPrint(&buf, "{}", .{kv1});
     try testing.expectEqualStrings("service.name=\"my-service\"", str1);
 
-    const kv2 = KeyValue.init("port", .{ .int = 8080 });
+    const kv2 = AttributeKeyValue{ .key = "port", .value = .{ .int = 8080 } };
     const str2 = try std.fmt.bufPrint(&buf, "{}", .{kv2});
     try testing.expectEqualStrings("port=8080", str2);
 
-    const kv3 = KeyValue.init("enabled", .{ .bool = true });
+    const kv3 = AttributeKeyValue{ .key = "enabled", .value = .{ .bool = true } };
     const str3 = try std.fmt.bufPrint(&buf, "{}", .{kv3});
     try testing.expectEqualStrings("enabled=true", str3);
 
     // Test key with special characters
-    const kv4 = KeyValue.init("key\nwith\ttabs", .{ .string = "value" });
+    const kv4 = AttributeKeyValue{ .key = "key\nwith\ttabs", .value = .{ .string = "value" } };
     const str4 = try std.fmt.bufPrint(&buf, "{}", .{kv4});
     try testing.expectEqualStrings("key\\nwith\\ttabs=\"value\"", str4);
 }
@@ -423,324 +455,568 @@ test "KeyValue fromTuples convenience function" {
     try testing.expect(kvs[2].value.bool == true);
 }
 
-const AttributeMap = std.StringHashMapUnmanaged(AttributeValue);
+/// High-level attribute builder with functional style and automatic memory management.
+///
+/// The builder never takes ownership of any values added to it.
+pub const AttributeBuilder = union(enum) {
+    valid: struct {
+        allocator: std.mem.Allocator,
+        entries: []AttributeKeyValue,
+    },
+    invalid: anyerror,
 
-/// Collection of attributes with convenient access methods
-pub const Attributes = struct {
-    arena: std.heap.ArenaAllocator,
-    map: AttributeMap,
-
-    /// Initialize empty attributes collection
-    pub fn init(backing_allocator: std.mem.Allocator) Attributes {
-        const arena = std.heap.ArenaAllocator.init(backing_allocator);
-        return .{
-            .arena = arena,
-            .map = .{},
-        };
-    }
-
-    /// Clean up the attributes map
-    pub fn deinit(self: *Attributes) void {
-        self.map.deinit(self.arena.allocator());
-        self.arena.deinit();
-    }
-
-    pub inline fn allocator(self: *Attributes) std.mem.Allocator {
-        return self.arena.allocator();
-    }
-
-    /// Add a key-value pair to the attributes
-    pub fn put(self: *Attributes, key: []const u8, value: AttributeValue) !void {
-        try self.map.put(self.arena.allocator(), key, value);
-    }
-
-    /// Get an attribute value by key
-    pub fn get(self: Attributes, key: []const u8) ?AttributeValue {
-        return self.map.get(key);
-    }
-
-    /// Check if an attribute key exists
-    pub fn contains(self: Attributes, key: []const u8) bool {
-        return self.map.contains(key);
-    }
-
-    /// Get the number of attributes
-    pub fn count(self: Attributes) u32 {
-        return @intCast(self.map.count());
-    }
-
-    /// Clear all attributes
-    pub fn clear(self: *Attributes) void {
-        self.map.clearRetainingCapacity();
-    }
-
-    /// Create an iterator over the attributes
-    pub fn iterator(self: *const Attributes) AttributeMap.Iterator {
-        return self.map.iterator();
-    }
-
-    /// Clone the attributes to a new collection with a different allocator
-    /// NOTE: This uses the alloctar to make deep clones of all slice and string data
-    pub fn asKeyValues(self: Attributes, target_allocator: std.mem.Allocator) ![]KeyValue {
-        var kvs = try target_allocator.alloc(KeyValue, self.map.count());
-        errdefer target_allocator.free(kvs);
-
-        var h: usize = 0;
-        var iter = self.map.iterator();
-        while (iter.next()) |entry| : (h += 1) {
-            errdefer for (0..h) |i| kvs[i].deinitOwned(target_allocator);
-            kvs[h] = try KeyValue.initOwned(target_allocator, entry.key_ptr.*, entry.value_ptr.*);
-        }
-
-        return kvs;
-    }
-
-    /// Format the attributes for debugging/logging
-    pub fn format(
-        self: Attributes,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        _ = fmt;
-        _ = options;
-
-        try writer.writeAll("{");
-        var iter = self.map.iterator();
-        var first = true;
-        while (iter.next()) |entry| {
-            if (!first) try writer.writeAll(", ");
-            first = false;
-            try writer.print("{}={}", .{ std.zig.fmtEscapes(entry.key_ptr.*), entry.value_ptr.* });
-        }
-        try writer.writeAll("}");
-    }
-};
-
-/// High-level attribute builder with arena-based memory management
-pub const AttributeBuilder = struct {
-    attributes: Attributes,
-
-    /// Create a new AttributeBuilder with arena allocator
-    pub fn init(backing_allocator: std.mem.Allocator) AttributeBuilder {
-        return .{
-            .attributes = Attributes.init(backing_allocator),
-        };
+    /// Create a new AttributeBuilder
+    pub fn init(allocator: std.mem.Allocator) AttributeBuilder {
+        const entries = allocator.alloc(AttributeKeyValue, 0) catch |e| return .{ .invalid = e };
+        return AttributeBuilder{ .valid = .{
+            .allocator = allocator,
+            .entries = entries,
+        } };
     }
 
     /// Free all memory allocated by this builder
-    pub fn deinit(self: *AttributeBuilder) void {
-        self.attributes.deinit();
-    }
-
-    /// Add a string attribute (automatically cloned into arena)
-    pub fn addString(self: *AttributeBuilder, key: []const u8, value: []const u8) !void {
-        try self.addAttributeValue(key, .{ .string = value });
-    }
-
-    /// Add boolean attribute
-    pub inline fn addBool(self: *AttributeBuilder, key: []const u8, value: bool) !void {
-        try self.addAttributeValue(key, .{ .bool = value });
-    }
-
-    /// Add integer attribute
-    pub inline fn addInt(self: *AttributeBuilder, key: []const u8, value: i64) !void {
-        try self.addAttributeValue(key, .{ .int = value });
-    }
-
-    /// Add float attribute
-    pub inline fn addFloat(self: *AttributeBuilder, key: []const u8, value: f64) !void {
-        try self.addAttributeValue(key, .{ .float = value });
-    }
-
-    /// Add a boolean array attribute
-    pub inline fn addBoolArray(self: *AttributeBuilder, key: []const u8, values: []const bool) !void {
-        try self.addAttributeValue(key, AttributeValue{ .bool_array = values });
-    }
-
-    /// Add an integer array attribute
-    pub inline fn addIntArray(self: *AttributeBuilder, key: []const u8, values: []const i64) !void {
-        try self.addAttributeValue(key, AttributeValue{ .int_array = values });
-    }
-
-    /// Add a float array attribute
-    pub inline fn addFloatArray(self: *AttributeBuilder, key: []const u8, values: []const f64) !void {
-        try self.addAttributeValue(key, AttributeValue{ .float_array = values });
-    }
-
-    /// Add a string array attribute
-    pub inline fn addStringArray(self: *AttributeBuilder, key: []const u8, values: []const []const u8) !void {
-        try self.addAttributeValue(key, AttributeValue{ .string_array = values });
-    }
-
-    /// Add a KeyValue pair (automatically clones if needed)
-    pub inline fn addKeyValue(self: *AttributeBuilder, kv: KeyValue) !void {
-        try self.addAttributeValue(kv.key, kv.value);
-    }
-
-    /// Add an AttributeValue with automatic cloning if needed
-    pub fn addAttributeValue(self: *AttributeBuilder, key: []const u8, value: AttributeValue) !void {
-        try self.attributes.put(key, value);
-    }
-
-    /// Add multiple KeyValue pairs at once
-    pub fn addKeyValues(self: *AttributeBuilder, kvs: []const KeyValue) !void {
-        for (kvs) |kv| {
-            try self.addKeyValue(kv);
+    pub fn deinit(self: AttributeBuilder) void {
+        switch (self) {
+            .valid => |builder| {
+                builder.allocator.free(builder.entries);
+            },
+            .invalid => {},
         }
     }
 
-    /// Get the current attributes (still owned by the builder)
-    pub fn build(self: AttributeBuilder) Attributes {
-        return self.attributes;
+    /// Add an AttributeValue
+    pub inline fn add(self: AttributeBuilder, key: []const u8, value: AttributeValue) AttributeBuilder {
+        return self.addKeyValue(.{ .key = key, .value = value });
     }
 
-    /// Get the slice of `KeyValue` and destroy this builder.
-    pub fn finish(self: *AttributeBuilder, target_allocator: std.mem.Allocator) ![]KeyValue {
-        const attrs = self.build().asKeyValues(target_allocator);
-        self.deinit();
-        return attrs;
+    /// Add a string attribute
+    pub inline fn addString(self: AttributeBuilder, key: []const u8, value: []const u8) AttributeBuilder {
+        return self.addKeyValue(.{ .key = key, .value = .{ .string = value } });
+    }
+
+    /// Add boolean attribute
+    pub inline fn addBool(self: AttributeBuilder, key: []const u8, value: bool) AttributeBuilder {
+        return self.addKeyValue(.{ .key = key, .value = .{ .bool = value } });
+    }
+
+    /// Add integer attribute
+    pub inline fn addInt(self: AttributeBuilder, key: []const u8, value: i64) AttributeBuilder {
+        return self.addKeyValue(.{ .key = key, .value = .{ .int = value } });
+    }
+
+    /// Add float attribute
+    pub inline fn addFloat(self: AttributeBuilder, key: []const u8, value: f64) AttributeBuilder {
+        return self.addKeyValue(.{ .key = key, .value = .{ .float = value } });
+    }
+
+    /// Add a boolean array attribute
+    pub inline fn addBoolArray(self: AttributeBuilder, key: []const u8, values: []const bool) AttributeBuilder {
+        return self.addKeyValue(.{ .key = key, .value = .{ .bool_array = values } });
+    }
+
+    /// Add an integer array attribute
+    pub inline fn addIntArray(self: AttributeBuilder, key: []const u8, values: []const i64) AttributeBuilder {
+        return self.addKeyValue(.{ .key = key, .value = .{ .int_array = values } });
+    }
+
+    /// Add a float array attribute
+    pub inline fn addFloatArray(self: AttributeBuilder, key: []const u8, values: []const f64) AttributeBuilder {
+        return self.addKeyValue(.{ .key = key, .value = .{ .float_array = values } });
+    }
+
+    /// Add a string array attribute
+    pub inline fn addStringArray(self: AttributeBuilder, key: []const u8, values: []const []const u8) AttributeBuilder {
+        return self.addKeyValue(.{ .key = key, .value = .{ .string_array = values } });
+    }
+
+    /// Add a AttributeAttributeKeyValue pair
+    pub fn addKeyValue(self: AttributeBuilder, new_kv: AttributeKeyValue) AttributeBuilder {
+        defer self.deinit();
+        return switch (self) {
+            .valid => |builder| blk: {
+                const new_len = builder.entries.len + 1;
+                var entries = builder.allocator.alloc(AttributeKeyValue, new_len) catch |e| return AttributeBuilder{ .invalid = e };
+                errdefer builder.allocator.free(entries);
+                @memcpy(entries[0..builder.entries.len], builder.entries);
+                entries[builder.entries.len] = new_kv;
+
+                break :blk .{
+                    .valid = .{
+                        .allocator = builder.allocator,
+                        .entries = entries,
+                    },
+                };
+            },
+            .invalid => self,
+        };
+    }
+
+    /// Add multiple AttributeAttributeKeyValue pairs at once
+    pub fn addKeyValues(self: AttributeBuilder, kvs: []const AttributeKeyValue) AttributeBuilder {
+        var current = self;
+        for (kvs) |kv| {
+            current = current.addKeyValue(kv);
+        }
+        return current;
+    }
+
+    /// Get the slice of `AttributeKeyValue`.
+    ///
+    /// Returned slice is unowned. `deinit` must be manually called on the
+    /// builder when this method is used.
+    pub fn build(self: AttributeBuilder) ![]AttributeBuilder {
+        return switch (self) {
+            .valid => |builder| builder.entries,
+            .invalid => |e| e,
+        };
+    }
+
+    /// Get the deep copy slice of `AttributeKeyValue` and destroy this builder.
+    ///
+    /// Returned slice must be released with `AttributeKeyValue.deinitOwnedSlice` to
+    /// release the keys and the values.
+    pub fn finish(self: AttributeBuilder, target_allocator: std.mem.Allocator) ![]AttributeKeyValue {
+        defer self.deinit();
+        return switch (self) {
+            .valid => |builder| blk: {
+                const kvs = try AttributeKeyValue.initOwnedSlice(target_allocator, builder.entries);
+                break :blk kvs;
+            },
+            .invalid => |e| e,
+        };
     }
 };
 
 // Tests
-test "Attributes basic operations" {
+
+test "AttributeBuilder resource detection scenario" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    var attrs = Attributes.init(allocator);
-    defer attrs.deinit();
-
-    try attrs.put("key1", .{ .string = "value1" });
-    try attrs.put("key2", .{ .int = 42 });
-
-    try testing.expect(attrs.count() == 2);
-    try testing.expect(attrs.contains("key1"));
-    try testing.expect(attrs.contains("key2"));
-    try testing.expect(!attrs.contains("key3"));
-
-    const val1 = attrs.get("key1");
-    try testing.expect(val1 != null);
-    try testing.expectEqualStrings("value1", val1.?.string);
-
-    const val2 = attrs.get("key2");
-    try testing.expect(val2 != null);
-    try testing.expect(val2.?.int == 42);
-}
-
-test "AttributeBuilder basic usage" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
-
+    // Simulate resource detection like DefaultDetector does
     var builder = AttributeBuilder.init(allocator);
-    defer builder.deinit();
 
-    try builder.addString("service.name", "my-service");
-    try builder.addInt("port", 8080);
-    try builder.addBool("debug", true);
-    try builder.addFloat("ratio", 0.95);
+    // Add default SDK attributes
+    builder = builder.addString("telemetry.sdk.name", "opentelemetry");
+    builder = builder.addString("telemetry.sdk.language", "zig");
+    builder = builder.addString("telemetry.sdk.version", "0.1.0");
 
-    const attrs = builder.build();
-    try testing.expect(attrs.count() == 4);
+    // Add detected environment attributes
+    const detected_attrs = [_]AttributeKeyValue{
+        AttributeKeyValue{ .key = "service.name", .value = .{ .string = "my-service" } },
+        AttributeKeyValue{ .key = "process.pid", .value = .{ .int = 1234 } },
+    };
+    builder = builder.addKeyValues(&detected_attrs);
 
-    const service_name = attrs.get("service.name");
-    try testing.expect(service_name != null);
+    const attrs = try builder.finish(allocator);
+    defer AttributeKeyValue.deinitOwnedSlice(allocator, attrs);
+
+    try testing.expectEqual(@as(usize, 5), attrs.len);
+
+    // Find and verify SDK attributes
+    var sdk_name: ?AttributeValue = null;
+    var service_name: ?AttributeValue = null;
+    for (attrs) |attr| {
+        if (std.mem.eql(u8, attr.key, "telemetry.sdk.name")) {
+            sdk_name = attr.value;
+        } else if (std.mem.eql(u8, attr.key, "service.name")) {
+            service_name = attr.value;
+        }
+    }
+
+    try testing.expectEqualStrings("opentelemetry", sdk_name.?.string);
     try testing.expectEqualStrings("my-service", service_name.?.string);
-
-    const port = attrs.get("port");
-    try testing.expect(port != null);
-    try testing.expect(port.?.int == 8080);
 }
 
-test "AttributeBuilder arrays" {
+test "AttributeBuilder resource merging scenario" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    var builder = AttributeBuilder.init(allocator);
-    defer builder.deinit();
-
-    const bool_values = [_]bool{ true, false, true };
-    try builder.addBoolArray("bools", &bool_values);
-
-    const int_values = [_]i64{ 1, 2, 3, 42 };
-    try builder.addIntArray("ints", &int_values);
-
-    const float_values = [_]f64{ 1.1, 2.2, 3.3 };
-    try builder.addFloatArray("floats", &float_values);
-
-    const string_values = [_][]const u8{ "a", "b", "c" };
-    try builder.addStringArray("strings", &string_values);
-
-    const attrs = builder.build();
-    try testing.expect(attrs.count() == 4);
-
-    const strings = attrs.get("strings");
-    try testing.expect(strings != null);
-    try testing.expect(strings.?.string_array.len == 3);
-    try testing.expectEqualStrings("a", strings.?.string_array[0]);
-}
-
-test "AttributeBuilder KeyValue operations" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
-
-    var builder = AttributeBuilder.init(allocator);
-    defer builder.deinit();
-
-    const kv1 = KeyValue.init("name", .{ .string = "test" });
-    const kv2 = KeyValue.init("count", .{ .int = 5 });
-
-    try builder.addKeyValue(kv1);
-    try builder.addKeyValue(kv2);
-
-    const kvs = [_]KeyValue{
-        KeyValue.init("key1", .{ .string = "value1" }),
-        .{ .key = "key2", .value = .{ .bool = false } },
+    // Simulate Resource.merge() where other resource overrides self resource
+    const other_attrs = [_]AttributeKeyValue{
+        AttributeKeyValue{ .key = "service.name", .value = .{ .string = "new-service" } },
+        AttributeKeyValue{ .key = "service.version", .value = .{ .string = "2.0.0" } },
     };
 
-    try builder.addKeyValues(&kvs);
+    const self_attrs = [_]AttributeKeyValue{
+        AttributeKeyValue{ .key = "service.name", .value = .{ .string = "old-service" } },
+        AttributeKeyValue{ .key = "host.name", .value = .{ .string = "host1" } },
+    };
 
-    const attrs = builder.build();
-    try testing.expect(attrs.count() == 4);
+    // Add other attributes first (they take precedence), then self attributes
+    var builder = AttributeBuilder.init(allocator);
+    builder = builder.addKeyValues(&other_attrs);
+    builder = builder.addKeyValues(&self_attrs);
+
+    const attrs = try builder.finish(allocator);
+    defer AttributeKeyValue.deinitOwnedSlice(allocator, attrs);
+
+    try testing.expectEqual(@as(usize, 4), attrs.len);
+
+    // service.name should be "new-service" (first occurrence wins in lookup)
+    var service_name: ?AttributeValue = null;
+    var host_name: ?AttributeValue = null;
+    for (attrs) |attr| {
+        if (std.mem.eql(u8, attr.key, "service.name")) {
+            if (service_name == null) service_name = attr.value; // First occurrence
+        } else if (std.mem.eql(u8, attr.key, "host.name")) {
+            host_name = attr.value;
+        }
+    }
+
+    try testing.expectEqualStrings("new-service", service_name.?.string);
+    try testing.expectEqualStrings("host1", host_name.?.string);
 }
 
-test "withAttributeBuilder convenience function" {
+test "AttributeBuilder scope copying scenario" {
     const testing = std.testing;
     const allocator = testing.allocator;
+
+    // Simulate provider copying InstrumentationScope attributes
+    const original_scope_attrs = [_]AttributeKeyValue{
+        AttributeKeyValue{ .key = "instrumentation.name", .value = .{ .string = "test.library" } },
+        AttributeKeyValue{ .key = "instrumentation.version", .value = .{ .string = "1.0.0" } },
+    };
+
+    const builder = AttributeBuilder.init(allocator);
+    const copied_attrs = try builder.addKeyValues(&original_scope_attrs).finish(allocator);
+    defer AttributeKeyValue.deinitOwnedSlice(allocator, copied_attrs);
+
+    try testing.expectEqual(@as(usize, 2), copied_attrs.len);
+
+    // Verify the attributes were copied correctly
+    var name_found = false;
+    var version_found = false;
+    for (copied_attrs) |attr| {
+        if (std.mem.eql(u8, attr.key, "instrumentation.name")) {
+            try testing.expectEqualStrings("test.library", attr.value.string);
+            name_found = true;
+        } else if (std.mem.eql(u8, attr.key, "instrumentation.version")) {
+            try testing.expectEqualStrings("1.0.0", attr.value.string);
+            version_found = true;
+        }
+    }
+    try testing.expect(name_found and version_found);
+}
+
+test "AttributeBuilder functional chaining pattern" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // Test the functional immutable pattern used throughout the SDK
+    const builder1 = AttributeBuilder.init(allocator);
+    const builder2 = builder1.addString("telemetry.sdk.name", "opentelemetry");
+    const builder3 = builder2.addString("telemetry.sdk.language", "zig");
+
+    // Each builder is independent - test that builder1 is still empty conceptually
+    const empty_attrs = try builder1.finish(allocator);
+    defer AttributeKeyValue.deinitOwnedSlice(allocator, empty_attrs);
+    try testing.expectEqual(@as(usize, 0), empty_attrs.len);
+
+    // And builder3 has the full chain
+    const full_attrs = try builder3.finish(allocator);
+    defer AttributeKeyValue.deinitOwnedSlice(allocator, full_attrs);
+    try testing.expectEqual(@as(usize, 2), full_attrs.len);
+
+    // Verify chained attributes
+    var sdk_name_found = false;
+    var sdk_lang_found = false;
+    for (full_attrs) |attr| {
+        if (std.mem.eql(u8, attr.key, "telemetry.sdk.name")) {
+            try testing.expectEqualStrings("opentelemetry", attr.value.string);
+            sdk_name_found = true;
+        } else if (std.mem.eql(u8, attr.key, "telemetry.sdk.language")) {
+            try testing.expectEqualStrings("zig", attr.value.string);
+            sdk_lang_found = true;
+        }
+    }
+    try testing.expect(sdk_name_found and sdk_lang_found);
+}
+
+test "AttributeBuilder comprehensive types scenario" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // Simulate complex telemetry data with all attribute types
+    const feature_flags = [_]bool{ true, false, true };
+    const response_codes = [_]i64{ 200, 404, 500 };
+    const response_times = [_]f64{ 0.125, 0.250, 1.500 };
+    const endpoints = [_][]const u8{ "/api/users", "/api/orders", "/health" };
 
     var builder = AttributeBuilder.init(allocator);
-    defer builder.deinit();
+    builder = builder.addString("service.name", "api-gateway");
+    builder = builder.addInt("service.port", 8080);
+    builder = builder.addBool("debug.enabled", true);
+    builder = builder.addFloat("cpu.usage", 0.75);
+    builder = builder.addBoolArray("feature.flags", &feature_flags);
+    builder = builder.addIntArray("http.response_codes", &response_codes);
+    builder = builder.addFloatArray("response.times", &response_times);
+    builder = builder.addStringArray("monitored.endpoints", &endpoints);
 
-    try builder.addString("service.name", "test-service");
-    try builder.addInt("version", 1);
-    try builder.addBool("enabled", true);
+    const attrs = try builder.finish(allocator);
+    defer AttributeKeyValue.deinitOwnedSlice(allocator, attrs);
 
-    const attrs = builder.build();
-    try testing.expect(attrs.count() == 3);
-    try testing.expectEqualStrings("test-service", attrs.get("service.name").?.string);
-    try testing.expect(attrs.get("version").?.int == 1);
-    try testing.expect(attrs.get("enabled").?.bool == true);
+    try testing.expectEqual(@as(usize, 8), attrs.len);
+
+    // Verify specific attributes by type
+    var found_count: usize = 0;
+    for (attrs) |attr| {
+        if (std.mem.eql(u8, attr.key, "service.name")) {
+            try testing.expectEqualStrings("api-gateway", attr.value.string);
+            found_count += 1;
+        } else if (std.mem.eql(u8, attr.key, "service.port")) {
+            try testing.expectEqual(@as(i64, 8080), attr.value.int);
+            found_count += 1;
+        } else if (std.mem.eql(u8, attr.key, "debug.enabled")) {
+            try testing.expectEqual(true, attr.value.bool);
+            found_count += 1;
+        } else if (std.mem.eql(u8, attr.key, "cpu.usage")) {
+            try testing.expectEqual(@as(f64, 0.75), attr.value.float);
+            found_count += 1;
+        } else if (std.mem.eql(u8, attr.key, "feature.flags")) {
+            try testing.expectEqual(@as(usize, 3), attr.value.bool_array.len);
+            try testing.expectEqual(true, attr.value.bool_array[0]);
+            found_count += 1;
+        } else if (std.mem.eql(u8, attr.key, "http.response_codes")) {
+            try testing.expectEqual(@as(usize, 3), attr.value.int_array.len);
+            try testing.expectEqual(@as(i64, 200), attr.value.int_array[0]);
+            found_count += 1;
+        } else if (std.mem.eql(u8, attr.key, "response.times")) {
+            try testing.expectEqual(@as(usize, 3), attr.value.float_array.len);
+            try testing.expectEqual(@as(f64, 0.125), attr.value.float_array[0]);
+            found_count += 1;
+        } else if (std.mem.eql(u8, attr.key, "monitored.endpoints")) {
+            try testing.expectEqual(@as(usize, 3), attr.value.string_array.len);
+            try testing.expectEqualStrings("/api/users", attr.value.string_array[0]);
+            found_count += 1;
+        }
+    }
+    try testing.expectEqual(@as(usize, 8), found_count);
 }
 
-test "Attributes formatting" {
+test "AttributeBuilder empty and edge cases" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    var attrs = Attributes.init(allocator);
-    defer attrs.deinit();
+    // Test empty builder
+    const empty_attrs = try AttributeBuilder.init(allocator).finish(allocator);
+    defer AttributeKeyValue.deinitOwnedSlice(allocator, empty_attrs);
+    try testing.expectEqual(@as(usize, 0), empty_attrs.len);
 
-    try attrs.put("name", .{ .string = "test" });
-    try attrs.put("count", .{ .int = 42 });
+    // Test adding empty AttributeKeyValue slice
+    const empty_kvs: []const AttributeKeyValue = &[_]AttributeKeyValue{};
+    const attrs_from_empty = try AttributeBuilder.init(allocator)
+        .addKeyValues(empty_kvs)
+        .finish(allocator);
+    defer AttributeKeyValue.deinitOwnedSlice(allocator, attrs_from_empty);
+    try testing.expectEqual(@as(usize, 0), attrs_from_empty.len);
 
-    var buf: [256]u8 = undefined;
-    const formatted = try std.fmt.bufPrint(&buf, "{}", .{attrs});
+    // Test single attribute
+    const single_attr = try AttributeBuilder.init(allocator)
+        .addString("single.key", "single.value")
+        .finish(allocator);
+    defer AttributeKeyValue.deinitOwnedSlice(allocator, single_attr);
+    try testing.expectEqual(@as(usize, 1), single_attr.len);
+    try testing.expectEqualStrings("single.key", single_attr[0].key);
+    try testing.expectEqualStrings("single.value", single_attr[0].value.string);
+}
 
-    // Order is not guaranteed in hash map, so check both possible orders
-    const contains_name = std.mem.indexOf(u8, formatted, "name=\"test\"") != null;
-    const contains_count = std.mem.indexOf(u8, formatted, "count=42") != null;
+test "AttributeValue hash/equality contract" {
+    const testing = std.testing;
 
-    try testing.expect(contains_name);
-    try testing.expect(contains_count);
-    try testing.expect(std.mem.startsWith(u8, formatted, "{"));
-    try testing.expect(std.mem.endsWith(u8, formatted, "}"));
+    // Helper function to get hash
+    const getHash = struct {
+        fn call(value: AttributeValue) u64 {
+            var hasher = std.hash.Wyhash.init(0);
+            value.hash(&hasher);
+            return hasher.final();
+        }
+    }.call;
+
+    // Test primitive types
+    const bool_val1: AttributeValue = .{ .bool = true };
+    const bool_val2: AttributeValue = .{ .bool = true };
+    const bool_val3: AttributeValue = .{ .bool = false };
+
+    try testing.expect(bool_val1.eql(bool_val2));
+    try testing.expectEqual(getHash(bool_val1), getHash(bool_val2));
+    try testing.expect(!bool_val1.eql(bool_val3));
+    try testing.expect(getHash(bool_val1) != getHash(bool_val3));
+
+    const int_val1: AttributeValue = .{ .int = 42 };
+    const int_val2: AttributeValue = .{ .int = 42 };
+    const int_val3: AttributeValue = .{ .int = 24 };
+
+    try testing.expect(int_val1.eql(int_val2));
+    try testing.expectEqual(getHash(int_val1), getHash(int_val2));
+    try testing.expect(!int_val1.eql(int_val3));
+    try testing.expect(getHash(int_val1) != getHash(int_val3));
+
+    const float_val1: AttributeValue = .{ .float = 3.14 };
+    const float_val2: AttributeValue = .{ .float = 3.14 };
+    const float_val3: AttributeValue = .{ .float = 2.71 };
+
+    try testing.expect(float_val1.eql(float_val2));
+    try testing.expectEqual(getHash(float_val1), getHash(float_val2));
+    try testing.expect(!float_val1.eql(float_val3));
+    try testing.expect(getHash(float_val1) != getHash(float_val3));
+
+    const str_val1: AttributeValue = .{ .string = "hello" };
+    const str_val2: AttributeValue = .{ .string = "hello" };
+    const str_val3: AttributeValue = .{ .string = "world" };
+
+    try testing.expect(str_val1.eql(str_val2));
+    try testing.expectEqual(getHash(str_val1), getHash(str_val2));
+    try testing.expect(!str_val1.eql(str_val3));
+    try testing.expect(getHash(str_val1) != getHash(str_val3));
+}
+
+test "AttributeValue array hash/equality contract" {
+    const testing = std.testing;
+
+    const getHash = struct {
+        fn call(value: AttributeValue) u64 {
+            var hasher = std.hash.Wyhash.init(0);
+            value.hash(&hasher);
+            return hasher.final();
+        }
+    }.call;
+
+    // Test array types
+    const bool_arr1 = [_]bool{ true, false, true };
+    const bool_arr2 = [_]bool{ true, false, true };
+    const bool_arr3 = [_]bool{ false, true, false };
+
+    const bool_val1: AttributeValue = .{ .bool_array = &bool_arr1 };
+    const bool_val2: AttributeValue = .{ .bool_array = &bool_arr2 };
+    const bool_val3: AttributeValue = .{ .bool_array = &bool_arr3 };
+
+    try testing.expect(bool_val1.eql(bool_val2));
+    try testing.expectEqual(getHash(bool_val1), getHash(bool_val2));
+    try testing.expect(!bool_val1.eql(bool_val3));
+    try testing.expect(getHash(bool_val1) != getHash(bool_val3));
+
+    const int_arr1 = [_]i64{ 1, 2, 3 };
+    const int_arr2 = [_]i64{ 1, 2, 3 };
+    const int_arr3 = [_]i64{ 3, 2, 1 };
+
+    const int_val1: AttributeValue = .{ .int_array = &int_arr1 };
+    const int_val2: AttributeValue = .{ .int_array = &int_arr2 };
+    const int_val3: AttributeValue = .{ .int_array = &int_arr3 };
+
+    try testing.expect(int_val1.eql(int_val2));
+    try testing.expectEqual(getHash(int_val1), getHash(int_val2));
+    try testing.expect(!int_val1.eql(int_val3));
+    try testing.expect(getHash(int_val1) != getHash(int_val3));
+
+    const str_arr1 = [_][]const u8{ "a", "b", "c" };
+    const str_arr2 = [_][]const u8{ "a", "b", "c" };
+    const str_arr3 = [_][]const u8{ "ab", "c" }; // Different splitting, same total content
+
+    const str_val1: AttributeValue = .{ .string_array = &str_arr1 };
+    const str_val2: AttributeValue = .{ .string_array = &str_arr2 };
+    const str_val3: AttributeValue = .{ .string_array = &str_arr3 };
+
+    try testing.expect(str_val1.eql(str_val2));
+    try testing.expectEqual(getHash(str_val1), getHash(str_val2));
+    try testing.expect(!str_val1.eql(str_val3));
+    try testing.expect(getHash(str_val1) != getHash(str_val3)); // Different due to separator
+}
+
+test "AttributeValue different types have different hashes" {
+    const testing = std.testing;
+
+    const getHash = struct {
+        fn call(value: AttributeValue) u64 {
+            var hasher = std.hash.Wyhash.init(0);
+            value.hash(&hasher);
+            return hasher.final();
+        }
+    }.call;
+
+    // Same underlying value, different types should have different hashes
+    const bool_val: AttributeValue = .{ .bool = true };
+    const int_val: AttributeValue = .{ .int = 1 }; // true as int
+    const float_val: AttributeValue = .{ .float = 1.0 }; // true/1 as float
+    const str_val: AttributeValue = .{ .string = "1" }; // 1 as string
+
+    const bool_hash = getHash(bool_val);
+    const int_hash = getHash(int_val);
+    const float_hash = getHash(float_val);
+    const str_hash = getHash(str_val);
+
+    // All should be different
+    try testing.expect(bool_hash != int_hash);
+    try testing.expect(bool_hash != float_hash);
+    try testing.expect(bool_hash != str_hash);
+    try testing.expect(int_hash != float_hash);
+    try testing.expect(int_hash != str_hash);
+    try testing.expect(float_hash != str_hash);
+}
+
+test "KeyValue hash/equality contract" {
+    const testing = std.testing;
+
+    const getHash = struct {
+        fn call(kv: AttributeKeyValue) u64 {
+            var hasher = std.hash.Wyhash.init(0);
+            kv.hash(&hasher);
+            return hasher.final();
+        }
+    }.call;
+
+    const kv1 = AttributeKeyValue{ .key = "service.name", .value = .{ .string = "my-service" } };
+    const kv2 = AttributeKeyValue{ .key = "service.name", .value = .{ .string = "my-service" } };
+    const kv3 = AttributeKeyValue{ .key = "service.name", .value = .{ .string = "other-service" } };
+    const kv4 = AttributeKeyValue{ .key = "other.key", .value = .{ .string = "my-service" } };
+
+    // Same key and value should be equal and have same hash
+    try testing.expect(kv1.eql(kv2));
+    try testing.expectEqual(getHash(kv1), getHash(kv2));
+
+    // Different value should not be equal and should have different hash
+    try testing.expect(!kv1.eql(kv3));
+    try testing.expect(getHash(kv1) != getHash(kv3));
+
+    // Different key should not be equal and should have different hash
+    try testing.expect(!kv1.eql(kv4));
+    try testing.expect(getHash(kv1) != getHash(kv4));
+}
+
+test "Hash consistency" {
+    const testing = std.testing;
+
+    const getHash = struct {
+        fn call(value: AttributeValue) u64 {
+            var hasher = std.hash.Wyhash.init(0);
+            value.hash(&hasher);
+            return hasher.final();
+        }
+    }.call;
+
+    // Same value should always produce same hash
+    const val: AttributeValue = .{ .string = "consistent" };
+    const hash1 = getHash(val);
+    const hash2 = getHash(val);
+    const hash3 = getHash(val);
+
+    try testing.expectEqual(hash1, hash2);
+    try testing.expectEqual(hash2, hash3);
+
+    // Same for KeyValue
+    const getKvHash = struct {
+        fn call(kv: AttributeKeyValue) u64 {
+            var hasher = std.hash.Wyhash.init(0);
+            kv.hash(&hasher);
+            return hasher.final();
+        }
+    }.call;
+
+    const kv = AttributeKeyValue{ .key = "test.key", .value = .{ .int = 42 } };
+    const kv_hash1 = getKvHash(kv);
+    const kv_hash2 = getKvHash(kv);
+    const kv_hash3 = getKvHash(kv);
+
+    try testing.expectEqual(kv_hash1, kv_hash2);
+    try testing.expectEqual(kv_hash2, kv_hash3);
 }

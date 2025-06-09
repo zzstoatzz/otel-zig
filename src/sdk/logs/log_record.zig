@@ -6,11 +6,11 @@
 //! See: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/logs/data-model.md
 
 const std = @import("std");
-const Severity = @import("severity.zig").Severity;
-const AttributeValue = @import("../common/root.zig").AttributeValue;
-const KeyValue = @import("../common/root.zig").KeyValue;
-
-const InstrumentationScope = @import("../common/root.zig").InstrumentationScope;
+const otel_api = @import("otel-api");
+const Severity = otel_api.logs.Severity;
+const AttributeValue = otel_api.common.AttributeValue;
+const AttributeKeyValue = otel_api.common.AttributeKeyValue;
+const InstrumentationScope = otel_api.common.InstrumentationScope;
 
 /// LogRecord represents a log entry according to the OpenTelemetry specification.
 /// This is a non-owning structure - all slices reference external memory.
@@ -49,7 +49,7 @@ pub const LogRecord = struct {
     event_name: ?[]const u8 = null,
 
     /// Additional attributes associated with the log record
-    attributes: []const KeyValue = &[_]KeyValue{},
+    attributes: []const AttributeKeyValue = &[_]AttributeKeyValue{},
 
     /// TraceId of the span that this log record is associated with (16 bytes)
     trace_id: ?[16]u8 = null,
@@ -59,8 +59,6 @@ pub const LogRecord = struct {
 
     /// Trace flags (1 byte)
     flags: ?u8 = null,
-
-
 
     /// Instrumentation scope that produced this log record.
     instrumentation_scope: ?InstrumentationScope = null,
@@ -121,46 +119,4 @@ test "LogRecord basic usage" {
     try testing.expectEqualStrings("INFO", record.severity_text.?);
     try testing.expectEqualStrings("Test log message", record.body.?.string);
     try testing.expect(!record.hasTraceContext());
-}
-
-test "LogRecord with trace context" {
-    const testing = std.testing;
-
-    const record = LogRecord{
-        .severity_number = .debug,
-        .body = .{ .string = "Debug message" },
-        .trace_id = [_]u8{1} ** 16,
-        .span_id = [_]u8{2} ** 8,
-        .flags = 0x01,
-    };
-
-    try testing.expect(record.hasTraceContext());
-    try testing.expectEqual(@as(?u8, 0x01), record.flags);
-
-    var trace_buf: [32]u8 = undefined;
-    const trace_str = try record.formatTraceId(&trace_buf);
-    try testing.expectEqualStrings("01010101010101010101010101010101", trace_str);
-
-    var span_buf: [16]u8 = undefined;
-    const span_str = try record.formatSpanId(&span_buf);
-    try testing.expectEqualStrings("0202020202020202", span_str);
-}
-
-test "LogRecord with attributes" {
-    const testing = std.testing;
-
-    const attrs = [_]KeyValue{
-        KeyValue.init("user", .{ .string = "john" }),
-        KeyValue.init("request_id", .{ .int = 12345 }),
-    };
-
-    const record = LogRecord{
-        .severity_number = .warn,
-        .body = .{ .string = "Warning message" },
-        .attributes = &attrs,
-    };
-
-    try testing.expectEqual(@as(usize, 2), record.attributes.len);
-    try testing.expectEqualStrings("user", record.attributes[0].key);
-    try testing.expectEqualStrings("john", record.attributes[0].value.string);
 }

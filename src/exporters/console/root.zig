@@ -43,16 +43,16 @@ pub const StreamLogExporterConfig = @import("logs.zig").StreamLogExporterConfig;
 pub const ConsoleExporterConfig = struct {
     /// Format output for human readability
     pretty_print: bool = true,
-    
+
     /// Write to stderr instead of stdout
     use_stderr: bool = false,
-    
+
     /// Include timestamps in output
     include_timestamp: bool = true,
-    
+
     /// Include attributes in output
     include_attributes: bool = true,
-    
+
     /// Maximum attribute value length (0 = unlimited)
     max_attribute_length: usize = 128,
 };
@@ -62,10 +62,6 @@ pub const createLogExporter = @import("logs.zig").createLogExporter;
 pub const createTraceExporter = @import("traces.zig").createTraceExporter;
 pub const createMetricExporter = @import("metrics.zig").createMetricExporter;
 
-test "console exporters module compilation" {
-    _ = std.testing;
-    _ = ConsoleLogExporter;
-    _ = ConsoleTraceExporter;
-    _ = ConsoleMetricExporter;
-    _ = ConsoleExporterConfig;
+test {
+    std.testing.refAllDecls(@This());
 }

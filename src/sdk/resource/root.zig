@@ -14,14 +14,14 @@
 //! ## Usage
 //! ```zig
 //! const otel_sdk = @import("otel-sdk");
-//! 
+//!
 //! // Create resource manually
 //! const attrs = [_]KeyValue{
 //!     KeyValue.init("service.name", .{ .string = "my-service" }),
 //!     KeyValue.init("service.version", .{ .string = "1.0.0" }),
 //! };
 //! const resource = try otel_sdk.resource.Resource.init(allocator, &attrs, null);
-//! 
+//!
 //! // Or use detectors
 //! const resource = try otel_sdk.resource.detectResource(allocator);
 //! ```
@@ -29,14 +29,10 @@
 const std = @import("std");
 const otel_api = @import("otel-api");
 
-const AttributeValue = otel_api.common.AttributeValue;
-const KeyValue = otel_api.common.KeyValue;
-
 // Resource types
 pub const Resource = @import("resource.zig").Resource;
-pub const createResource = @import("resource.zig").createResource;
 pub const createEmptyResource = @import("resource.zig").createEmptyResource;
-pub const mergeResources = @import("resource.zig").mergeResources;
+pub const mergeResources = Resource.merge;
 
 // Resource detection
 pub const ResourceDetector = @import("detector.zig").ResourceDetector;
@@ -49,11 +45,6 @@ pub const detectResource = @import("detector.zig").detectResource;
 pub const getDefaultResource = @import("resource.zig").getDefaultResource;
 pub const getTelemetrySDKResource = @import("resource.zig").getTelemetrySDKResource;
 
-test "resource sdk module compilation" {
-    _ = std.testing;
-    _ = Resource;
-    _ = ResourceDetector;
-    _ = DefaultDetector;
-    _ = ProcessDetector;
-    _ = HostDetector;
+test {
+    std.testing.refAllDecls(@This());
 }

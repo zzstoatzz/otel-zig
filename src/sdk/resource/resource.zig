@@ -9,15 +9,31 @@ const std = @import("std");
 const otel_api = @import("otel-api");
 
 const AttributeValue = otel_api.common.AttributeValue;
-const KeyValue = otel_api.common.KeyValue;
+const AttributeKeyValue = otel_api.common.AttributeKeyValue;
 const AttributeBuilder = otel_api.common.AttributeBuilder;
 
 /// Concrete resource implementation with owned attributes
 pub const Resource = struct {
-    attributes: []const KeyValue,
+    attributes: []const AttributeKeyValue,
     schema_url: ?[]const u8,
 
-    pub fn init(attributes: []const KeyValue, schema_url: ?[]const u8) !Resource {
+    /// SDK defaults for Resource
+    pub const default: Resource = .{
+        .schema_url = null,
+        .attributes = &[_]AttributeKeyValue{
+            .{ .key = "telemetry.sdk.name", .value = .{ .string = "opentelemetry" } },
+            .{ .key = "telemetry.sdk.language", .value = .{ .string = "zig" } },
+            .{ .key = "telemetry.sdk.version", .value = .{ .string = "0.1.0" } },
+        },
+    };
+
+    /// An empty resource
+    pub const empty: Resource = .{
+        .schema_url = null,
+        .attributes = &[_]AttributeKeyValue{},
+    };
+
+    pub fn init(attributes: []const AttributeKeyValue, schema_url: ?[]const u8) !Resource {
         return Resource{
             .attributes = attributes,
             .schema_url = schema_url,
@@ -25,7 +41,8 @@ pub const Resource = struct {
     }
 
     pub fn deinitOwned(self: *const Resource, allocator: std.mem.Allocator) void {
-        KeyValue.deinitOwnedSlice(allocator, self.attributes);
+        AttributeKeyValue.deinitOwnedSlice(allocator, self.attributes);
+        if (self.schema_url) |url| allocator.free(url);
     }
 
     /// Convenience method for key-based attribute lookup
@@ -42,15 +59,14 @@ pub const Resource = struct {
     ///
     /// The caller is responsible for calling `deinitOwned()` on
     /// the returned resource.
-    pub fn merge(allocator: std.mem.Allocator, self: *const Resource, other: *const Resource) !Resource {
+    pub fn merge(allocator: std.mem.Allocator, self: Resource, other: Resource) !Resource {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
 
         var builder = AttributeBuilder.init(arena.allocator());
-        errdefer builder.deinit();
 
-        try builder.addKeyValues(self.attributes);
-        try builder.addKeyValues(other.attributes);
+        builder = builder.addKeyValues(other.attributes);
+        builder = builder.addKeyValues(self.attributes);
 
         const merged_attrs = try builder.finish(allocator);
 
@@ -61,15 +77,106 @@ pub const Resource = struct {
     }
 };
 
+pub const ResourceBuilder = union(enum) {
+    valid: struct {
+        allocator: std.mem.Allocator,
+        attributes: []AttributeKeyValue,
+        schema_url: ?[]const u8,
+    },
+    invalid: anyerror,
+
+    pub fn init(allocator: std.mem.Allocator) ResourceBuilder {
+        return ResourceBuilder{ .valid = .{
+            .allocator = allocator,
+            .attributes = &[_]AttributeKeyValue{},
+            .schema_url = null,
+        } };
+    }
+
+    pub fn deinit(self: ResourceBuilder) void {
+        switch (self) {
+            .valid => |builder| {
+                builder.allocator.free(builder.attributes);
+            },
+            .invalid => {},
+        }
+    }
+
+    // Return
+    pub fn finish(self: ResourceBuilder, allocator: std.mem.Allocator) !Resource {
+        defer self.deinit();
+        return switch (self) {
+            .valid => |builder| blk: {
+                const owned_schema_url = if (builder.schema_url) |url| try allocator.dupe(u8, url) else null;
+                errdefer if (owned_schema_url) |url| allocator.free(url);
+
+                const kvs = try AttributeKeyValue.initOwnedSlice(allocator, builder.attributes);
+                errdefer AttributeKeyValue.deinitOwnedSlice(allocator, kvs);
+
+                const resource = Resource{
+                    .schema_url = owned_schema_url,
+                    .attributes = kvs,
+                };
+                break :blk resource;
+            },
+            .invalid => |e| e,
+        };
+    }
+
+    pub fn addResource(self: ResourceBuilder, resource: Resource) ResourceBuilder {
+        defer self.deinit();
+        return switch (self) {
+            .valid => |builder| blk: {
+                const new_len = builder.attributes.len + resource.attributes.len;
+                var new_attributes = builder.allocator.alloc(AttributeKeyValue, new_len) catch |e| return ResourceBuilder{ .invalid = e };
+                errdefer builder.allocator.free(new_attributes);
+                @memcpy(new_attributes[0..builder.attributes.len], builder.attributes);
+                @memcpy(new_attributes[builder.attributes.len..], resource.attributes);
+
+                break :blk ResourceBuilder{
+                    .valid = .{
+                        .allocator = builder.allocator,
+                        .schema_url = resource.schema_url,
+                        .attributes = new_attributes,
+                    },
+                };
+            },
+            .invalid => self,
+        };
+    }
+
+    pub fn addKeyValue(self: ResourceBuilder, kv: AttributeKeyValue) ResourceBuilder {
+        defer self.deinit();
+        return switch (self) {
+            .valid => |builder| blk: {
+                const new_len = builder.attributes.len + 1;
+                var new_attributes = builder.allocator.alloc(AttributeKeyValue, new_len) catch |e| return ResourceBuilder{ .invalid = e };
+                errdefer builder.allocator.free(new_attributes);
+                @memcpy(new_attributes[0..builder.attributes.len], builder.attributes);
+                new_attributes[builder.attributes.len] = kv;
+
+                break :blk ResourceBuilder{
+                    .valid = .{
+                        .allocator = builder.allocator,
+                        .schema_url = builder.schema_url,
+                        .attributes = new_attributes,
+                    },
+                };
+            },
+            .invalid => self,
+        };
+    }
+};
+
 /// Get default resource with telemetry SDK information
 pub fn getDefaultResource(allocator: std.mem.Allocator) !Resource {
-    var attrs = std.ArrayList(KeyValue).init(allocator);
+    var attrs = std.ArrayList(AttributeKeyValue).init(allocator);
     defer attrs.deinit();
-    
-    try attrs.append(try KeyValue.initOwned(allocator, "telemetry.sdk.name", .{ .string = "opentelemetry" }));
-    try attrs.append(try KeyValue.initOwned(allocator, "telemetry.sdk.language", .{ .string = "zig" }));
-    try attrs.append(try KeyValue.initOwned(allocator, "telemetry.sdk.version", .{ .string = "0.1.0" }));
-    
+
+    try attrs.append(try AttributeKeyValue.initOwned(allocator, "telemetry.sdk.name", .{ .string = "opentelemetry" }));
+    try attrs.append(try AttributeKeyValue.initOwned(allocator, "telemetry.sdk.language", .{ .string = "zig" }));
+    try attrs.append(try AttributeKeyValue.initOwned(allocator, "telemetry.sdk.version", .{ .string = "0.1.0" }));
+
     return Resource.init(try attrs.toOwnedSlice(), null);
 }
 
@@ -80,23 +187,17 @@ pub fn getTelemetrySDKResource(allocator: std.mem.Allocator) !Resource {
 
 /// Create an empty resource
 pub fn createEmptyResource(allocator: std.mem.Allocator) !Resource {
-    const attrs = try allocator.alloc(KeyValue, 0);
-    return Resource.init(attrs, null);
-}
-
-/// Create a resource with attributes
-pub fn createResource(allocator: std.mem.Allocator, attributes: []const KeyValue) !Resource {
-    const attrs = try allocator.dupe(KeyValue, attributes);
+    const attrs = try allocator.alloc(AttributeKeyValue, 0);
     return Resource.init(attrs, null);
 }
 
 test "Resource basic operations" {
     const testing = std.testing;
 
-    const attrs = [_]KeyValue{
-        KeyValue.init("service.name", .{ .string = "my-service" }),
-        KeyValue.init("service.version", .{ .string = "1.0.0" }),
-        KeyValue.init("deployment.environment", .{ .string = "production" }),
+    const attrs = [_]AttributeKeyValue{
+        .{ .key = "service.name", .value = .{ .string = "my-service" } },
+        .{ .key = "service.version", .value = .{ .string = "1.0.0" } },
+        .{ .key = "deployment.environment", .value = .{ .string = "production" } },
     };
 
     var resource = try Resource.init(&attrs, null);
@@ -126,19 +227,19 @@ test "Resource merge" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const attrs1 = [_]KeyValue{
-        KeyValue.init("service.name", .{ .string = "service-a" }),
-        KeyValue.init("host.name", .{ .string = "host1" }),
+    const attrs1 = [_]AttributeKeyValue{
+        .{ .key = "service.name", .value = .{ .string = "service-a" } },
+        .{ .key = "host.name", .value = .{ .string = "host1" } },
     };
-    var resource1 = try Resource.init(&attrs1, null);
+    const resource1 = try Resource.init(&attrs1, null);
 
-    const attrs2 = [_]KeyValue{
-        KeyValue.init("service.name", .{ .string = "service-b" }),
-        KeyValue.init("service.version", .{ .string = "2.0.0" }),
+    const attrs2 = [_]AttributeKeyValue{
+        .{ .key = "service.name", .value = .{ .string = "service-b" } },
+        .{ .key = "service.version", .value = .{ .string = "2.0.0" } },
     };
-    var resource2 = try Resource.init(&attrs2, null);
+    const resource2 = try Resource.init(&attrs2, null);
 
-    var merged = try Resource.merge(allocator, &resource1, &resource2);
+    var merged = try Resource.merge(allocator, resource1, resource2);
     defer merged.deinitOwned(allocator);
 
     // service.name should be overridden by resource2

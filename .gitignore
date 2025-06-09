@@ -3,6 +3,7 @@
 zig-out/
 *.a
 *.so
+*.o
 
 # IDE files
 .vscode/

@@ -10,178 +10,164 @@ const std = @import("std");
 const otel_api = @import("otel-api");
 
 const Context = otel_api.Context;
-const LogRecord = otel_api.logs.LogRecord;
-
-/// Result of a flush or shutdown operation
-pub const ProcessorResult = enum {
-    success,
-    failure,
-    timeout,
-};
+const LogRecord = @import("log_record.zig").LogRecord;
+const LogExporter = @import("exporter.zig").LogExporter;
+const Resource = @import("../resource/resource.zig").Resource;
+const ProcessResult = @import("otel-api").common.ProcessResult;
 
 /// LogProcessor interface using tagged union for polymorphism
 pub const LogProcessor = union(enum) {
-    simple: *SimpleProcessor,
-    multi: *MultiProcessor,
-    custom: *CustomProcessor,
+    noop: void,
+    simple: *SimpleLogProcessor,
+    bridge: BridgeLogProcessor,
 
     /// Called when a log record is emitted
-    pub fn onEmit(self: *LogProcessor, record: LogRecord, ctx: Context) void {
+    pub fn onEmit(self: *LogProcessor, record: LogRecord, ctx: Context, resource: Resource) void {
         switch (self.*) {
-            .simple => |processor| processor.onEmit(processor, record, ctx),
-            .multi => |processor| processor.onEmit(processor, record, ctx),
-            .custom => |processor| processor.onEmit(record, ctx),
+            .noop => {},
+            .simple => |processor| processor.onEmit(record, ctx, resource),
+            .bridge => |processor| processor.onEmitFn(processor.processor_ptr, record, ctx, resource),
         }
     }
 
     /// Force flush any buffered log records
-    pub fn forceFlush(self: *LogProcessor, timeout_ms: ?u64) ProcessorResult {
+    pub fn forceFlush(self: *LogProcessor, timeout_ms: ?u64) ProcessResult {
         return switch (self.*) {
-            .simple => |processor| processor.forceFlush(processor, timeout_ms),
-            .multi => |processor| processor.forceFlush(processor, timeout_ms),
-            .custom => |processor| processor.forceFlush(timeout_ms),
+            .noop => .success,
+            .simple => |processor| processor.forceFlush(timeout_ms),
+            .bridge => |processor| processor.forceFlushFn(processor.processor_ptr, timeout_ms),
         };
     }
 
     /// Shutdown the processor
-    pub fn shutdown(self: *LogProcessor, timeout_ms: ?u64) ProcessorResult {
+    pub fn shutdown(self: *LogProcessor, timeout_ms: ?u64) ProcessResult {
         return switch (self.*) {
-            .simple => |processor| processor.shutdown(processor, timeout_ms),
-            .multi => |processor| processor.shutdown(processor, timeout_ms),
-            .custom => |processor| processor.shutdown(timeout_ms),
+            .noop => .success,
+            .simple => |processor| processor.shutdown(timeout_ms),
+            .bridge => |processor| processor.shutdownFn(processor.processor_ptr, timeout_ms),
         };
     }
 
     /// Clean up processor resources
     pub fn deinit(self: *LogProcessor) void {
         switch (self.*) {
-            .simple => |processor| processor.deinit(processor),
-            .multi => |processor| processor.deinit(processor),
-            .custom => |processor| processor.deinit(),
+            .noop => {},
+            .simple => |processor| processor.deinit(),
+            .bridge => |processor| processor.deinitFn(processor.processor_ptr),
         }
     }
 };
 
-/// Interface for simple processor (defined in simple_processor.zig)
-pub const SimpleProcessor = struct {
-    onEmit: *const fn (self: *SimpleProcessor, record: LogRecord, ctx: Context) void,
-    forceFlush: *const fn (self: *SimpleProcessor, timeout_ms: ?u64) ProcessorResult,
-    shutdown: *const fn (self: *SimpleProcessor, timeout_ms: ?u64) ProcessorResult,
-    deinit: *const fn (self: *SimpleProcessor) void,
-};
+/// Simple log processor implementation.
+///
+/// Implementation is a pass through to the exporter.
+pub const SimpleLogProcessor = struct {
+    allocator: std.mem.Allocator,
+    exporter: LogExporter,
+    mutex: std.Thread.Mutex,
+    is_shutdown: bool,
 
-
-
-/// Interface for multi processor (processes through multiple processors)
-pub const MultiProcessor = struct {
-    onEmit: *const fn (self: *MultiProcessor, record: LogRecord, ctx: Context) void,
-    forceFlush: *const fn (self: *MultiProcessor, timeout_ms: ?u64) ProcessorResult,
-    shutdown: *const fn (self: *MultiProcessor, timeout_ms: ?u64) ProcessorResult,
-    deinit: *const fn (self: *MultiProcessor) void,
-};
-
-/// Custom processor with user-provided implementation
-pub const CustomProcessor = struct {
-    impl: *anyopaque,
-    onEmitFn: *const fn (impl: *anyopaque, record: LogRecord, ctx: Context) void,
-    forceFlushFn: *const fn (impl: *anyopaque, timeout_ms: ?u64) ProcessorResult,
-    shutdownFn: *const fn (impl: *anyopaque, timeout_ms: ?u64) ProcessorResult,
-    deinitFn: *const fn (impl: *anyopaque) void,
-
-    pub fn onEmit(self: *CustomProcessor, record: LogRecord, ctx: Context) void {
-        self.onEmitFn(self.impl, record, ctx);
+    pub fn init(allocator: std.mem.Allocator, exporter: LogExporter) !*SimpleLogProcessor {
+        const self = try allocator.create(SimpleLogProcessor);
+        self.* = .{
+            .allocator = allocator,
+            .exporter = exporter,
+            .mutex = .{},
+            .is_shutdown = false,
+        };
+        return self;
     }
 
-    pub fn forceFlush(self: *CustomProcessor, timeout_ms: ?u64) ProcessorResult {
-        return self.forceFlushFn(self.impl, timeout_ms);
+    pub fn deinit(self: *SimpleLogProcessor) void {
+        self.exporter.deinit();
+        self.allocator.destroy(self);
     }
 
-    pub fn shutdown(self: *CustomProcessor, timeout_ms: ?u64) ProcessorResult {
-        return self.shutdownFn(self.impl, timeout_ms);
-    }
+    pub inline fn onEmit(self: *SimpleLogProcessor, record: LogRecord, ctx: Context, resource: Resource) void {
+        _ = ctx;
 
-    pub fn deinit(self: *CustomProcessor) void {
-        self.deinitFn(self.impl);
-    }
-};
+        self.mutex.lock();
+        defer self.mutex.unlock();
 
-/// Create a custom processor
-pub fn createCustomProcessor(
-    impl: *anyopaque,
-    onEmitFn: *const fn (impl: *anyopaque, record: LogRecord, ctx: Context) void,
-    forceFlushFn: *const fn (impl: *anyopaque, timeout_ms: ?u64) ProcessorResult,
-    shutdownFn: *const fn (impl: *anyopaque, timeout_ms: ?u64) ProcessorResult,
-    deinitFn: *const fn (impl: *anyopaque) void,
-) CustomProcessor {
-    return .{
-        .impl = impl,
-        .onEmitFn = onEmitFn,
-        .forceFlushFn = forceFlushFn,
-        .shutdownFn = shutdownFn,
-        .deinitFn = deinitFn,
-    };
-}
-
-test "CustomProcessor operations" {
-    const testing = std.testing;
-
-    const TestImpl = struct {
-        emit_count: usize = 0,
-        flushed: bool = false,
-        is_shutdown: bool = false,
-
-        fn onEmit(impl: *anyopaque, record: LogRecord, ctx: Context) void {
-            _ = record;
-            _ = ctx;
-            const self = @as(*@This(), @ptrCast(@alignCast(impl)));
-            self.emit_count += 1;
+        if (self.is_shutdown) {
+            return;
         }
 
-        fn forceFlush(impl: *anyopaque, timeout_ms: ?u64) ProcessorResult {
-            _ = timeout_ms;
-            const self = @as(*@This(), @ptrCast(@alignCast(impl)));
-            self.flushed = true;
+        // Export single record immediately
+        const records = [_]LogRecord{record};
+        _ = self.exporter.exportRecords(&records, resource);
+    }
+
+    pub inline fn forceFlush(self: *SimpleLogProcessor, timeout_ms: ?u64) ProcessResult {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.is_shutdown) {
+            return .failure;
+        }
+
+        // Flush the exporter
+        const result = self.exporter.forceFlush(timeout_ms);
+        return if (result == .success) .success else .failure;
+    }
+
+    pub fn shutdown(self: *SimpleLogProcessor, timeout_ms: ?u64) ProcessResult {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.is_shutdown) {
             return .success;
         }
 
-        fn shutdown(impl: *anyopaque, timeout_ms: ?u64) ProcessorResult {
-            _ = timeout_ms;
-            const self = @as(*@This(), @ptrCast(@alignCast(impl)));
-            self.is_shutdown = true;
-            return .success;
-        }
+        self.is_shutdown = true;
 
-        fn deinit(impl: *anyopaque) void {
-            _ = impl;
-        }
-    };
+        // Shutdown the exporter
+        const result = self.exporter.shutdown(timeout_ms);
+        return if (result == .success) .success else .failure;
+    }
 
-    var impl = TestImpl{};
-    var custom = createCustomProcessor(
-        &impl,
-        TestImpl.onEmit,
-        TestImpl.forceFlush,
-        TestImpl.shutdown,
-        TestImpl.deinit,
-    );
+    pub fn logProcessor(self: *SimpleLogProcessor) LogProcessor {
+        return LogProcessor{ .simple = self };
+    }
+};
 
-    var processor = LogProcessor{ .custom = &custom };
-    defer processor.deinit();
+/// Interface for bridging to a more complex processor.
+pub const BridgeLogProcessor = struct {
+    processor_ptr: *anyopaque,
+    onEmitFn: *const fn (processor_ptr: *anyopaque, record: LogRecord, ctx: Context, resource: Resource) void,
+    forceFlushFn: *const fn (processor_ptr: *anyopaque, timeout_ms: ?u64) ProcessResult,
+    shutdownFn: *const fn (processor_ptr: *anyopaque, timeout_ms: ?u64) ProcessResult,
+    deinitFn: *const fn (processor_ptr: *anyopaque) void,
 
-    const ctx = Context.empty(testing.allocator);
-    const record = LogRecord{
-        .severity_number = .info,
-        .body = otel_api.AttributeValue{ .string = "test message" },
-    };
+    pub fn init(ptr: anytype) BridgeLogProcessor {
+        const T = @TypeOf(ptr);
+        const ptr_info = @typeInfo(T);
 
-    processor.onEmit(record, ctx);
-    try testing.expectEqual(@as(usize, 1), impl.emit_count);
+        const VTable = struct {
+            pub fn onEmit(pointer: *anyopaque, record: LogRecord, ctx: Context, resource: Resource) void {
+                const self: T = @ptrCast(@alignCast(pointer));
+                return ptr_info.pointer.child.onEmit(self, record, ctx, resource);
+            }
+            pub fn forceFlush(pointer: *anyopaque, timeout_ms: ?u64) ProcessResult {
+                const self: T = @ptrCast(@alignCast(pointer));
+                return ptr_info.pointer.child.forceFlush(self, timeout_ms);
+            }
+            pub fn shutdown(pointer: *anyopaque, timeout_ms: ?u64) ProcessResult {
+                const self: T = @ptrCast(@alignCast(pointer));
+                return ptr_info.pointer.child.shutdown(self, timeout_ms);
+            }
+            pub fn deinit(pointer: *anyopaque) void {
+                const self: T = @ptrCast(@alignCast(pointer));
+                return ptr_info.pointer.child.deinit(self);
+            }
+        };
 
-    const flush_result = processor.forceFlush(5000);
-    try testing.expectEqual(ProcessorResult.success, flush_result);
-    try testing.expect(impl.flushed);
-
-    const shutdown_result = processor.shutdown(5000);
-    try testing.expectEqual(ProcessorResult.success, shutdown_result);
-    try testing.expect(impl.is_shutdown);
-}
+        return .{
+            .processor_ptr = ptr,
+            .onEmitFn = VTable.onEmit,
+            .forceFlushFn = VTable.forceFlush,
+            .shutdownFn = VTable.shutdown,
+            .deinitFn = VTable.deinit,
+        };
+    }
+};

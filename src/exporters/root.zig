@@ -50,29 +50,11 @@ pub const console = @import("console/root.zig");
 // OTLP exporters for OpenTelemetry Protocol
 pub const otlp = @import("otlp/root.zig");
 
-
-
 // Common exporter utilities and types
 pub const ExportResult = @import("common.zig").ExportResult;
 pub const ExportError = @import("common.zig").ExportError;
 pub const ExporterConfig = @import("common.zig").ExporterConfig;
 
-// Re-export convenience functions for creating exporters
-pub const createConsoleLogExporter = console.createLogExporter;
-pub const createConsoleTraceExporter = console.createTraceExporter;
-pub const createConsoleMetricExporter = console.createMetricExporter;
-
-pub const createOtlpLogExporter = otlp.createLogExporter;
-pub const createOtlpTraceExporter = otlp.createTraceExporter;
-pub const createOtlpMetricExporter = otlp.createMetricExporter;
-
-
-
-test "exporters module compilation" {
-    _ = std.testing;
-    _ = console;
-    _ = otlp;
-    _ = ExportResult;
-    _ = ExportError;
-    _ = ExporterConfig;
+test {
+    std.testing.refAllDecls(@This());
 }

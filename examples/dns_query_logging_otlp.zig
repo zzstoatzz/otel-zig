@@ -41,72 +41,102 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // One-line OTLP logging setup - sends to localhost:4318 by default
-    const config = otel_exporters.otlp.OtlpExporterConfig{
+    var otlp_exporter = otel_exporters.otlp.OtlpLogExporter.init(allocator, .{
         .endpoint = "http://localhost:4318",
         .transport = .http_json,
+    });
+    var exporter = otel_sdk.logs.LogExporter{
+        .bridge = otel_sdk.logs.BridgeLogExporter.init(&otlp_exporter),
     };
-    var setup = otel_sdk.setup.otlpLogging(allocator, config) catch |err| {
-        std.log.err("Failed to initialize OTLP logging exporter: {s}", .{@errorName(err)});
-        return err;
-    };
-    defer setup.deinit();
+    errdefer exporter.deinit();
+
+    var provider = try otel_sdk.logs.createSimpleSyncLogging(
+        allocator,
+        "dns_query_logging_otlp",
+        exporter,
+    );
+    defer {
+        provider.deinit();
+        _ = otel_api.provider_registry.setGlobalLoggerProvider(null);
+    }
+    _ = otel_api.provider_registry.setGlobalLoggerProvider(&provider);
 
     // Create execution context
     var ctx = otel_api.Context.empty(allocator);
     defer ctx.deinit();
 
-    // Get application logger from global registry (now backed by OTLP exporter)
-    const app_logger = try otel_api.provider_registry.getGlobalLoggerWithVersion("dns.query.example.otlp", "1.0.0");
+    const scope = try otel_api.InstrumentationScope.initSimple("dns.query.example", "1.0.0");
+    var app_logger = try otel_api.getGlobalLoggerProvider().getLoggerWithScope(scope);
 
     // Log application startup using proper log records
-    const startup_attrs = [_]otel_api.common.KeyValue{
-        otel_api.common.KeyValue.init("app.name", .{ .string = "dns-query-otlp-example" }),
-        otel_api.common.KeyValue.init("app.version", .{ .string = "1.0.0" }),
-        otel_api.common.KeyValue.init("app.language", .{ .string = "zig" }),
-        otel_api.common.KeyValue.init("event.type", .{ .string = "application.startup" }),
-        otel_api.common.KeyValue.init("exporter.type", .{ .string = "otlp" }),
-        otel_api.common.KeyValue.init("exporter.endpoint", .{ .string = "http://localhost:4318" }),
-    };
-    const startup_record = otel_api.logs.LogRecord{
-        .severity_number = .info,
-        .body = .{ .string = "DNS Query OTLP Example application starting" },
-        .timestamp_ns = @as(i64, @intCast(std.time.nanoTimestamp())),
-        .attributes = &startup_attrs,
-    };
-    app_logger.emitLogRecord(ctx, startup_record);
+    const startup_attrs = try otel_api.common.AttributeBuilder.init(allocator)
+        .add("app.name", .{ .string = "dns-query-otlp-example" })
+        .add("app.version", .{ .string = "1.0.0" })
+        .add("app.language", .{ .string = "zig" })
+        .add("event.type", .{ .string = "application.startup" })
+        .add("exporter.type", .{ .string = "otlp" })
+        .add("exporter.endpoint", .{ .string = "http://localhost:4318" })
+        .finish(allocator);
+    defer otel_api.common.AttributeKeyValue.deinitOwnedSlice(allocator, startup_attrs);
+    app_logger.emitLogRecord(
+        ctx,
+        .info, // severity
+        .{ .string = "DNS Query OTLP Example application starting" }, // body
+        startup_attrs, // attributes
+        @as(i64, @intCast(std.time.nanoTimestamp())), // timestamp_ns
+        null, // observed_timestamp_ns
+        null, // event_name
+        null, // severity_text
+        null, // trace_id
+        null, // span_id
+        null, // flags
+    );
 
     // Log OTLP connectivity info
-    const connectivity_attrs = [_]otel_api.common.KeyValue{
-        otel_api.common.KeyValue.init("otlp.endpoint", .{ .string = "http://localhost:4318" }),
-        otel_api.common.KeyValue.init("otlp.protocol", .{ .string = "http/json" }),
-        otel_api.common.KeyValue.init("otlp.path", .{ .string = "/v1/logs" }),
-        otel_api.common.KeyValue.init("check.type", .{ .string = "connectivity_info" }),
-    };
-    const connectivity_record = otel_api.logs.LogRecord{
-        .severity_number = .info,
-        .body = .{ .string = "OTLP exporter configured - ensure collector is running on localhost:4318" },
-        .timestamp_ns = @as(i64, @intCast(std.time.nanoTimestamp())),
-        .attributes = &connectivity_attrs,
-    };
-    app_logger.emitLogRecord(ctx, connectivity_record);
+    const connectivity_attrs = try otel_api.common.AttributeBuilder.init(allocator)
+        .add("otlp.endpoint", .{ .string = "http://localhost:4318" })
+        .add("otlp.protocol", .{ .string = "http/json" })
+        .add("otlp.path", .{ .string = "/v1/logs" })
+        .add("check.type", .{ .string = "connectivity_info" })
+        .finish(allocator);
+    defer otel_api.common.AttributeKeyValue.deinitOwnedSlice(allocator, connectivity_attrs);
+    app_logger.emitLogRecord(
+        ctx,
+        .info, // severity
+        .{ .string = "OTLP exporter configured - ensure collector is running on localhost:4318" }, // body
+        connectivity_attrs, // attributes
+        @as(i64, @intCast(std.time.nanoTimestamp())), // timestamp_ns
+        null, // observed_timestamp_ns
+        null, // event_name
+        null, // severity_text
+        null, // trace_id
+        null, // span_id
+        null, // flags
+    );
 
     // Perform DNS query with comprehensive logging
     try performDnsQuery(ctx, allocator);
 
     // Log application shutdown
-    const shutdown_attrs = [_]otel_api.common.KeyValue{
-        otel_api.common.KeyValue.init("event.type", .{ .string = "application.shutdown" }),
-        otel_api.common.KeyValue.init("app.exit_code", .{ .int = 0 }),
-        otel_api.common.KeyValue.init("exporter.type", .{ .string = "otlp" }),
-    };
-    const shutdown_record = otel_api.logs.LogRecord{
-        .severity_number = .info,
-        .body = .{ .string = "DNS Query OTLP Example application shutting down" },
-        .timestamp_ns = @as(i64, @intCast(std.time.nanoTimestamp())),
-        .attributes = &shutdown_attrs,
-    };
-    app_logger.emitLogRecord(ctx, shutdown_record);
+    const shutdown_attrs = try otel_api.common.AttributeBuilder.init(allocator)
+        .add("event.type", .{ .string = "application.shutdown" })
+        .add("app.exit_code", .{ .int = 0 })
+        .add("exporter.type", .{ .string = "otlp" })
+        .finish(allocator);
+    defer otel_api.common.AttributeKeyValue.deinitOwnedSlice(allocator, shutdown_attrs);
+    app_logger.emitLogRecord(
+        ctx,
+        .info, // severity
+        .{ .string = "DNS Query OTLP Example application shutting down" }, // body
+        shutdown_attrs, // attributes
+        @as(i64, @intCast(std.time.nanoTimestamp())), // timestamp_ns
+        null, // observed_timestamp_ns
+        null, // event_name
+        null, // severity_text
+        null, // trace_id
+        null, // span_id
+        null, // flags
+    );
 
     // Give OTLP exporter time to send final logs
     std.log.info("Waiting for OTLP exporter to flush remaining logs...", .{});
@@ -129,34 +159,49 @@ fn performDnsQuery(ctx: otel_api.Context, allocator: std.mem.Allocator) !void {
     const hostname = "google.com";
 
     // Get DNS operation logger from global registry
-    const dns_logger = try otel_api.provider_registry.getGlobalLogger("dns.resolver.otlp");
+    const scope = try otel_api.InstrumentationScope.initWithName("dns.resolver.otlp");
+    var dns_logger = try otel_api.getGlobalLoggerProvider().getLoggerWithScope(scope);
 
     // Log DNS query initiation
-    const info_record = otel_api.logs.LogRecord{
-        .severity_number = .info,
-        .body = .{ .string = "Initiating DNS query for hostname: google.com via OTLP" },
-        .timestamp_ns = @as(i64, @intCast(std.time.nanoTimestamp())),
-    };
-    dns_logger.emitLogRecord(ctx, info_record);
+    dns_logger.emitLogRecord(
+        ctx,
+        .info, // severity
+        .{ .string = "Initiating DNS query for hostname: google.com via OTLP" }, // body
+        null, // attributes
+        @as(i64, @intCast(std.time.nanoTimestamp())), // timestamp_ns
+        null, // observed_timestamp_ns
+        null, // event_name
+        null, // severity_text
+        null, // trace_id
+        null, // span_id
+        null, // flags
+    );
 
     // Log detailed operation start
-    const dns_start_attrs = [_]otel_api.common.KeyValue{
-        otel_api.common.KeyValue.init("dns.hostname", .{ .string = hostname }),
-        otel_api.common.KeyValue.init("dns.query_type", .{ .string = "A" }),
-        otel_api.common.KeyValue.init("operation.type", .{ .string = "dns_resolution" }),
-        otel_api.common.KeyValue.init("operation.status", .{ .string = "started" }),
-        otel_api.common.KeyValue.init("telemetry.exporter", .{ .string = "otlp" }),
-    };
-    const dns_start_record = otel_api.logs.LogRecord{
-        .severity_number = .debug,
-        .body = .{ .string = "DNS resolution starting" },
-        .timestamp_ns = @as(i64, @intCast(std.time.nanoTimestamp())),
-        .attributes = &dns_start_attrs,
-    };
-    dns_logger.emitLogRecord(ctx, dns_start_record);
+    const start_time = @as(i64, @intCast(std.time.nanoTimestamp()));
+    const dns_start_attrs = try otel_api.common.AttributeBuilder.init(allocator)
+        .add("dns.hostname", .{ .string = hostname })
+        .add("dns.query_type", .{ .string = "A" })
+        .add("operation.type", .{ .string = "dns_resolution" })
+        .add("operation.status", .{ .string = "started" })
+        .add("telemetry.exporter", .{ .string = "otlp" })
+        .finish(allocator);
+    defer otel_api.common.AttributeKeyValue.deinitOwnedSlice(allocator, dns_start_attrs);
+    dns_logger.emitLogRecord(
+        ctx,
+        .debug, // severity
+        .{ .string = "DNS resolution starting" }, // body
+        dns_start_attrs, // attributes
+        start_time, // timestamp_ns
+        null, // observed_timestamp_ns
+        null, // event_name
+        null, // severity_text
+        null, // trace_id
+        null, // span_id
+        null, // flags
+    );
 
     // Perform the actual DNS lookup
-    const start_time = @as(i64, @intCast(std.time.nanoTimestamp()));
 
     const address_list = std.net.getAddressList(allocator, hostname, 80) catch |err| {
         // Log comprehensive DNS query failure information
@@ -182,24 +227,31 @@ fn performDnsQuery(ctx: otel_api.Context, allocator: std.mem.Allocator) !void {
             else => "Unknown DNS resolution error occurred",
         };
 
-        const error_attrs = [_]otel_api.common.KeyValue{
-            otel_api.common.KeyValue.init("dns.hostname", .{ .string = hostname }),
-            otel_api.common.KeyValue.init("error.type", .{ .string = @errorName(err) }),
-            otel_api.common.KeyValue.init("error.category", .{ .string = error_category }),
-            otel_api.common.KeyValue.init("error.message", .{ .string = error_message }),
-            otel_api.common.KeyValue.init("operation.status", .{ .string = "failed" }),
-            otel_api.common.KeyValue.init("dns.duration_ns", .{ .int = duration_ns }),
-            otel_api.common.KeyValue.init("dns.duration_ms", .{ .float = duration_ms }),
-            otel_api.common.KeyValue.init("telemetry.exporter", .{ .string = "otlp" }),
-            otel_api.common.KeyValue.init("diagnostic.suggestion", .{ .string = "Check network connectivity and DNS configuration" }),
-        };
-        const error_record = otel_api.logs.LogRecord{
-            .severity_number = .@"error",
-            .body = .{ .string = error_message },
-            .timestamp_ns = @as(i64, @intCast(std.time.nanoTimestamp())),
-            .attributes = &error_attrs,
-        };
-        dns_logger.emitLogRecord(ctx, error_record);
+        const error_attrs = try otel_api.common.AttributeBuilder.init(allocator)
+            .add("dns.hostname", .{ .string = hostname })
+            .add("error.type", .{ .string = @errorName(err) })
+            .add("error.category", .{ .string = error_category })
+            .add("error.message", .{ .string = error_message })
+            .add("operation.status", .{ .string = "failed" })
+            .add("dns.duration_ns", .{ .int = duration_ns })
+            .add("dns.duration_ms", .{ .float = duration_ms })
+            .add("telemetry.exporter", .{ .string = "otlp" })
+            .add("diagnostic.suggestion", .{ .string = "Check network connectivity and DNS configuration" })
+            .finish(allocator);
+        defer otel_api.common.AttributeKeyValue.deinitOwnedSlice(allocator, error_attrs);
+        dns_logger.emitLogRecord(
+            ctx,
+            .@"error", // severity
+            .{ .string = error_message }, // body
+            error_attrs, // attributes
+            @as(i64, @intCast(std.time.nanoTimestamp())), // timestamp_ns
+            null, // observed_timestamp_ns
+            null, // event_name
+            null, // severity_text
+            null, // trace_id
+            null, // span_id
+            null, // flags
+        );
 
         // Also log to stderr for immediate user feedback
         std.log.err("DNS Resolution Failed:", .{});
@@ -225,55 +277,76 @@ fn performDnsQuery(ctx: otel_api.Context, allocator: std.mem.Allocator) !void {
     const duration_ms = @as(f64, @floatFromInt(duration_ns)) / 1_000_000.0;
 
     // Log successful DNS resolution
-    const success_attrs = [_]otel_api.common.KeyValue{
-        otel_api.common.KeyValue.init("dns.hostname", .{ .string = hostname }),
-        otel_api.common.KeyValue.init("dns.resolved_count", .{ .int = @as(i64, @intCast(address_list.addrs.len)) }),
-        otel_api.common.KeyValue.init("dns.duration_ns", .{ .int = @as(i64, @intCast(duration_ns)) }),
-        otel_api.common.KeyValue.init("dns.duration_ms", .{ .float = duration_ms }),
-        otel_api.common.KeyValue.init("operation.status", .{ .string = "completed" }),
-        otel_api.common.KeyValue.init("telemetry.exporter", .{ .string = "otlp" }),
-    };
-    const success_record = otel_api.logs.LogRecord{
-        .severity_number = .info,
-        .body = .{ .string = "DNS query completed successfully" },
-        .timestamp_ns = end_time,
-        .attributes = &success_attrs,
-    };
-    dns_logger.emitLogRecord(ctx, success_record);
+    const success_attrs = try otel_api.common.AttributeBuilder.init(allocator)
+        .add("dns.hostname", .{ .string = hostname })
+        .add("dns.resolved_count", .{ .int = @as(i64, @intCast(address_list.addrs.len)) })
+        .add("dns.duration_ns", .{ .int = @as(i64, @intCast(duration_ns)) })
+        .add("dns.duration_ms", .{ .float = duration_ms })
+        .add("operation.status", .{ .string = "completed" })
+        .add("telemetry.exporter", .{ .string = "otlp" })
+        .finish(allocator);
+    defer otel_api.common.AttributeKeyValue.deinitOwnedSlice(allocator, success_attrs);
+    dns_logger.emitLogRecord(
+        ctx,
+        .info, // severity
+        .{ .string = "DNS query completed successfully" }, // body
+        success_attrs, // attributes
+        end_time, // timestamp_ns
+        null, // observed_timestamp_ns
+        null, // event_name
+        null, // severity_text
+        null, // trace_id
+        null, // span_id
+        null, // flags
+    );
 
     // Log each resolved IP address
     for (address_list.addrs, 0..) |addr, i| {
         const ip_str = try std.fmt.allocPrint(allocator, "{}", .{addr.in});
         defer allocator.free(ip_str);
 
-        const ip_attrs = [_]otel_api.common.KeyValue{
-            otel_api.common.KeyValue.init("dns.hostname", .{ .string = hostname }),
-            otel_api.common.KeyValue.init("dns.resolved_ip", .{ .string = ip_str }),
-            otel_api.common.KeyValue.init("dns.resolution_index", .{ .int = @as(i64, @intCast(i)) }),
-            otel_api.common.KeyValue.init("dns.address_family", .{ .string = "ipv4" }),
-            otel_api.common.KeyValue.init("telemetry.exporter", .{ .string = "otlp" }),
-        };
-        const ip_record = otel_api.logs.LogRecord{
-            .severity_number = .debug,
-            .body = .{ .string = "Resolved IP address" },
-            .timestamp_ns = @as(i64, @intCast(std.time.nanoTimestamp())),
-            .attributes = &ip_attrs,
-        };
-        dns_logger.emitLogRecord(ctx, ip_record);
+        const ip_attrs = try otel_api.common.AttributeBuilder.init(allocator)
+            .add("dns.hostname", .{ .string = hostname })
+            .add("dns.resolved_ip", .{ .string = ip_str })
+            .add("dns.resolution_index", .{ .int = @as(i64, @intCast(i)) })
+            .add("dns.address_family", .{ .string = "ipv4" })
+            .add("telemetry.exporter", .{ .string = "otlp" })
+            .finish(allocator);
+        defer otel_api.common.AttributeKeyValue.deinitOwnedSlice(allocator, ip_attrs);
+        dns_logger.emitLogRecord(
+            ctx,
+            .debug, // severity
+            .{ .string = "Resolved IP address" }, // body
+            ip_attrs, // attributes
+            @as(i64, @intCast(std.time.nanoTimestamp())), // timestamp_ns
+            null, // observed_timestamp_ns
+            null, // event_name
+            null, // severity_text
+            null, // trace_id
+            null, // span_id
+            null, // flags
+        );
     }
 
     // Log summary statistics
-    const summary_attrs = [_]otel_api.common.KeyValue{
-        otel_api.common.KeyValue.init("dns.hostname", .{ .string = hostname }),
-        otel_api.common.KeyValue.init("dns.resolved_count", .{ .int = @as(i64, @intCast(address_list.addrs.len)) }),
-        otel_api.common.KeyValue.init("dns.duration_ms", .{ .float = duration_ms }),
-        otel_api.common.KeyValue.init("telemetry.exporter", .{ .string = "otlp" }),
-    };
-    const summary_record = otel_api.logs.LogRecord{
-        .severity_number = .info,
-        .body = .{ .string = "DNS resolution summary: google.com resolved to multiple addresses" },
-        .timestamp_ns = @as(i64, @intCast(std.time.nanoTimestamp())),
-        .attributes = &summary_attrs,
-    };
-    dns_logger.emitLogRecord(ctx, summary_record);
+    const summary_attrs = try otel_api.common.AttributeBuilder.init(allocator)
+        .add("dns.hostname", .{ .string = hostname })
+        .add("dns.resolved_count", .{ .int = @as(i64, @intCast(address_list.addrs.len)) })
+        .add("dns.duration_ms", .{ .float = duration_ms })
+        .add("telemetry.exporter", .{ .string = "otlp" })
+        .finish(allocator);
+    defer otel_api.common.AttributeKeyValue.deinitOwnedSlice(allocator, summary_attrs);
+    dns_logger.emitLogRecord(
+        ctx,
+        .info, // severity
+        .{ .string = "DNS resolution summary: google.com resolved to multiple addresses" }, // body
+        summary_attrs, // attributes
+        @as(i64, @intCast(std.time.nanoTimestamp())), // timestamp_ns
+        null, // observed_timestamp_ns
+        null, // event_name
+        null, // severity_text
+        null, // trace_id
+        null, // span_id
+        null, // flags
+    );
 }

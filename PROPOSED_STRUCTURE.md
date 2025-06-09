@@ -1,29 +1,5 @@
 # Proposed OpenTelemetry Zig Module Structure
 
-## Current Structure
-
-```
-otel/
-├── src/
-│   ├── root.zig                  # Main entry point
-│   ├── logs.zig                  # Logs API + SDK mixed together
-│   ├── logs/
-│   │   ├── severity.zig
-│   │   ├── log_record.zig
-│   │   ├── logger.zig            # Contains both API interface and SDK implementations
-│   │   ├── logger_provider.zig   # Contains both API interface and SDK implementations
-│   │   └── provider_registry.zig # Global state management
-│   ├── trace.zig
-│   ├── metrics.zig
-│   ├── baggage.zig
-│   ├── context.zig
-│   ├── resource.zig
-│   ├── common.zig
-│   └── semconv.zig
-├── examples/
-└── build.zig
-```
-
 ## Proposed Structure with API/SDK Separation
 
 ```
@@ -62,7 +38,7 @@ otel/
 │   │   │   └── propagation.zig      # Propagation interfaces
 │   │   ├── common/
 │   │   │   ├── root.zig
-│   │   │   ├── attributes.zig       # AttributeValue, KeyValue
+│   │   │   ├── attributes.zig       # AttributeValue, AttributeKeyValue
 │   │   │   ├── instrumentation_scope.zig
 │   │   │   └── resource.zig         # Resource interface
 │   │   └── provider_registry.zig    # Global provider management
@@ -159,111 +135,3 @@ otel/
 │(uses SDK)   │
 └─────────────┘
 ```
-
-## Benefits of This Structure
-
-### 1. **Clear Separation of Concerns**
-- **API**: Stable interfaces applications depend on
-- **SDK**: Concrete implementations that can evolve
-- **Exporters**: Pluggable backends for different systems
-- **SemConv**: Reusable conventions independent of implementation
-
-### 2. **Flexible Dependency Management**
-```zig
-// Minimal app - only uses API with noop implementations
-const otel_api = @import("otel-api");
-
-// Full observability app
-const otel = @import("otel"); // Re-exports everything
-
-// Custom implementation
-const otel_api = @import("otel-api");
-const otel_sdk = @import("otel-sdk");
-// Implement your own exporters
-```
-
-### 3. **Testing Benefits**
-- Test API contracts independently
-- Test SDK implementations against API interfaces
-- Test exporters in isolation
-- Easy mocking with noop implementations
-
-### 4. **Performance Benefits**
-- Applications can choose minimal dependencies
-- Dead code elimination works better with separate modules
-- Compile times improve with targeted dependencies
-
-### 5. **Distribution Flexibility**
-- Ship API-only packages for libraries
-- Ship full SDK for applications
-- Third-party exporters can depend only on SDK
-
-## Usage Examples
-
-### Library Author (API Only)
-```zig
-// In your library's build.zig
-const otel_api = b.dependency("otel", .{}).module("otel-api");
-lib.root_module.addImport("otel", otel_api);
-
-// In your library code
-const otel = @import("otel");
-const logger = otel.logs.getGlobalLogger("my.library");
-logger.info(ctx, "Library operation completed");
-```
-
-### Application Developer (Full SDK)
-```zig
-// In your app's build.zig  
-const otel = b.dependency("otel", .{}).module("otel");
-exe.root_module.addImport("otel", otel);
-
-// In your app code
-const otel = @import("otel");
-
-// Set up real logging with console exporter
-var provider = otel.sdk.logs.createProvider(allocator, .{
-    .processor = otel.sdk.logs.createSimpleProcessor(.{}),
-    .exporter = otel.exporters.console.createLogExporter(.{}),
-});
-otel.logs.setGlobalLoggerProvider(provider);
-```
-
-### Custom Exporter Developer
-```zig
-// In build.zig
-const otel_api = b.dependency("otel", .{}).module("otel-api");
-const otel_sdk = b.dependency("otel", .{}).module("otel-sdk");
-lib.root_module.addImport("otel-api", otel_api);
-lib.root_module.addImport("otel-sdk", otel_sdk);
-
-// In exporter code
-const otel_api = @import("otel-api");
-const otel_sdk = @import("otel-sdk");
-
-pub const MyCustomExporter = struct {
-    // Implements otel_sdk.logs.LogExporter interface
-    // Can use otel_api types for interop
-};
-```
-
-## Migration Path
-
-1. **Phase 1**: Reorganize existing code into new directory structure
-2. **Phase 2**: Update build.zig to create separate modules  
-3. **Phase 3**: Update examples and documentation
-4. **Phase 4**: Add new exporters in separate module
-5. **Phase 5**: Optimize dependencies and remove circular imports
-
-## Logging-Specific Benefits
-
-For logging specifically, this separation enables:
-
-- **Libraries** can log using just the API (lightweight)
-- **Applications** choose their logging backend (console, OTLP, files, etc.)
-- **Custom log processors** can be developed independently
-- **Log filtering and sampling** can be implemented in the SDK layer
-- **Multiple exporters** can be composed together
-- **Configuration** is centralized in the SDK layer
-
-This matches the OpenTelemetry specification's intent: stable APIs for instrumentation, flexible SDKs for implementation.

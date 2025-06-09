@@ -1,3 +1,9 @@
-- There are multiple KeyValue type (Attributes's KeyValue, Context's KeyValuePair, Baggage's BaggageEntry). Make the interfaces on these more consistent.
+- There are multiple KeyValue type (AttributeKeyValue, Context's KeyValuePair, Baggage's BaggageKeyValue). Make the interfaces on these more consistent. For example, AttributeBuilder has a build and finish, baggage just has finish, and context uses entirely different interfaces.
 - There should be some builders for the more complex configuration cases. This is in regard to setting up the providers, but it also applies to anything that would make sense to have builders.
-- Should the global logger provider stuff in the API be more of an API and pointer, with more of the logic moved to the SDK? It feels like there is too much logic in the global providers at this point.
+- The logging function should copy the provided attributes, rather than expecting them to last longer than the log processing pipeline.
+- Everything in the simple setup for logging is declared on the heap. That allows the function to return, but it allows the memory to leak. We should clean that up.
+- the current "standard" providers should be reduced to "minimal" in their naming. And they should be standardized to a bit. Make them really easy to test with, ad good for unit testing.
+- the linkage between the meters and the processor is not my favorite right now. I knida like the idea of how the C++ version does it better, but I'm not ready to implement anything that complicated yet.
+- Now that the examples are all working again (and with less hacks), it is time to review the implementation and add unit tests back in. There is still some left over bits where the API and the SDK division aren't clear.
+- Need to redo all of the tesing in the library parts. I removed a lot of it while I was refacting the code base, but it's time to add some of it back.
+- Also need to add some more documentation back in to the files, and delete some of the old documentation.

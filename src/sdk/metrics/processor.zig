@@ -10,103 +10,67 @@ const std = @import("std");
 const otel_api = @import("otel-api");
 
 const Context = otel_api.Context;
-const KeyValue = otel_api.KeyValue;
+const AttributeKeyValue = otel_api.AttributeKeyValue;
 const InstrumentationScope = otel_api.InstrumentationScope;
-const Resource = @import("../resource/resource.zig").Resource;
-const ExportResult = @import("../logs/exporter.zig").ExportResult;
 
-/// Metric data point representing a single measurement
-pub const MetricDataPoint = struct {
-    /// Timestamp when the measurement was recorded
-    timestamp_ns: u64,
-    /// Start timestamp for monotonic counters (null for gauges)
-    start_timestamp_ns: ?u64,
-    /// Attributes associated with this data point
-    attributes: []const KeyValue,
-    /// The actual value
-    value: MetricValue,
-};
-
-/// Possible metric values
-pub const MetricValue = union(enum) {
-    i64_sum: i64,
-    f64_sum: f64,
-    i64_gauge: i64,
-    f64_gauge: f64,
-    // Histogram support can be added later
-};
-
-/// Aggregated metric data
-pub const MetricData = struct {
-    /// Instrument name
-    name: []const u8,
-    /// Instrument description
-    description: ?[]const u8,
-    /// Unit of measurement
-    unit: ?[]const u8,
-    /// Type of metric
-    type: MetricType,
-    /// Aggregated data points
-    data_points: []const MetricDataPoint,
-    /// Instrumentation scope that created this metric
-    scope: InstrumentationScope,
-    /// Resource associated with this metric
-    resource: *const Resource,
-};
-
-pub const MetricType = enum {
-    sum,
-    gauge,
-    histogram,
-};
-
-/// Metric exporter interface
-pub const MetricExporter = struct {
-    ptr: *anyopaque,
-    vtable: *const VTable,
-
-    pub const VTable = struct {
-        exportFn: *const fn (ptr: *anyopaque, metrics: []const MetricData) ExportResult,
-        forceFlush: *const fn (ptr: *anyopaque, timeout_ms: ?u64) ExportResult,
-        shutdown: *const fn (ptr: *anyopaque, timeout_ms: ?u64) ExportResult,
-    };
-
-    pub fn exportMetrics(self: MetricExporter, metrics: []const MetricData) ExportResult {
-        return self.vtable.exportFn(self.ptr, metrics);
-    }
-
-    pub fn forceFlush(self: MetricExporter, timeout_ms: ?u64) ExportResult {
-        return self.vtable.forceFlush(self.ptr, timeout_ms);
-    }
-
-    pub fn shutdown(self: MetricExporter, timeout_ms: ?u64) ExportResult {
-        return self.vtable.shutdown(self.ptr, timeout_ms);
-    }
-};
+const MetricDataPoint = @import("data.zig").MetricDataPoint;
+const MetricData = @import("data.zig").MetricData;
+const ProcessResult = @import("otel-api").common.ProcessResult;
+const MetricExporter = @import("exporter.zig").MetricExporter;
+const StandardMeter = @import("meter.zig").StandardMeter;
 
 /// Metric processor interface
 pub const MetricProcessor = union(enum) {
-    simple: SimpleMetricProcessor,
-    periodic: PeriodicMetricProcessor,
+    noop: void,
+    simple: *SimpleMetricProcessor,
+    bridge: BridgeMetricProcessor,
 
-    pub fn collect(self: *MetricProcessor) !void {
+    pub fn collect(self: *MetricProcessor) void {
         switch (self.*) {
-            .simple => |*processor| try processor.collect(),
-            .periodic => |*processor| try processor.collect(),
+            .noop => {},
+            .simple => |processor| processor.collect(),
+            .bridge => |processor| processor.collectFn(processor.processor_ptr),
         }
     }
 
-    pub fn forceFlush(self: *MetricProcessor, timeout_ms: ?u64) ExportResult {
+    pub fn registerMeter(self: *MetricProcessor, meter: *StandardMeter) void {
+        switch (self.*) {
+            .noop => {},
+            .simple => |processor| processor.registerMeter(meter),
+            .bridge => |processor| processor.registerMeterFn(processor.processor_ptr, meter),
+        }
+    }
+
+    pub fn unregisterMeter(self: *MetricProcessor, meter: *StandardMeter) void {
+        switch (self.*) {
+            .noop => {},
+            .simple => |processor| processor.unregisterMeter(meter),
+            .bridge => |processor| processor.unregisterMeterFn(processor.processor_ptr, meter),
+        }
+    }
+
+    pub fn forceFlush(self: *MetricProcessor, timeout_ms: ?u64) ProcessResult {
         return switch (self.*) {
-            .simple => |*processor| processor.forceFlush(timeout_ms),
-            .periodic => |*processor| processor.forceFlush(timeout_ms),
+            .noop => .success,
+            .simple => |processor| processor.forceFlush(timeout_ms),
+            .bridge => |processor| processor.forceFlushFn(processor.processor_ptr, timeout_ms),
         };
     }
 
-    pub fn shutdown(self: *MetricProcessor) void {
+    pub fn shutdown(self: *MetricProcessor, timeout_ms: ?u64) void {
+        return switch (self.*) {
+            .noop => .success,
+            .simple => |processor| processor.shutdown(timeout_ms),
+            .bridge => |processor| processor.shutdownFn(processor.processor_ptr, timeout_ms),
+        };
+    }
+
+    /// Clean up processor resources
+    pub fn deinit(self: *MetricProcessor) void {
         switch (self.*) {
-            .simple => |*processor| processor.shutdown(),
-            .periodic => |*processor| processor.shutdown(),
+            .noop => {},
+            .simple => |processor| processor.deinit(),
+            .bridge => |processor| processor.deinitFn(processor.processor_ptr),
         }
     }
 };
@@ -117,275 +81,164 @@ pub const SimpleMetricProcessor = struct {
     exporter: MetricExporter,
     mutex: std.Thread.Mutex,
     is_shutdown: bool,
+    registered_meters: std.ArrayListUnmanaged(*StandardMeter),
 
-    pub fn init(allocator: std.mem.Allocator, exporter: MetricExporter) SimpleMetricProcessor {
-        return .{
+    pub fn init(allocator: std.mem.Allocator, exporter: MetricExporter) !*SimpleMetricProcessor {
+        const self = try allocator.create(SimpleMetricProcessor);
+        self.* = .{
             .allocator = allocator,
             .exporter = exporter,
             .mutex = .{},
             .is_shutdown = false,
+            .registered_meters = .{},
         };
+        return self;
     }
 
     pub fn deinit(self: *SimpleMetricProcessor) void {
-        _ = self;
+        self.registered_meters.deinit(self.allocator);
+        self.exporter.deinit();
+        self.allocator.destroy(self);
     }
 
-    pub fn collect(self: *SimpleMetricProcessor) !void {
+    pub fn collect(self: *SimpleMetricProcessor) void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
         if (self.is_shutdown) return;
 
-        // In a real implementation, this would:
-        // 1. Iterate through all registered meter providers
-        // 2. Collect metrics from all instruments
-        // 3. Export them immediately
-        // For MVP, we'll just note this is where collection happens
+        // Initialize collection data structure
+        var collected_metrics = std.ArrayList(MetricData).init(self.allocator);
+        // Note: Not deferring deinit - exporter owns the memory now
+
+        // Iterate through registered meters
+        for (self.registered_meters.items) |meter| {
+            // Collect from each meter, continue on errors
+            const meter_metrics = meter.collectMetrics(self.allocator) catch {
+                // Log error if needed, but continue with next meter
+                continue;
+            };
+
+            // Append to main collection, continue on errors
+            collected_metrics.appendSlice(meter_metrics) catch {
+                // Could log allocation failure, but continue
+                continue;
+            };
+        }
+
+        // Export all collected metrics
+        _ = self.exporter.exportMetrics(collected_metrics);
+        // Exporter is responsible for freeing the ArrayList
     }
 
-    pub fn forceFlush(self: *SimpleMetricProcessor, timeout_ms: ?u64) ExportResult {
+    pub fn forceFlush(self: *SimpleMetricProcessor, timeout_ms: ?u64) ProcessResult {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        if (self.is_shutdown) return .failure;
+        if (self.is_shutdown) {
+            return .failure;
+        }
 
-        return self.exporter.forceFlush(timeout_ms);
+        // Flush the exporter
+        const result = self.exporter.forceFlush(timeout_ms);
+        return if (result == .success) .success else .failure;
     }
 
-    pub fn shutdown(self: *SimpleMetricProcessor) void {
+    pub fn shutdown(self: *SimpleMetricProcessor, timeout_ms: ?u64) void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        if (self.is_shutdown) return;
+        if (self.is_shutdown) {
+            return .success;
+        }
 
         self.is_shutdown = true;
-        _ = self.exporter.shutdown(null);
+
+        // Shutdown the exporter
+        const result = self.exporter.shutdown(timeout_ms);
+        return if (result == .success) .success else .failure;
     }
-};
 
-/// Periodic processor that exports metrics on a timer
-pub const PeriodicMetricProcessor = struct {
-    allocator: std.mem.Allocator,
-    exporter: MetricExporter,
-    export_interval_ms: u64,
-    export_timeout_ms: u64,
-    mutex: std.Thread.Mutex,
-    is_shutdown: bool,
-    export_thread: ?std.Thread,
-    shutdown_event: std.Thread.ResetEvent,
+    pub fn registerMeter(self: *SimpleMetricProcessor, meter: *StandardMeter) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
 
-    pub fn init(
-        allocator: std.mem.Allocator,
-        exporter: MetricExporter,
-        export_interval_ms: u64,
-        export_timeout_ms: u64,
-    ) PeriodicMetricProcessor {
-        return .{
-            .allocator = allocator,
-            .exporter = exporter,
-            .export_interval_ms = export_interval_ms,
-            .export_timeout_ms = export_timeout_ms,
-            .mutex = .{},
-            .is_shutdown = false,
-            .export_thread = null,
-            .shutdown_event = .{},
+        if (self.is_shutdown) return;
+
+        self.registered_meters.append(self.allocator, meter) catch {
+            // Handle allocation failure silently for now
+            return;
         };
     }
 
-    pub fn start(self: *PeriodicMetricProcessor) !void {
+    pub fn unregisterMeter(self: *SimpleMetricProcessor, meter: *StandardMeter) void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        if (self.is_shutdown or self.export_thread != null) return;
-
-        self.export_thread = try std.Thread.spawn(.{}, exportLoop, .{self});
-    }
-
-    pub fn deinit(self: *PeriodicMetricProcessor) void {
-        self.shutdown();
-    }
-
-    fn exportLoop(self: *PeriodicMetricProcessor) void {
-        while (true) {
-            // Wait for interval or shutdown signal
-            self.shutdown_event.timedWait(self.export_interval_ms * std.time.ns_per_ms) catch {};
-
-            self.mutex.lock();
-            const should_exit = self.is_shutdown;
-            self.mutex.unlock();
-
-            if (should_exit) break;
-
-            // Collect and export metrics
-            self.collect() catch |err| {
-                std.log.err("Failed to collect metrics: {}", .{err});
-            };
-        }
-    }
-
-    pub fn collect(self: *PeriodicMetricProcessor) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        try self.collectUnlocked();
-    }
-
-    fn collectUnlocked(self: *PeriodicMetricProcessor) !void {
         if (self.is_shutdown) return;
 
-        // In a real implementation, this would:
-        // 1. Iterate through all registered meter providers
-        // 2. Collect metrics from all instruments
-        // 3. Export them via the exporter
-        // For MVP, we'll just note this is where collection happens
-    }
-
-    pub fn forceFlush(self: *PeriodicMetricProcessor, timeout_ms: ?u64) ExportResult {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        if (self.is_shutdown) return .failure;
-
-        // Force a collection and export
-        self.collectUnlocked() catch return .failure;
-        return self.exporter.forceFlush(timeout_ms);
-    }
-
-    pub fn shutdown(self: *PeriodicMetricProcessor) void {
-        self.mutex.lock();
-        const thread = self.export_thread;
-        self.is_shutdown = true;
-        self.shutdown_event.set();
-        self.mutex.unlock();
-
-        if (thread) |t| {
-            t.join();
+        for (self.registered_meters.items, 0..) |registered_meter, i| {
+            if (registered_meter == meter) {
+                _ = self.registered_meters.swapRemove(i);
+                break;
+            }
         }
+    }
 
-        _ = self.exporter.shutdown(null);
+    pub fn metricProcessor(self: *SimpleMetricProcessor) MetricProcessor {
+        return MetricProcessor{ .simple = self };
     }
 };
 
-/// Create a simple metric processor
-pub fn createSimpleProcessor(allocator: std.mem.Allocator, exporter: MetricExporter) MetricProcessor {
-    return .{ .simple = SimpleMetricProcessor.init(allocator, exporter) };
-}
+/// Interface for bridging to a more complex processor.
+pub const BridgeMetricProcessor = struct {
+    processor_ptr: *anyopaque,
+    collectFn: *const fn (processor_ptr: *anyopaque) void,
+    forceFlushFn: *const fn (processor_ptr: *anyopaque, timeout_ms: ?u64) ProcessResult,
+    shutdownFn: *const fn (processor_ptr: *anyopaque, timeout_ms: ?u64) ProcessResult,
+    deinitFn: *const fn (processor_ptr: *anyopaque) void,
+    registerMeterFn: *const fn (processor_ptr: *anyopaque, meter: *StandardMeter) void,
+    unregisterMeterFn: *const fn (processor_ptr: *anyopaque, meter: *StandardMeter) void,
 
-/// Create a periodic metric processor
-pub fn createPeriodicProcessor(
-    allocator: std.mem.Allocator,
-    exporter: MetricExporter,
-    export_interval_ms: u64,
-    export_timeout_ms: u64,
-) MetricProcessor {
-    return .{ .periodic = PeriodicMetricProcessor.init(
-        allocator,
-        exporter,
-        export_interval_ms,
-        export_timeout_ms,
-    ) };
-}
+    pub fn init(ptr: anytype) BridgeMetricProcessor {
+        const T = @TypeOf(ptr);
+        const ptr_info = @typeInfo(T);
 
-// Tests
+        const VTable = struct {
+            pub fn collect(pointer: *anyopaque) void {
+                const self: T = @ptrCast(@alignCast(pointer));
+                return ptr_info.pointer.child.collect(self);
+            }
+            pub fn forceFlush(pointer: *anyopaque, timeout_ms: ?u64) ProcessResult {
+                const self: T = @ptrCast(@alignCast(pointer));
+                return ptr_info.pointer.child.forceFlush(self, timeout_ms);
+            }
+            pub fn shutdown(pointer: *anyopaque, timeout_ms: ?u64) ProcessResult {
+                const self: T = @ptrCast(@alignCast(pointer));
+                return ptr_info.pointer.child.shutdown(self, timeout_ms);
+            }
+            pub fn deinit(pointer: *anyopaque) void {
+                const self: T = @ptrCast(@alignCast(pointer));
+                return ptr_info.pointer.child.deinit(self);
+            }
+            pub fn registerMeter(pointer: *anyopaque, meter: *StandardMeter) void {
+                const self: T = @ptrCast(@alignCast(pointer));
+                return ptr_info.pointer.child.registerMeter(self, meter);
+            }
+            pub fn unregisterMeter(pointer: *anyopaque, meter: *StandardMeter) void {
+                const self: T = @ptrCast(@alignCast(pointer));
+                return ptr_info.pointer.child.unregisterMeter(self, meter);
+            }
+        };
 
-test "SimpleMetricProcessor operations" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
-
-    // Create a mock exporter
-    const MockExporter = struct {
-        export_called: bool = false,
-        flush_called: bool = false,
-        shutdown_called: bool = false,
-
-        fn exportFn(ptr: *anyopaque, metrics: []const MetricData) ExportResult {
-            const self = @as(*@This(), @ptrCast(@alignCast(ptr)));
-            _ = metrics;
-            self.export_called = true;
-            return .success;
-        }
-
-        fn forceFlush(ptr: *anyopaque, timeout_ms: ?u64) ExportResult {
-            const self = @as(*@This(), @ptrCast(@alignCast(ptr)));
-            _ = timeout_ms;
-            self.flush_called = true;
-            return .success;
-        }
-
-        fn shutdown(ptr: *anyopaque, timeout_ms: ?u64) ExportResult {
-            const self = @as(*@This(), @ptrCast(@alignCast(ptr)));
-            _ = timeout_ms;
-            self.shutdown_called = true;
-            return .success;
-        }
-    };
-
-    var mock = MockExporter{};
-    const exporter = MetricExporter{
-        .ptr = &mock,
-        .vtable = &.{
-            .exportFn = MockExporter.exportFn,
-            .forceFlush = MockExporter.forceFlush,
-            .shutdown = MockExporter.shutdown,
-        },
-    };
-
-    var processor = createSimpleProcessor(allocator, exporter);
-    defer processor.shutdown();
-
-    // Test operations
-    try processor.collect();
-    
-    const flush_result = processor.forceFlush(5000);
-    try testing.expectEqual(ExportResult.success, flush_result);
-    try testing.expect(mock.flush_called);
-}
-
-test "PeriodicMetricProcessor lifecycle" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
-
-    // Create a mock exporter
-    const MockExporter = struct {
-        fn exportFn(ptr: *anyopaque, metrics: []const MetricData) ExportResult {
-            _ = ptr;
-            _ = metrics;
-            return .success;
-        }
-
-        fn forceFlush(ptr: *anyopaque, timeout_ms: ?u64) ExportResult {
-            _ = ptr;
-            _ = timeout_ms;
-            return .success;
-        }
-
-        fn shutdown(ptr: *anyopaque, timeout_ms: ?u64) ExportResult {
-            _ = ptr;
-            _ = timeout_ms;
-            return .success;
-        }
-    };
-
-    var mock = struct{}{};
-    const exporter = MetricExporter{
-        .ptr = &mock,
-        .vtable = &.{
-            .exportFn = MockExporter.exportFn,
-            .forceFlush = MockExporter.forceFlush,
-            .shutdown = MockExporter.shutdown,
-        },
-    };
-
-    var processor = createPeriodicProcessor(allocator, exporter, 60000, 5000);
-    defer processor.shutdown();
-
-    // Start the processor
-    if (processor == .periodic) {
-        try processor.periodic.start();
+        return .{
+            .processor_ptr = ptr,
+            .collectFn = VTable.collect,
+            .forceFlushFn = VTable.forceFlush,
+            .shutdownFn = VTable.shutdown,
+            .deinitFn = VTable.deinit,
+            .registerMeterFn = VTable.registerMeter,
+            .unregisterMeterFn = VTable.unregisterMeter,
+        };
     }
-
-    // Test force flush
-    const flush_result = processor.forceFlush(5000);
-    try testing.expectEqual(ExportResult.success, flush_result);
-}
+};

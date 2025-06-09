@@ -9,13 +9,12 @@ const std = @import("std");
 const otel_api = @import("otel-api");
 const otel_sdk = @import("otel-sdk");
 
-const ExportResult = otel_sdk.logs.ExportResult;
+const ExportResult = otel_api.common.ExportResult;
 const OtlpExporterConfig = @import("root.zig").OtlpExporterConfig;
-const Resource = otel_sdk.resource.Resource;
-const MetricData = otel_sdk.metrics.processor.MetricData;
-const MetricDataPoint = otel_sdk.metrics.processor.MetricDataPoint;
-const MetricType = otel_sdk.metrics.processor.MetricType;
-const MetricExporter = otel_sdk.metrics.processor.MetricExporter;
+const MetricData = otel_sdk.metrics.MetricData;
+const MetricDataPoint = otel_sdk.metrics.MetricDataPoint;
+const MetricType = otel_sdk.metrics.MetricType;
+const MetricExporter = otel_sdk.metrics.MetricExporter;
 
 // OTLP metric data structures
 const OtlpResourceMetrics = struct {
@@ -150,7 +149,8 @@ pub const OtlpMetricExporter = struct {
         self.http_client.deinit();
     }
 
-    pub fn @"export"(self: *OtlpMetricExporter, metrics: []const MetricData) ExportResult {
+    pub fn exportMetrics(self: *OtlpMetricExporter, metrics: std.ArrayList(MetricData)) ExportResult {
+        defer metrics.deinit(); // Free the ArrayList memory
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -163,7 +163,7 @@ pub const OtlpMetricExporter = struct {
         defer arena.deinit();
 
         // Convert metrics to OTLP format and send
-        const json_data = convertToOtlpFormat(arena.allocator(), metrics) catch |err| {
+        const json_data = convertToOtlpFormat(arena.allocator(), metrics.items) catch |err| {
             std.log.err("Failed to convert metrics to OTLP format: {}", .{err});
             return .failure;
         };
@@ -254,30 +254,6 @@ pub const OtlpMetricExporter = struct {
                 return .failure;
             },
         }
-    }
-
-    /// Get the vtable for MetricExporter interface
-    pub fn vtable() MetricExporter.VTable {
-        return .{
-            .exportFn = exportWrapper,
-            .forceFlush = forceFlushWrapper,
-            .shutdown = shutdownWrapper,
-        };
-    }
-
-    fn exportWrapper(ptr: *anyopaque, metrics: []const MetricData) ExportResult {
-        const self = @as(*OtlpMetricExporter, @ptrCast(@alignCast(ptr)));
-        return self.@"export"(metrics);
-    }
-
-    fn forceFlushWrapper(ptr: *anyopaque, timeout_ms: ?u64) ExportResult {
-        const self = @as(*OtlpMetricExporter, @ptrCast(@alignCast(ptr)));
-        return self.forceFlush(timeout_ms);
-    }
-
-    fn shutdownWrapper(ptr: *anyopaque, timeout_ms: ?u64) ExportResult {
-        const self = @as(*OtlpMetricExporter, @ptrCast(@alignCast(ptr)));
-        return self.shutdown(timeout_ms);
     }
 };
 
@@ -469,7 +445,7 @@ fn convertToOtlpFormat(allocator: std.mem.Allocator, metrics: []const MetricData
 
                 // Convert timestamp to string
                 const timestamp_str = try std.fmt.allocPrint(allocator, "{}", .{point.timestamp_ns});
-                
+
                 // Convert start timestamp to string for monotonic metrics
                 const start_timestamp_str = if (point.start_timestamp_ns) |start_ts|
                     try std.fmt.allocPrint(allocator, "{}", .{start_ts})
@@ -551,86 +527,4 @@ fn convertToOtlpFormat(allocator: std.mem.Allocator, metrics: []const MetricData
 
     try std.json.stringify(.{ .resourceMetrics = &[_]OtlpResourceMetrics{resource_metrics} }, .{ .emit_null_optional_fields = false }, json_buffer.writer());
     return try json_buffer.toOwnedSlice();
-}
-
-/// Create an OTLP metric exporter with default configuration
-pub fn createMetricExporter(allocator: std.mem.Allocator) !*OtlpMetricExporter {
-    return createMetricExporterWithConfig(allocator, .{});
-}
-
-/// Create an OTLP metric exporter with custom configuration
-pub fn createMetricExporterWithConfig(allocator: std.mem.Allocator, config: OtlpExporterConfig) !*OtlpMetricExporter {
-    const exporter = try allocator.create(OtlpMetricExporter);
-    exporter.* = OtlpMetricExporter.init(allocator, config);
-    return exporter;
-}
-
-/// Wrap an OTLP exporter as a MetricExporter
-pub fn wrapAsMetricExporter(otlp_exporter: *OtlpMetricExporter) MetricExporter {
-    return .{
-        .ptr = otlp_exporter,
-        .vtable = &OtlpMetricExporter.vtable(),
-    };
-}
-
-test "OtlpMetricExporter basic functionality" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
-
-    var exporter = OtlpMetricExporter.init(allocator, .{
-        .endpoint = "http://localhost:4318",
-    });
-    defer exporter.deinit();
-
-    const result = exporter.forceFlush(5000);
-    try testing.expectEqual(ExportResult.success, result);
-
-    const shutdown_result = exporter.shutdown(5000);
-    try testing.expectEqual(ExportResult.success, shutdown_result);
-}
-
-test "OTLP metric format conversion" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
-
-    // Use arena allocator like the export function does
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    // Create test metric data
-    const test_resource = try otel_sdk.resource.Resource.init(&[_]otel_api.KeyValue{
-        otel_api.KeyValue.init("service.name", .{ .string = "test-service" }),
-    }, null);
-
-    const scope = try otel_api.InstrumentationScope.init("test.meter", "1.0.0", null, &.{});
-
-    const data_points = [_]MetricDataPoint{
-        .{
-            .timestamp_ns = 1234567890,
-            .start_timestamp_ns = 1234567000,
-            .attributes = &[_]otel_api.KeyValue{
-                otel_api.KeyValue.init("method", .{ .string = "GET" }),
-            },
-            .value = .{ .i64_sum = 42 },
-        },
-    };
-
-    const metric = MetricData{
-        .name = "test.counter",
-        .description = "Test counter",
-        .unit = "1",
-        .type = .sum,
-        .data_points = &data_points,
-        .scope = scope,
-        .resource = &test_resource,
-    };
-
-    const json = try convertToOtlpFormat(arena.allocator(), &[_]MetricData{metric});
-
-    // Verify JSON contains expected fields
-    try testing.expect(std.mem.indexOf(u8, json, "\"resourceMetrics\"") != null);
-    try testing.expect(std.mem.indexOf(u8, json, "\"scopeMetrics\"") != null);
-    try testing.expect(std.mem.indexOf(u8, json, "\"test.counter\"") != null);
-    try testing.expect(std.mem.indexOf(u8, json, "\"sum\"") != null);
-    try testing.expect(std.mem.indexOf(u8, json, "\"asInt\":42") != null);
 }

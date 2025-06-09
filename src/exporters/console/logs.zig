@@ -8,9 +8,9 @@ const std = @import("std");
 const otel_api = @import("otel-api");
 const otel_sdk = @import("otel-sdk");
 
-const LogRecord = otel_api.logs.LogRecord;
+const LogRecord = otel_sdk.logs.LogRecord;
 const Severity = otel_api.logs.Severity;
-const ExportResult = otel_sdk.logs.ExportResult;
+const ExportResult = otel_api.common.ExportResult;
 const ConsoleExporterConfig = @import("root.zig").ConsoleExporterConfig;
 const Resource = otel_sdk.resource.Resource;
 
@@ -18,13 +18,13 @@ const Resource = otel_sdk.resource.Resource;
 pub const StreamLogExporterConfig = struct {
     /// Format output for human readability
     pretty_print: bool = true,
-    
+
     /// Include timestamps in output
     include_timestamp: bool = true,
-    
+
     /// Include attributes in output
     include_attributes: bool = true,
-    
+
     /// Maximum attribute value length (0 = unlimited)
     max_attribute_length: usize = 128,
 };
@@ -33,7 +33,7 @@ pub const StreamLogExporterConfig = struct {
 pub fn StreamLogExporter(comptime WriterType: type) type {
     return struct {
         const Self = @This();
-        
+
         config: StreamLogExporterConfig,
         writer: WriterType,
         mutex: std.Thread.Mutex,
@@ -50,7 +50,7 @@ pub fn StreamLogExporter(comptime WriterType: type) type {
             _ = self;
         }
 
-        pub fn @"export"(self: *Self, records: []const LogRecord, resource: *const Resource) ExportResult {
+        pub fn @"export"(self: *Self, records: []const LogRecord, resource: Resource) ExportResult {
             self.mutex.lock();
             defer self.mutex.unlock();
 
@@ -73,7 +73,7 @@ pub fn StreamLogExporter(comptime WriterType: type) type {
             return .success;
         }
 
-        fn writeRecord(self: *Self, record: LogRecord, resource: *const Resource) !void {
+        fn writeRecord(self: *Self, record: LogRecord, resource: Resource) !void {
             if (self.config.pretty_print) {
                 try self.writePrettyRecord(record, resource);
             } else {
@@ -81,7 +81,7 @@ pub fn StreamLogExporter(comptime WriterType: type) type {
             }
         }
 
-        fn writePrettyRecord(self: *Self, record: LogRecord, resource: *const Resource) !void {
+        fn writePrettyRecord(self: *Self, record: LogRecord, resource: Resource) !void {
             // Write timestamp
             if (self.config.include_timestamp and record.timestamp_ns != null) {
                 // Convert nanoseconds to seconds for display
@@ -92,14 +92,14 @@ pub fn StreamLogExporter(comptime WriterType: type) type {
             // Write severity level
             const severity_name = switch (record.severity_number) {
                 .trace, .trace2, .trace3, .trace4 => "TRACE",
-                .debug, .debug2, .debug3, .debug4 => "DEBUG", 
+                .debug, .debug2, .debug3, .debug4 => "DEBUG",
                 .info, .info2, .info3, .info4 => "INFO",
                 .warn, .warn2, .warn3, .warn4 => "WARN",
                 .@"error", .error2, .error3, .error4 => "ERROR",
                 .fatal, .fatal2, .fatal3, .fatal4 => "FATAL",
                 else => "UNKNOWN",
             };
-            
+
             try self.writer.print("{s:<5} ", .{severity_name});
 
             // Write body/message
@@ -130,7 +130,7 @@ pub fn StreamLogExporter(comptime WriterType: type) type {
             }
         }
 
-        fn writeCompactRecord(self: *Self, record: LogRecord, resource: *const Resource) !void {
+        fn writeCompactRecord(self: *Self, record: LogRecord, resource: Resource) !void {
             // Timestamp
             if (self.config.include_timestamp and record.timestamp_ns != null) {
                 const timestamp_s = @divTrunc(record.timestamp_ns.?, 1_000_000_000);
@@ -141,7 +141,7 @@ pub fn StreamLogExporter(comptime WriterType: type) type {
             const severity_char: u8 = switch (record.severity_number) {
                 .trace, .trace2, .trace3, .trace4 => 'T',
                 .debug, .debug2, .debug3, .debug4 => 'D',
-                .info, .info2, .info3, .info4 => 'I', 
+                .info, .info2, .info3, .info4 => 'I',
                 .warn, .warn2, .warn3, .warn4 => 'W',
                 .@"error", .error2, .error3, .error4 => 'E',
                 .fatal, .fatal2, .fatal3, .fatal4 => 'F',
@@ -248,7 +248,7 @@ pub const ConsoleLogExporter = struct {
         self.stream_exporter.deinit();
     }
 
-    pub fn @"export"(self: *ConsoleLogExporter, records: []const LogRecord, resource: *const Resource) ExportResult {
+    pub fn exportRecords(self: *ConsoleLogExporter, records: []const LogRecord, resource: Resource) ExportResult {
         return self.stream_exporter.@"export"(records, resource);
     }
 
@@ -276,10 +276,10 @@ pub fn createLogExporterWithConfig(config: ConsoleExporterConfig) *ConsoleLogExp
 test "StreamLogExporter basic export with buffer" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     var buffer = std.ArrayList(u8).init(allocator);
     defer buffer.deinit();
-    
+
     var stream_exporter = StreamLogExporter(std.ArrayList(u8).Writer).init(.{
         .pretty_print = false,
         .include_timestamp = false,
@@ -300,9 +300,9 @@ test "StreamLogExporter basic export with buffer" {
     const test_resource = try otel_sdk.resource.getDefaultResource(allocator);
     defer test_resource.deinitOwned(allocator);
 
-    const result = stream_exporter.@"export"(&records, &test_resource);
+    const result = stream_exporter.@"export"(&records, test_resource);
     try testing.expectEqual(ExportResult.success, result);
-    
+
     const output = buffer.items;
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "Test message 1"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "Test message 2"));
@@ -311,19 +311,19 @@ test "StreamLogExporter basic export with buffer" {
 test "StreamLogExporter with attributes and buffer" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     var buffer = std.ArrayList(u8).init(allocator);
     defer buffer.deinit();
-    
+
     var stream_exporter = StreamLogExporter(std.ArrayList(u8).Writer).init(.{
         .pretty_print = true,
         .include_timestamp = false,
     }, buffer.writer());
     defer stream_exporter.deinit();
 
-    const attrs = [_]otel_api.common.KeyValue{
-        otel_api.common.KeyValue.init("user", .{ .string = "alice" }),
-        otel_api.common.KeyValue.init("action", .{ .string = "login" }),
+    const attrs = [_]otel_api.common.AttributeKeyValue{
+        .{ .key = "user", .value = .{ .string = "alice" } },
+        .{ .key = "action", .value = .{ .string = "login" } },
     };
 
     const records = [_]LogRecord{
@@ -337,9 +337,9 @@ test "StreamLogExporter with attributes and buffer" {
     const test_resource = try otel_sdk.resource.getDefaultResource(allocator);
     defer test_resource.deinitOwned(allocator);
 
-    const result = stream_exporter.@"export"(&records, &test_resource);
+    const result = stream_exporter.@"export"(&records, test_resource);
     try testing.expectEqual(ExportResult.success, result);
-    
+
     const output = buffer.items;
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "User action"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "alice"));
@@ -348,7 +348,7 @@ test "StreamLogExporter with attributes and buffer" {
 
 test "ConsoleLogExporter wrapper functionality" {
     const testing = std.testing;
-    
+
     var exporter = ConsoleLogExporter.init(.{
         .pretty_print = false,
         .include_timestamp = false,
@@ -365,12 +365,12 @@ test "ConsoleLogExporter wrapper functionality" {
 test "StreamLogExporter formatting modes" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     // Test compact format
     {
         var buffer = std.ArrayList(u8).init(allocator);
         defer buffer.deinit();
-        
+
         var stream_exporter = StreamLogExporter(std.ArrayList(u8).Writer).init(.{
             .pretty_print = false,
             .include_timestamp = false,
@@ -378,34 +378,33 @@ test "StreamLogExporter formatting modes" {
         }, buffer.writer());
         defer stream_exporter.deinit();
 
-        const attrs = [_]otel_api.common.KeyValue{
-            otel_api.common.KeyValue.init("key", .{ .string = "value" }),
+        const attrs = [_]otel_api.common.AttributeKeyValue{
+            .{ .key = "key", .value = .{ .string = "value" } },
         };
 
         const records = [_]LogRecord{
             .{
                 .severity_number = .info,
-                .body = otel_api.AttributeValue{ .string = "compact test" },
+                .body = .{ .string = "compact test" },
                 .attributes = &attrs,
             },
         };
 
-        const test_resource = try otel_sdk.resource.getDefaultResource(allocator);
-        defer test_resource.deinitOwned(allocator);
+        const test_resource = otel_sdk.resource.Resource.default;
 
-        const result = stream_exporter.@"export"(&records, &test_resource);
+        const result = stream_exporter.@"export"(&records, test_resource);
         try testing.expectEqual(ExportResult.success, result);
-        
+
         const output = buffer.items;
         try testing.expect(std.mem.containsAtLeast(u8, output, 1, "I|compact test"));
         try testing.expect(std.mem.containsAtLeast(u8, output, 1, "key=value"));
     }
-    
+
     // Test pretty format
     {
         var buffer = std.ArrayList(u8).init(allocator);
         defer buffer.deinit();
-        
+
         var stream_exporter = StreamLogExporter(std.ArrayList(u8).Writer).init(.{
             .pretty_print = true,
             .include_timestamp = false,
@@ -413,14 +412,14 @@ test "StreamLogExporter formatting modes" {
         }, buffer.writer());
         defer stream_exporter.deinit();
 
-        const attrs = [_]otel_api.common.KeyValue{
-            otel_api.common.KeyValue.init("service", .{ .string = "test-service" }),
+        const attrs = [_]otel_api.common.AttributeKeyValue{
+            .{ .key = "service", .value = .{ .string = "test-service" } },
         };
 
         const records = [_]LogRecord{
             .{
                 .severity_number = .warn,
-                .body = otel_api.AttributeValue{ .string = "pretty test" },
+                .body = .{ .string = "pretty test" },
                 .attributes = &attrs,
             },
         };
@@ -428,9 +427,9 @@ test "StreamLogExporter formatting modes" {
         const test_resource = try otel_sdk.resource.getDefaultResource(allocator);
         defer test_resource.deinitOwned(allocator);
 
-        const result = stream_exporter.@"export"(&records, &test_resource);
+        const result = stream_exporter.@"export"(&records, test_resource);
         try testing.expectEqual(ExportResult.success, result);
-        
+
         const output = buffer.items;
         try testing.expect(std.mem.containsAtLeast(u8, output, 1, "WARN"));
         try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pretty test"));

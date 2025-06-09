@@ -22,7 +22,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // ========================================================================
-    // OpenTelemetry SDK Core Module  
+    // OpenTelemetry SDK Core Module
     // ========================================================================
     // Contains basic SDK implementations (loggers, providers, processors)
     const otel_sdk_mod = b.createModule(.{
@@ -111,7 +111,7 @@ pub fn build(b: *std.Build) void {
     // ========================================================================
     // Libraries
     // ========================================================================
-    
+
     // API library (minimal, stable)
     const api_lib = b.addLibrary(.{
         .linkage = .static,
@@ -147,7 +147,7 @@ pub fn build(b: *std.Build) void {
     // ========================================================================
     // Tests
     // ========================================================================
-    
+
     // API tests
     const api_unit_tests = b.addTest(.{
         .root_module = otel_api_mod,
@@ -191,7 +191,7 @@ pub fn build(b: *std.Build) void {
     // ========================================================================
     // Examples
     // ========================================================================
-    
+
     // DNS Query Logging Example
     const dns_query_example = b.addExecutable(.{
         .name = "dns_query_logging",
@@ -201,7 +201,8 @@ pub fn build(b: *std.Build) void {
     });
     dns_query_example.root_module.addImport("otel-api", otel_api_mod);
     dns_query_example.root_module.addImport("otel-sdk", otel_sdk_mod);
-    
+    dns_query_example.root_module.addImport("otel-exporters", otel_exporters_mod);
+
     const run_dns_query = b.addRunArtifact(dns_query_example);
     const dns_query_step = b.step("example-dns-query", "Run DNS query logging example");
     dns_query_step.dependOn(&run_dns_query.step);
@@ -216,7 +217,7 @@ pub fn build(b: *std.Build) void {
     dns_query_otlp_example.root_module.addImport("otel-api", otel_api_mod);
     dns_query_otlp_example.root_module.addImport("otel-sdk", otel_sdk_mod);
     dns_query_otlp_example.root_module.addImport("otel-exporters", otel_exporters_mod);
-    
+
     const run_dns_query_otlp = b.addRunArtifact(dns_query_otlp_example);
     const dns_query_otlp_step = b.step("example-dns-query-otlp", "Run DNS query logging OTLP example");
     dns_query_otlp_step.dependOn(&run_dns_query_otlp.step);
@@ -230,7 +231,8 @@ pub fn build(b: *std.Build) void {
     });
     metrics_demo_example.root_module.addImport("otel-api", otel_api_mod);
     metrics_demo_example.root_module.addImport("otel-sdk", otel_sdk_mod);
-    
+    metrics_demo_example.root_module.addImport("otel-exporters", otel_exporters_mod);
+
     const run_metrics_demo = b.addRunArtifact(metrics_demo_example);
     const metrics_demo_step = b.step("example-metrics", "Run metrics demo example");
     metrics_demo_step.dependOn(&run_metrics_demo.step);
@@ -245,7 +247,7 @@ pub fn build(b: *std.Build) void {
     metrics_otlp_demo_example.root_module.addImport("otel-api", otel_api_mod);
     metrics_otlp_demo_example.root_module.addImport("otel-sdk", otel_sdk_mod);
     metrics_otlp_demo_example.root_module.addImport("otel-exporters", otel_exporters_mod);
-    
+
     const run_metrics_otlp_demo = b.addRunArtifact(metrics_otlp_demo_example);
     const metrics_otlp_demo_step = b.step("example-metrics-otlp", "Run metrics OTLP demo example");
     metrics_otlp_demo_step.dependOn(&run_metrics_otlp_demo.step);

@@ -39,10 +39,6 @@ pub const LogRecordLimits = @import("config.zig").LogRecordLimits;
 pub const parseEnvironmentVariable = @import("config.zig").parseEnvironmentVariable;
 pub const getEnvironmentVariable = @import("config.zig").getEnvironmentVariable;
 
-test "sdk common module compilation" {
-    _ = std.testing;
-    _ = Clock;
-    _ = IdGenerator;
-    _ = Config;
-    _ = Limits;
+test {
+    std.testing.refAllDecls(@This());
 }

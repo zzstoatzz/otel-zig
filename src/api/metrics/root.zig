@@ -9,29 +9,22 @@
 const std = @import("std");
 
 // MeterProvider exports
-pub const MeterProvider = @import("meter_provider.zig").MeterProvider;
-pub const NoopMeterProvider = @import("meter_provider.zig").NoopMeterProvider;
-pub const createNoopProvider = @import("meter_provider.zig").createNoopProvider;
-pub const SdkProviderVTable = @import("meter_provider.zig").SdkProviderVTable;
-pub const SdkProviderBridge = @import("meter_provider.zig").SdkProviderBridge;
+const meter_provider_zig = @import("meter_provider.zig");
+pub const MeterProvider = meter_provider_zig.MeterProvider;
+pub const MeterProviderBridge = meter_provider_zig.MeterProviderBridge;
 
 // Meter exports
-pub const Meter = @import("meter.zig").Meter;
-pub const NoopMeter = @import("meter.zig").NoopMeter;
-pub const createNoopMeter = @import("meter.zig").createNoopMeter;
-pub const SdkMeterVTable = @import("meter.zig").SdkMeterVTable;
-pub const SdkMeterBridge = @import("meter.zig").SdkMeterBridge;
+const meter_zig = @import("meter.zig");
+pub const Meter = meter_zig.Meter;
+pub const MeterBridge = meter_zig.MeterBridge;
 
 // Instrument exports
-pub const Counter = @import("instrument.zig").Counter;
-pub const UpDownCounter = @import("instrument.zig").UpDownCounter;
-pub const Gauge = @import("instrument.zig").Gauge;
-pub const createNoopCounter = @import("instrument.zig").createNoopCounter;
-pub const createNoopUpDownCounter = @import("instrument.zig").createNoopUpDownCounter;
-pub const createNoopGauge = @import("instrument.zig").createNoopGauge;
-pub const SdkInstrumentVTable = @import("instrument.zig").SdkInstrumentVTable;
-pub const SdkInstrumentBridge = @import("instrument.zig").SdkInstrumentBridge;
+const instrument_zig = @import("instrument.zig");
+pub const Counter = instrument_zig.Counter;
+pub const UpDownCounter = instrument_zig.UpDownCounter;
+pub const Gauge = instrument_zig.Gauge;
+pub const InstrumentBridge = instrument_zig.InstrumentBridge;
 
 test {
-    @import("std").testing.refAllDecls(@This());
+    std.testing.refAllDecls(@This());
 }
