@@ -14,7 +14,7 @@ const std = @import("std");
 pub const logs = @import("logs/root.zig");
 
 /// Tracing SDK with span processors and samplers
-// pub const trace = @import("trace/root.zig");
+pub const trace = @import("trace/root.zig");
 
 /// Metrics SDK with aggregation and readers
 pub const metrics = @import("metrics/root.zig");

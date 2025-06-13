@@ -13,6 +13,7 @@ const Severity = otel_api.logs.Severity;
 const ExportResult = otel_api.common.ExportResult;
 const ConsoleExporterConfig = @import("root.zig").ConsoleExporterConfig;
 const Resource = otel_sdk.resource.Resource;
+const ResourceBuilder = otel_sdk.resource.ResourceBuilder;
 
 /// Configuration for stream-based log exporters
 pub const StreamLogExporterConfig = struct {
@@ -34,23 +35,27 @@ pub fn StreamLogExporter(comptime WriterType: type) type {
     return struct {
         const Self = @This();
 
+        allocator: std.mem.Allocator,
         config: StreamLogExporterConfig,
         writer: WriterType,
         mutex: std.Thread.Mutex,
 
-        pub fn init(config: StreamLogExporterConfig, writer: WriterType) Self {
-            return .{
+        pub fn init(allocator: std.mem.Allocator, config: StreamLogExporterConfig, writer: WriterType) !*Self {
+            const self = try allocator.create(Self);
+            self.* = .{
+                .allocator = allocator,
                 .config = config,
                 .writer = writer,
                 .mutex = .{},
             };
+            return self;
         }
 
         pub fn deinit(self: *Self) void {
-            _ = self;
+            self.allocator.destroy(self);
         }
 
-        pub fn @"export"(self: *Self, records: []const LogRecord, resource: Resource) ExportResult {
+        pub fn exportRecords(self: *Self, records: []const LogRecord, resource: Resource) ExportResult {
             self.mutex.lock();
             defer self.mutex.unlock();
 
@@ -223,53 +228,24 @@ pub fn StreamLogExporter(comptime WriterType: type) type {
                 },
             }
         }
+
+        pub fn logExporter(self: *Self) otel_sdk.logs.LogExporter {
+            return .{ .bridge = otel_sdk.logs.BridgeLogExporter.init(self) };
+        }
     };
 }
 
-/// Console log exporter - a convenience wrapper around StreamLogExporter
-pub const ConsoleLogExporter = struct {
-    stream_exporter: StreamLogExporter(std.fs.File.Writer),
+pub fn createLogExporterWithConfig(config: ConsoleExporterConfig, allocator: std.mem.Allocator) !otel_sdk.logs.LogExporter {
+    const file = if (config.use_stderr) std.io.getStdErr() else std.io.getStdOut();
+    const stream_config = StreamLogExporterConfig{
+        .pretty_print = config.pretty_print,
+        .include_timestamp = config.include_timestamp,
+        .include_attributes = config.include_attributes,
+        .max_attribute_length = config.max_attribute_length,
+    };
 
-    pub fn init(config: ConsoleExporterConfig) ConsoleLogExporter {
-        const file = if (config.use_stderr) std.io.getStdErr() else std.io.getStdOut();
-        const stream_config = StreamLogExporterConfig{
-            .pretty_print = config.pretty_print,
-            .include_timestamp = config.include_timestamp,
-            .include_attributes = config.include_attributes,
-            .max_attribute_length = config.max_attribute_length,
-        };
-
-        return .{
-            .stream_exporter = StreamLogExporter(std.fs.File.Writer).init(stream_config, file.writer()),
-        };
-    }
-
-    pub fn deinit(self: *ConsoleLogExporter) void {
-        self.stream_exporter.deinit();
-    }
-
-    pub fn exportRecords(self: *ConsoleLogExporter, records: []const LogRecord, resource: Resource) ExportResult {
-        return self.stream_exporter.@"export"(records, resource);
-    }
-
-    pub fn forceFlush(self: *ConsoleLogExporter, timeout_ms: ?u64) ExportResult {
-        return self.stream_exporter.forceFlush(timeout_ms);
-    }
-
-    pub fn shutdown(self: *ConsoleLogExporter, timeout_ms: ?u64) ExportResult {
-        return self.stream_exporter.shutdown(timeout_ms);
-    }
-};
-
-// Factory functions
-pub fn createLogExporter() *ConsoleLogExporter {
-    return createLogExporterWithConfig(.{});
-}
-
-pub fn createLogExporterWithConfig(config: ConsoleExporterConfig) *ConsoleLogExporter {
-    const exporter = std.heap.page_allocator.create(ConsoleLogExporter) catch unreachable;
-    exporter.* = ConsoleLogExporter.init(config);
-    return exporter;
+    const exporter = try StreamLogExporter(std.fs.File.Writer).init(allocator, stream_config, file.writer());
+    return exporter.logExporter();
 }
 
 // Tests using buffer writers
@@ -280,7 +256,7 @@ test "StreamLogExporter basic export with buffer" {
     var buffer = std.ArrayList(u8).init(allocator);
     defer buffer.deinit();
 
-    var stream_exporter = StreamLogExporter(std.ArrayList(u8).Writer).init(.{
+    var stream_exporter = try StreamLogExporter(std.ArrayList(u8).Writer).init(allocator, .{
         .pretty_print = false,
         .include_timestamp = false,
     }, buffer.writer());
@@ -297,10 +273,12 @@ test "StreamLogExporter basic export with buffer" {
         },
     };
 
-    const test_resource = try otel_sdk.resource.getDefaultResource(allocator);
+    const test_resource = try ResourceBuilder.init(allocator)
+        .withDefaults()
+        .finish(allocator);
     defer test_resource.deinitOwned(allocator);
 
-    const result = stream_exporter.@"export"(&records, test_resource);
+    const result = stream_exporter.exportRecords(&records, test_resource);
     try testing.expectEqual(ExportResult.success, result);
 
     const output = buffer.items;
@@ -315,7 +293,7 @@ test "StreamLogExporter with attributes and buffer" {
     var buffer = std.ArrayList(u8).init(allocator);
     defer buffer.deinit();
 
-    var stream_exporter = StreamLogExporter(std.ArrayList(u8).Writer).init(.{
+    var stream_exporter = try StreamLogExporter(std.ArrayList(u8).Writer).init(allocator, .{
         .pretty_print = true,
         .include_timestamp = false,
     }, buffer.writer());
@@ -334,32 +312,18 @@ test "StreamLogExporter with attributes and buffer" {
         },
     };
 
-    const test_resource = try otel_sdk.resource.getDefaultResource(allocator);
+    const test_resource = try ResourceBuilder.init(allocator)
+        .withDefaults()
+        .finish(allocator);
     defer test_resource.deinitOwned(allocator);
 
-    const result = stream_exporter.@"export"(&records, test_resource);
+    const result = stream_exporter.exportRecords(&records, test_resource);
     try testing.expectEqual(ExportResult.success, result);
 
     const output = buffer.items;
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "User action"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "alice"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "login"));
-}
-
-test "ConsoleLogExporter wrapper functionality" {
-    const testing = std.testing;
-
-    var exporter = ConsoleLogExporter.init(.{
-        .pretty_print = false,
-        .include_timestamp = false,
-    });
-    defer exporter.deinit();
-
-    const flush_result = exporter.forceFlush(5000);
-    try testing.expectEqual(ExportResult.success, flush_result);
-
-    const shutdown_result = exporter.shutdown(5000);
-    try testing.expectEqual(ExportResult.success, shutdown_result);
 }
 
 test "StreamLogExporter formatting modes" {
@@ -371,7 +335,7 @@ test "StreamLogExporter formatting modes" {
         var buffer = std.ArrayList(u8).init(allocator);
         defer buffer.deinit();
 
-        var stream_exporter = StreamLogExporter(std.ArrayList(u8).Writer).init(.{
+        var stream_exporter = try StreamLogExporter(std.ArrayList(u8).Writer).init(allocator, .{
             .pretty_print = false,
             .include_timestamp = false,
             .include_attributes = true,
@@ -392,7 +356,7 @@ test "StreamLogExporter formatting modes" {
 
         const test_resource = otel_sdk.resource.Resource.default;
 
-        const result = stream_exporter.@"export"(&records, test_resource);
+        const result = stream_exporter.exportRecords(&records, test_resource);
         try testing.expectEqual(ExportResult.success, result);
 
         const output = buffer.items;
@@ -405,7 +369,7 @@ test "StreamLogExporter formatting modes" {
         var buffer = std.ArrayList(u8).init(allocator);
         defer buffer.deinit();
 
-        var stream_exporter = StreamLogExporter(std.ArrayList(u8).Writer).init(.{
+        var stream_exporter = try StreamLogExporter(std.ArrayList(u8).Writer).init(allocator, .{
             .pretty_print = true,
             .include_timestamp = false,
             .include_attributes = true,
@@ -424,10 +388,12 @@ test "StreamLogExporter formatting modes" {
             },
         };
 
-        const test_resource = try otel_sdk.resource.getDefaultResource(allocator);
+        const test_resource = try ResourceBuilder.init(allocator)
+            .withDefaults()
+            .finish(allocator);
         defer test_resource.deinitOwned(allocator);
 
-        const result = stream_exporter.@"export"(&records, test_resource);
+        const result = stream_exporter.exportRecords(&records, test_resource);
         try testing.expectEqual(ExportResult.success, result);
 
         const output = buffer.items;

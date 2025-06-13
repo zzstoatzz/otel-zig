@@ -14,7 +14,6 @@ const AttributeKeyValue = otel_api.common.AttributeKeyValue;
 const Context = otel_api.Context;
 
 const Resource = @import("../resource/resource.zig").Resource;
-const getDefaultResource = @import("../resource/resource.zig").getDefaultResource;
 const createStandardMeter = @import("meter.zig").createStandardMeter;
 const MetricData = @import("data.zig").MetricData;
 const MetricDataPoint = @import("data.zig").MetricDataPoint;
@@ -37,9 +36,13 @@ const MeterCacheContext = struct {
 
 /// Standard meter provider with caching and configuration
 pub const StandardMeterProvider = struct {
+    // internal state fields
     allocator: std.mem.Allocator,
     resource: Resource,
     cache: std.HashMapUnmanaged(InstrumentationScope, *StandardMeter, MeterCacheContext, 80),
+    mutex: std.Thread.Mutex,
+
+    // technically accessors.
     default_processor: MetricProcessor,
 
     pub fn init(
@@ -49,28 +52,40 @@ pub const StandardMeterProvider = struct {
     ) !*StandardMeterProvider {
         const self = try allocator.create(StandardMeterProvider);
         errdefer allocator.destroy(self);
+
         self.* = .{
             .allocator = allocator,
             .resource = resource,
             .cache = .empty,
+            .mutex = .{},
             .default_processor = metric_processor,
         };
         return self;
     }
 
     pub fn deinit(self: *StandardMeterProvider) void {
-        // Clean up all API meters
-        var iter = self.cache.iterator();
-        while (iter.next()) |kv| {
-            // Unregister the meter from the processor
-            self.default_processor.unregisterMeter(kv.value_ptr.*);
-            kv.key_ptr.deinitOwned(self.allocator);
-            kv.value_ptr.*.deinit();
-            self.allocator.destroy(kv.value_ptr.*);
+        // Given that we iterate over the cache, using the mutex here
+        // Also, deinit shouldn't be that frequent.
+        //
+        // The mutex block is distinct because the mutex must be released before
+        // self can be destroyed.
+        {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+
+            // Clean up meters
+            var iter = self.cache.iterator();
+            while (iter.next()) |kv| {
+                // Unregister the meter from the processor
+                self.default_processor.unregisterMeter(kv.value_ptr.*);
+                kv.key_ptr.deinitOwned(self.allocator);
+                kv.value_ptr.*.deinit();
+                self.allocator.destroy(kv.value_ptr.*);
+            }
+            self.cache.deinit(self.allocator);
+            self.resource.deinitOwned(self.allocator);
+            self.default_processor.deinit();
         }
-        self.cache.deinit(self.allocator);
-        self.resource.deinitOwned(self.allocator);
-        self.default_processor.deinit();
         self.allocator.destroy(self);
     }
 
@@ -80,25 +95,18 @@ pub const StandardMeterProvider = struct {
     pub fn getMeterWithScope(self: *StandardMeterProvider, scope: InstrumentationScope) !Meter {
         // Check cache first
         if (self.cache.get(scope)) |meter| {
-            return otel_api.metrics.Meter{
-                .bridge = otel_api.metrics.MeterBridge.init(meter),
-            };
+            return meter.meter();
         }
 
         // Create a locally owned Scope.
-        const owned_scope = try InstrumentationScope.init(
-            try self.allocator.dupe(u8, scope.name),
-            if (scope.version) |version| try self.allocator.dupe(u8, version) else null,
-            if (scope.schema_url) |url| try self.allocator.dupe(u8, url) else null,
-            try otel_api.AttributeKeyValue.initOwnedSlice(self.allocator, scope.attributes),
-        );
+        const owned_scope = try InstrumentationScope.initOwned(self.allocator, scope);
         errdefer owned_scope.deinitOwned(self.allocator);
 
         // Create new SDK meter
         const std_meter = try self.allocator.create(StandardMeter);
         errdefer self.allocator.destroy(std_meter);
 
-        std_meter.* = try StandardMeter.init(self.allocator, scope, self.resource, self.default_processor);
+        std_meter.* = try StandardMeter.init(self.allocator, owned_scope, self.resource, self.default_processor);
 
         // Register the meter with the processor for collection
         self.default_processor.registerMeter(std_meter);

@@ -28,6 +28,15 @@ pub const ExportResult = results_zig.ExportResult;
 pub const ProcessResult = results_zig.ProcessResult;
 pub const FlushResult = results_zig.FlushResult;
 
+const types_zig = @import("types.zig");
+pub const TraceId = types_zig.TraceId;
+pub const SpanId = types_zig.SpanId;
+
+// Re-export error types
+const errors_zig = @import("errors.zig");
+pub const OpenTelemetryError = errors_zig.OpenTelemetryError;
+pub const Error = errors_zig.Error;
+
 test {
     std.testing.refAllDecls(@This());
 }

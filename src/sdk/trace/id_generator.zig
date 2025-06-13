@@ -33,20 +33,19 @@ pub const IdGenerator = union(enum) {
 
 /// Random ID generator using cryptographic random number generation
 pub const RandomIdGenerator = struct {
-    random: std.Random,
+    prng: std.Random.ChaCha,
 
     pub fn init() RandomIdGenerator {
         var seed: [32]u8 = undefined;
         std.crypto.random.bytes(&seed);
-        var prng = std.Random.ChaCha.init(seed);
         return .{
-            .random = prng.random(),
+            .prng = std.Random.ChaCha.init(seed),
         };
     }
 
     pub fn generateTraceId(self: *RandomIdGenerator) [16]u8 {
         var id: [16]u8 = undefined;
-        self.random.bytes(&id);
+        self.prng.random().bytes(&id);
 
         // Ensure the ID is not all zeros (invalid)
         if (isZeroId(u128, &id)) {
@@ -58,7 +57,7 @@ pub const RandomIdGenerator = struct {
 
     pub fn generateSpanId(self: *RandomIdGenerator) [8]u8 {
         var id: [8]u8 = undefined;
-        self.random.bytes(&id);
+        self.prng.random().bytes(&id);
 
         // Ensure the ID is not all zeros (invalid)
         if (isZeroId(u64, &id)) {

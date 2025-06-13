@@ -14,13 +14,34 @@ pub const MetricDataPoint = struct {
     value: MetricValue,
 };
 
+/// Histogram data for i64 values
+pub const I64HistogramData = struct {
+    count: u64,
+    sum: i64,
+    min: ?i64,
+    max: ?i64,
+    boundaries: []const f64,
+    bucket_counts: []const u64,
+};
+
+/// Histogram data for f64 values
+pub const F64HistogramData = struct {
+    count: u64,
+    sum: f64,
+    min: ?f64,
+    max: ?f64,
+    boundaries: []const f64,
+    bucket_counts: []const u64,
+};
+
 /// Possible metric values
 pub const MetricValue = union(enum) {
     i64_sum: i64,
     f64_sum: f64,
     i64_gauge: i64,
     f64_gauge: f64,
-    // Histogram support can be added later
+    i64_histogram: I64HistogramData,
+    f64_histogram: F64HistogramData,
 };
 
 /// Aggregated metric data

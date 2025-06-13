@@ -1,13 +1,7 @@
-//! OpenTelemetry Protocol (OTLP) Metric Exporter
-//!
-//! This module provides an OTLP exporter for metrics that sends
-//! data to OTLP-compatible backends using HTTP/JSON transport.
-//!
-//! See: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/protocol/otlp.md
-
 const std = @import("std");
 const otel_api = @import("otel-api");
 const otel_sdk = @import("otel-sdk");
+const protobuf = @import("protobuf");
 
 const ExportResult = otel_api.common.ExportResult;
 const OtlpExporterConfig = @import("root.zig").OtlpExporterConfig;
@@ -16,141 +10,29 @@ const MetricDataPoint = otel_sdk.metrics.MetricDataPoint;
 const MetricType = otel_sdk.metrics.MetricType;
 const MetricExporter = otel_sdk.metrics.MetricExporter;
 
-// OTLP metric data structures
-const OtlpResourceMetrics = struct {
-    resource: OtlpResource,
-    scopeMetrics: []const OtlpScopeMetrics,
-};
+// Import protobuf definitions
+const metrics_v1 = @import("proto/opentelemetry/proto/metrics/v1.pb.zig");
+const common_v1 = @import("proto/opentelemetry/proto/common/v1.pb.zig");
+const resource_v1 = @import("proto/opentelemetry/proto/resource/v1.pb.zig");
 
-const OtlpResource = struct {
-    attributes: []const OtlpKeyValue,
-};
-
-const OtlpScopeMetrics = struct {
-    scope: OtlpInstrumentationScope,
-    metrics: []const OtlpMetric,
-};
-
-const OtlpInstrumentationScope = struct {
-    name: []const u8,
-    version: ?[]const u8,
-    attributes: []const OtlpKeyValue,
-};
-
-const OtlpMetric = struct {
-    name: []const u8,
-    description: ?[]const u8,
-    unit: ?[]const u8,
-    // Use JSON dynamic typing for data field
-    sum: ?OtlpSum = null,
-    gauge: ?OtlpGauge = null,
-
-    pub fn jsonStringify(self: @This(), jw: anytype) !void {
-        try jw.beginObject();
-        try jw.objectField("name");
-        try jw.write(self.name);
-
-        try jw.objectField("description");
-        try jw.write(self.description);
-
-        try jw.objectField("unit");
-        try jw.write(self.unit);
-
-        if (self.sum) |s| {
-            try jw.objectField("sum");
-            try jw.write(s);
-        }
-
-        if (self.gauge) |g| {
-            try jw.objectField("gauge");
-            try jw.write(g);
-        }
-
-        try jw.endObject();
-    }
-};
-
-const OtlpSum = struct {
-    dataPoints: []const OtlpNumberDataPoint,
-    aggregationTemporality: i32 = 2, // CUMULATIVE
-    isMonotonic: bool = true,
-};
-
-const OtlpGauge = struct {
-    dataPoints: []const OtlpNumberDataPoint,
-};
-
-const OtlpNumberDataPoint = struct {
-    attributes: []const OtlpKeyValue,
-    timeUnixNano: []const u8, // String for JSON big numbers
-    startTimeUnixNano: ?[]const u8 = null, // String for JSON big numbers
-    value: union(enum) {
-        asInt: i64,
-        asDouble: f64,
-    },
-
-    pub fn jsonStringify(self: @This(), jw: anytype) !void {
-        try jw.beginObject();
-        try jw.objectField("attributes");
-        try jw.write(self.attributes);
-        try jw.objectField("timeUnixNano");
-        try jw.write(self.timeUnixNano);
-
-        if (self.startTimeUnixNano) |stun| {
-            try jw.objectField("startTimeUnixNano");
-            try jw.write(stun);
-        }
-
-        switch (self.value) {
-            .asInt => |i| {
-                try jw.objectField("asInt");
-                try jw.write(i);
-            },
-            .asDouble => |d| {
-                try jw.objectField("asDouble");
-                try jw.write(d);
-            },
-        }
-        try jw.endObject();
-    }
-};
-
-const OtlpKeyValue = struct {
-    key: []const u8,
-    value: OtlpAnyValue,
-};
-
-const OtlpAnyValue = union(enum) {
-    stringValue: []const u8,
-    intValue: i64,
-    doubleValue: f64,
-    boolValue: bool,
-};
-
-/// OTLP metric exporter implementation
 pub const OtlpMetricExporter = struct {
     config: OtlpExporterConfig,
     allocator: std.mem.Allocator,
-    is_shutdown: bool,
-    mutex: std.Thread.Mutex,
-    http_client: std.http.Client,
+    is_shutdown: bool = false,
+    mutex: std.Thread.Mutex = .{},
 
     pub fn init(allocator: std.mem.Allocator, config: OtlpExporterConfig) OtlpMetricExporter {
         return .{
             .config = config,
             .allocator = allocator,
-            .is_shutdown = false,
-            .mutex = .{},
-            .http_client = std.http.Client{ .allocator = allocator },
         };
     }
 
     pub fn deinit(self: *OtlpMetricExporter) void {
-        self.http_client.deinit();
+        _ = self;
     }
 
-    pub fn exportMetrics(self: *OtlpMetricExporter, metrics: std.ArrayList(MetricData)) ExportResult {
-        defer metrics.deinit(); // Free the ArrayList memory
+    pub fn exportMetrics(self: *OtlpMetricExporter, metrics: []const MetricData) ExportResult {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -158,29 +40,25 @@ pub const OtlpMetricExporter = struct {
             return .failure;
         }
 
-        // Local arena for the OTLP transform and network send.
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
-
-        // Convert metrics to OTLP format and send
-        const json_data = convertToOtlpFormat(arena.allocator(), metrics.items) catch |err| {
+        const metrics_data = convertToOtlpFormat(self.allocator, metrics) catch |err| {
             std.log.err("Failed to convert metrics to OTLP format: {}", .{err});
             return .failure;
         };
-        defer arena.allocator().free(json_data);
-
-        const result = self.sendRequest(arena.allocator(), json_data) catch |err| {
-            std.log.err("Failed to send OTLP metrics: {}", .{err});
+        defer metrics_data.deinit();
+ 
+        self.sendRequest(metrics_data) catch |err| {
+            std.log.err("Failed to send metrics: {}", .{err});
             return .failure;
         };
 
-        return result;
+        return .success;
     }
 
     pub fn forceFlush(self: *OtlpMetricExporter, timeout_ms: ?u64) ExportResult {
         _ = self;
         _ = timeout_ms;
-        // HTTP requests are synchronous, nothing to flush
+        // For HTTP-based exporters, force flush is typically a no-op
+        // since each export call is synchronous
         return .success;
     }
 
@@ -188,343 +66,440 @@ pub const OtlpMetricExporter = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        if (self.is_shutdown) {
-            return .success;
-        }
-
-        self.is_shutdown = true;
         _ = timeout_ms;
-
-        // Nothing special to clean up for HTTP
+        self.is_shutdown = true;
         return .success;
     }
 
-    fn sendRequest(self: *OtlpMetricExporter, allocator: std.mem.Allocator, json_data: []const u8) !ExportResult {
+    fn sendRequest(self: *OtlpMetricExporter, metrics_data: metrics_v1.MetricsData) !void {
+        var client = std.http.Client{ .allocator = self.allocator };
+        defer client.deinit();
+
+        // Serialize to binary protobuf
+        const protobuf_bytes = try protobuf.pb_encode(metrics_data, self.allocator);
+        defer self.allocator.free(protobuf_bytes);
+
         // Parse endpoint URL with detailed error context
-        const uri = std.Uri.parse(self.config.endpoint) catch |err| {
+        const base_uri = std.Uri.parse(self.config.endpoint) catch |err| {
             std.log.err("OTLP URL Parsing Error: {s} - {s}", .{ self.config.endpoint, @errorName(err) });
             return err;
         };
 
-        // Build full URL with logs path
-        const host_str = switch (uri.host.?) {
+        // Build full URL with metrics path
+        const host_str = switch (base_uri.host.?) {
             .raw => |raw| raw,
             .percent_encoded => |encoded| encoded,
         };
-        const scheme_str = if (uri.scheme.len > 0) uri.scheme else "http";
-        const full_url = try std.fmt.allocPrint(allocator, "{s}://{s}:{d}{s}", .{ scheme_str, host_str, uri.port orelse 4318, self.config.protocol_config.metrics_path });
-        defer allocator.free(full_url);
-        std.log.debug("OTLP Request Details. URL:{s} Method:{s} content-type:{s} content-length:{} data:{s}", .{ full_url, "POST", "application/json", json_data.len, json_data });
+        const scheme_str = if (base_uri.scheme.len > 0) base_uri.scheme else "http";
+        const full_url = try std.fmt.allocPrint(self.allocator, "{s}://{s}:{d}{s}", .{ scheme_str, host_str, base_uri.port orelse 4318, self.config.protocol_config.metrics_path });
+        defer self.allocator.free(full_url);
+        const uri = try std.Uri.parse(full_url);
 
-        // Create HTTP request
-        const full_uri = try std.Uri.parse(full_url);
-        var req = try self.http_client.open(.POST, full_uri, .{
-            .server_header_buffer = try allocator.alloc(u8, 8192),
+        var server_header_buffer: [16 * 1024]u8 = undefined;
+        var req = try client.open(.POST, uri, .{
+            .server_header_buffer = &server_header_buffer,
+            .headers = .{
+                .content_type = .{ .override = "application/x-protobuf" },
+            },
         });
         defer req.deinit();
 
-        // Set request headers
-        req.headers.content_type = .{ .override = "application/json" };
-        req.transfer_encoding = .{ .content_length = @intCast(json_data.len) };
+        req.transfer_encoding = .{ .content_length = protobuf_bytes.len };
 
-        // Add custom headers from config
-        if (self.config.headers.len > 0) {
-            var extra_headers = try allocator.alloc(std.http.Header, self.config.headers.len);
-            for (self.config.headers, 0..) |header, h| {
-                extra_headers[h] = header;
-            }
-            req.extra_headers = extra_headers;
-        }
-
-        // Send request
         try req.send();
-        try req.writeAll(json_data);
+        try req.writeAll(protobuf_bytes);
         try req.finish();
+
         try req.wait();
 
-        // Check response status
-        switch (req.response.status) {
-            .ok => return .success,
-            .bad_request, .unauthorized, .forbidden, .not_found => {
-                std.log.err("OTLP export failed with status: {}", .{req.response.status});
-                return .failure;
-            },
-            else => {
-                std.log.warn("OTLP export got unexpected status: {}", .{req.response.status});
-                return .failure;
-            },
+        if (req.response.status != .ok) {
+            std.log.err("OTLP export failed with status: {}", .{req.response.status});
+            return error.ExportFailed;
         }
     }
 };
 
-fn convertToOtlpFormat(allocator: std.mem.Allocator, metrics: []const MetricData) ![]u8 {
-    if (metrics.len == 0) {
-        const empty_resource_metrics = OtlpResourceMetrics{
-            .resource = OtlpResource{ .attributes = &[_]OtlpKeyValue{} },
-            .scopeMetrics = &[_]OtlpScopeMetrics{},
-        };
-
-        var json_buffer = std.ArrayList(u8).init(allocator);
-        defer json_buffer.deinit();
-        try std.json.stringify(.{ .resourceMetrics = &[_]OtlpResourceMetrics{empty_resource_metrics} }, .{}, json_buffer.writer());
-        return try json_buffer.toOwnedSlice();
-    }
-
-    // Convert resource attributes to OTLP format
-    const resource = metrics[0].resource;
-    var otlp_resource_attributes = std.ArrayList(OtlpKeyValue).init(allocator);
-    defer otlp_resource_attributes.deinit();
-
-    for (resource.attributes) |attr| {
-        const otlp_value = switch (attr.value) {
-            .string => |s| OtlpAnyValue{ .stringValue = s },
-            .int => |int_val| OtlpAnyValue{ .intValue = int_val },
-            .float => |f| OtlpAnyValue{ .doubleValue = f },
-            .bool => |b| OtlpAnyValue{ .boolValue = b },
-            .bool_array => |arr| blk: {
-                var result = std.ArrayList(u8).init(allocator);
-                defer result.deinit();
-                try result.append('[');
-                for (arr, 0..) |item, idx| {
-                    if (idx > 0) try result.appendSlice(", ");
-                    try result.appendSlice(if (item) "true" else "false");
-                }
-                try result.append(']');
-                const str = try result.toOwnedSlice();
-                break :blk OtlpAnyValue{ .stringValue = str };
-            },
-            .int_array => |arr| blk: {
-                var result = std.ArrayList(u8).init(allocator);
-                defer result.deinit();
-                try result.append('[');
-                for (arr, 0..) |item, idx| {
-                    if (idx > 0) try result.appendSlice(", ");
-                    try result.writer().print("{}", .{item});
-                }
-                try result.append(']');
-                const str = try result.toOwnedSlice();
-                break :blk OtlpAnyValue{ .stringValue = str };
-            },
-            .float_array => |arr| blk: {
-                var result = std.ArrayList(u8).init(allocator);
-                defer result.deinit();
-                try result.append('[');
-                for (arr, 0..) |item, idx| {
-                    if (idx > 0) try result.appendSlice(", ");
-                    try result.writer().print("{}", .{item});
-                }
-                try result.append(']');
-                const str = try result.toOwnedSlice();
-                break :blk OtlpAnyValue{ .stringValue = str };
-            },
-            .string_array => |arr| blk: {
-                var result = std.ArrayList(u8).init(allocator);
-                defer result.deinit();
-                try result.append('[');
-                for (arr, 0..) |item, idx| {
-                    if (idx > 0) try result.appendSlice(", ");
-                    try result.writer().print("\"{s}\"", .{item});
-                }
-                try result.append(']');
-                const str = try result.toOwnedSlice();
-                break :blk OtlpAnyValue{ .stringValue = str };
-            },
-        };
-
-        try otlp_resource_attributes.append(OtlpKeyValue{
-            .key = attr.key,
-            .value = otlp_value,
-        });
-    }
-
-    // Group metrics by scope
-    var scope_map = std.StringHashMap(std.ArrayList(MetricData)).init(allocator);
+fn convertToOtlpFormat(allocator: std.mem.Allocator, metrics: []const MetricData) !metrics_v1.MetricsData {
+    var resource_metrics_map = std.StringHashMap(std.ArrayList(MetricData)).init(allocator);
     defer {
-        var iter = scope_map.iterator();
-        while (iter.next()) |entry| {
+        var it = resource_metrics_map.iterator();
+        while (it.next()) |entry| {
             entry.value_ptr.deinit();
         }
-        scope_map.deinit();
+        resource_metrics_map.deinit();
     }
 
+    // Group metrics by resource
     for (metrics) |metric| {
-        const scope_key = metric.scope.name;
-        var entry = try scope_map.getOrPut(scope_key);
-        if (!entry.found_existing) {
-            entry.value_ptr.* = std.ArrayList(MetricData).init(allocator);
+        // Group by service name if available, otherwise use empty string
+        const resource_key = if (metric.resource.getAttribute("service.name")) |attr|
+            attr.string
+        else
+            "";
+        const result = try resource_metrics_map.getOrPut(resource_key);
+        if (!result.found_existing) {
+            result.value_ptr.* = std.ArrayList(MetricData).init(allocator);
         }
-        try entry.value_ptr.append(metric);
+        try result.value_ptr.append(metric);
     }
 
-    // Convert scope metrics to OTLP format
-    var otlp_scope_metrics = std.ArrayList(OtlpScopeMetrics).init(allocator);
-    defer otlp_scope_metrics.deinit();
+    var metrics_data = metrics_v1.MetricsData.init(allocator);
+    metrics_data.resource_metrics = std.ArrayList(metrics_v1.ResourceMetrics).init(allocator);
 
-    var scope_iter = scope_map.iterator();
-    while (scope_iter.next()) |entry| {
-        const scope_metrics = entry.value_ptr.items;
-        if (scope_metrics.len == 0) continue;
+    var resource_it = resource_metrics_map.iterator();
+    while (resource_it.next()) |entry| {
+        const resource_metrics = entry.value_ptr.*;
+        if (resource_metrics.items.len == 0) continue;
 
-        const scope = scope_metrics[0].scope;
+        var rm = metrics_v1.ResourceMetrics.init(allocator);
 
-        // Convert metrics to OTLP format
-        var otlp_metrics = std.ArrayList(OtlpMetric).init(allocator);
-        defer otlp_metrics.deinit();
+        // Convert resource
+        var resource = resource_v1.Resource.init(allocator);
+        resource.attributes = std.ArrayList(common_v1.KeyValue).init(allocator);
 
-        for (scope_metrics) |metric| {
-            // Convert data points
-            var otlp_data_points = std.ArrayList(OtlpNumberDataPoint).init(allocator);
-            defer otlp_data_points.deinit();
+        const res = resource_metrics.items[0].resource;
+        const attrs = res.attributes;
+        for (attrs) |attr| {
+            const kv = common_v1.KeyValue{
+                .key = protobuf.ManagedString.managed(attr.key),
+                .value = try convertAttributeValue(allocator, attr.value),
+            };
+            try resource.attributes.append(kv);
+        }
 
-            for (metric.data_points) |point| {
-                // Convert attributes
-                var otlp_attributes = std.ArrayList(OtlpKeyValue).init(allocator);
-                defer otlp_attributes.deinit();
+        rm.resource = resource;
 
-                for (point.attributes) |attr| {
-                    const otlp_value = switch (attr.value) {
-                        .string => |s| OtlpAnyValue{ .stringValue = s },
-                        .int => |int_val| OtlpAnyValue{ .intValue = int_val },
-                        .float => |f| OtlpAnyValue{ .doubleValue = f },
-                        .bool => |b| OtlpAnyValue{ .boolValue = b },
-                        .bool_array => |arr| blk: {
-                            var result = std.ArrayList(u8).init(allocator);
-                            defer result.deinit();
-                            try result.append('[');
-                            for (arr, 0..) |item, idx| {
-                                if (idx > 0) try result.appendSlice(", ");
-                                try result.appendSlice(if (item) "true" else "false");
-                            }
-                            try result.append(']');
-                            const str = try result.toOwnedSlice();
-                            break :blk OtlpAnyValue{ .stringValue = str };
-                        },
-                        .int_array => |arr| blk: {
-                            var result = std.ArrayList(u8).init(allocator);
-                            defer result.deinit();
-                            try result.append('[');
-                            for (arr, 0..) |item, idx| {
-                                if (idx > 0) try result.appendSlice(", ");
-                                try result.writer().print("{}", .{item});
-                            }
-                            try result.append(']');
-                            const str = try result.toOwnedSlice();
-                            break :blk OtlpAnyValue{ .stringValue = str };
-                        },
-                        .float_array => |arr| blk: {
-                            var result = std.ArrayList(u8).init(allocator);
-                            defer result.deinit();
-                            try result.append('[');
-                            for (arr, 0..) |item, idx| {
-                                if (idx > 0) try result.appendSlice(", ");
-                                try result.writer().print("{}", .{item});
-                            }
-                            try result.append(']');
-                            const str = try result.toOwnedSlice();
-                            break :blk OtlpAnyValue{ .stringValue = str };
-                        },
-                        .string_array => |arr| blk: {
-                            var result = std.ArrayList(u8).init(allocator);
-                            defer result.deinit();
-                            try result.append('[');
-                            for (arr, 0..) |item, idx| {
-                                if (idx > 0) try result.appendSlice(", ");
-                                try result.writer().print("\"{s}\"", .{item});
-                            }
-                            try result.append(']');
-                            const str = try result.toOwnedSlice();
-                            break :blk OtlpAnyValue{ .stringValue = str };
-                        },
-                    };
+        // Group by instrumentation scope
+        var scope_map = std.StringHashMap(std.ArrayList(MetricData)).init(allocator);
+        defer {
+            var it = scope_map.iterator();
+            while (it.next()) |scope_entry| {
+                scope_entry.value_ptr.deinit();
+            }
+            scope_map.deinit();
+        }
 
-                    try otlp_attributes.append(OtlpKeyValue{
-                        .key = attr.key,
-                        .value = otlp_value,
-                    });
-                }
+        for (resource_metrics.items) |metric| {
+            const scope_name = metric.scope.name;
+            const result = try scope_map.getOrPut(scope_name);
+            if (!result.found_existing) {
+                result.value_ptr.* = std.ArrayList(MetricData).init(allocator);
+            }
+            try result.value_ptr.append(metric);
+        }
 
-                // Convert timestamp to string
-                const timestamp_str = try std.fmt.allocPrint(allocator, "{}", .{point.timestamp_ns});
+        rm.scope_metrics = std.ArrayList(metrics_v1.ScopeMetrics).init(allocator);
 
-                // Convert start timestamp to string for monotonic metrics
-                const start_timestamp_str = if (point.start_timestamp_ns) |start_ts|
-                    try std.fmt.allocPrint(allocator, "{}", .{start_ts})
-                else
-                    null;
+        var scope_it = scope_map.iterator();
+        while (scope_it.next()) |scope_entry| {
+            const scope_metrics = scope_entry.value_ptr.*;
+            if (scope_metrics.items.len == 0) continue;
 
-                const data_point = OtlpNumberDataPoint{
-                    .attributes = try otlp_attributes.toOwnedSlice(),
-                    .timeUnixNano = timestamp_str,
-                    .startTimeUnixNano = start_timestamp_str,
-                    .value = switch (point.value) {
-                        .i64_sum, .i64_gauge => |int_val| .{ .asInt = int_val },
-                        .f64_sum, .f64_gauge => |double_val| .{ .asDouble = double_val },
-                    },
-                };
+            var sm = metrics_v1.ScopeMetrics.init(allocator);
 
-                try otlp_data_points.append(data_point);
+            // Convert instrumentation scope
+            const inst_scope = scope_metrics.items[0].scope;
+            var scope = common_v1.InstrumentationScope.init(allocator);
+            scope.name = protobuf.ManagedString.managed(inst_scope.name);
+            if (inst_scope.version) |version| {
+                scope.version = protobuf.ManagedString.managed(version);
             }
 
-            // Create OTLP metric based on type
-            const otlp_metric = switch (metric.type) {
-                .sum => OtlpMetric{
-                    .name = metric.name,
-                    .description = metric.description,
-                    .unit = metric.unit,
-                    .sum = OtlpSum{
-                        .dataPoints = try otlp_data_points.toOwnedSlice(),
-                        .aggregationTemporality = 2, // AGGREGATION_TEMPORALITY_CUMULATIVE
-                        .isMonotonic = true,
-                    },
-                    .gauge = null,
-                },
-                .gauge => OtlpMetric{
-                    .name = metric.name,
-                    .description = metric.description,
-                    .unit = metric.unit,
-                    .sum = null,
-                    .gauge = OtlpGauge{
-                        .dataPoints = try otlp_data_points.toOwnedSlice(),
-                    },
-                },
-                else => OtlpMetric{
-                    .name = metric.name,
-                    .description = metric.description,
-                    .unit = metric.unit,
-                    .sum = null,
-                    .gauge = OtlpGauge{
-                        .dataPoints = try otlp_data_points.toOwnedSlice(),
-                    },
-                },
-            };
+            // Convert scope attributes
+            scope.attributes = std.ArrayList(common_v1.KeyValue).init(allocator);
+            for (inst_scope.attributes) |attr| {
+                const kv = common_v1.KeyValue{
+                    .key = protobuf.ManagedString.managed(attr.key),
+                    .value = try convertAttributeValue(allocator, attr.value),
+                };
+                try scope.attributes.append(kv);
+            }
 
-            try otlp_metrics.append(otlp_metric);
+            sm.scope = scope;
+            sm.metrics = std.ArrayList(metrics_v1.Metric).init(allocator);
+
+            // Convert metrics
+            for (scope_metrics.items) |metric_data| {
+                var metric = metrics_v1.Metric.init(allocator);
+                metric.name = protobuf.ManagedString.managed(metric_data.name);
+                metric.description = protobuf.ManagedString.managed(metric_data.description orelse "");
+                metric.unit = protobuf.ManagedString.managed(metric_data.unit orelse "");
+                metric.metadata = std.ArrayList(common_v1.KeyValue).init(allocator);
+
+                // Convert metric data based on type
+                switch (metric_data.type) {
+                    .sum => {
+                        var sum = metrics_v1.Sum.init(allocator);
+                        sum.data_points = try convertNumberDataPoints(allocator, metric_data.data_points);
+                        sum.aggregation_temporality = .AGGREGATION_TEMPORALITY_CUMULATIVE;
+                        sum.is_monotonic = true;
+                        metric.data = .{ .sum = sum };
+                    },
+                    .gauge => {
+                        var gauge = metrics_v1.Gauge.init(allocator);
+                        gauge.data_points = try convertNumberDataPoints(allocator, metric_data.data_points);
+                        metric.data = .{ .gauge = gauge };
+                    },
+                    .histogram => {
+                        var histogram = metrics_v1.Histogram.init(allocator);
+                        histogram.data_points = try convertHistogramDataPoints(allocator, metric_data.data_points);
+                        histogram.aggregation_temporality = .AGGREGATION_TEMPORALITY_CUMULATIVE;
+                        metric.data = .{ .histogram = histogram };
+                    },
+                }
+
+                try sm.metrics.append(metric);
+            }
+
+            try rm.scope_metrics.append(sm);
         }
 
-        const scope_metric = OtlpScopeMetrics{
-            .scope = OtlpInstrumentationScope{
-                .name = scope.name,
-                .version = scope.version,
-                .attributes = &[_]OtlpKeyValue{},
-            },
-            .metrics = try otlp_metrics.toOwnedSlice(),
-        };
-
-        try otlp_scope_metrics.append(scope_metric);
+        try metrics_data.resource_metrics.append(rm);
     }
 
-    // Create OTLP structure
-    const resource_metrics = OtlpResourceMetrics{
-        .resource = OtlpResource{
-            .attributes = try otlp_resource_attributes.toOwnedSlice(),
+    return metrics_data;
+}
+
+fn convertAttributeValue(allocator: std.mem.Allocator, value: otel_api.AttributeValue) !common_v1.AnyValue {
+    var any_value = common_v1.AnyValue.init(allocator);
+
+    switch (value) {
+        .string => |s| {
+            any_value.value = .{ .string_value = protobuf.ManagedString.managed(s) };
         },
-        .scopeMetrics = try otlp_scope_metrics.toOwnedSlice(),
+        .bool => |b| {
+            any_value.value = .{ .bool_value = b };
+        },
+        .int => |i| {
+            any_value.value = .{ .int_value = i };
+        },
+        .float => |d| {
+            any_value.value = .{ .double_value = d };
+        },
+        .string_array => |arr| {
+            var array_value = common_v1.ArrayValue.init(allocator);
+            array_value.values = std.ArrayList(common_v1.AnyValue).init(allocator);
+            for (arr) |s| {
+                var av = common_v1.AnyValue.init(allocator);
+                av.value = .{ .string_value = protobuf.ManagedString.managed(s) };
+                try array_value.values.append(av);
+            }
+            any_value.value = .{ .array_value = array_value };
+        },
+        .bool_array => |arr| {
+            var array_value = common_v1.ArrayValue.init(allocator);
+            array_value.values = std.ArrayList(common_v1.AnyValue).init(allocator);
+            for (arr) |b| {
+                var av = common_v1.AnyValue.init(allocator);
+                av.value = .{ .bool_value = b };
+                try array_value.values.append(av);
+            }
+            any_value.value = .{ .array_value = array_value };
+        },
+        .int_array => |arr| {
+            var array_value = common_v1.ArrayValue.init(allocator);
+            array_value.values = std.ArrayList(common_v1.AnyValue).init(allocator);
+            for (arr) |i| {
+                var av = common_v1.AnyValue.init(allocator);
+                av.value = .{ .int_value = i };
+                try array_value.values.append(av);
+            }
+            any_value.value = .{ .array_value = array_value };
+        },
+        .float_array => |arr| {
+            var array_value = common_v1.ArrayValue.init(allocator);
+            array_value.values = std.ArrayList(common_v1.AnyValue).init(allocator);
+            for (arr) |d| {
+                var av = common_v1.AnyValue.init(allocator);
+                av.value = .{ .double_value = d };
+                try array_value.values.append(av);
+            }
+            any_value.value = .{ .array_value = array_value };
+        },
+    }
+
+    return any_value;
+}
+
+fn convertNumberDataPoints(allocator: std.mem.Allocator, data_points: []const MetricDataPoint) !std.ArrayList(metrics_v1.NumberDataPoint) {
+    var result = std.ArrayList(metrics_v1.NumberDataPoint).init(allocator);
+
+    for (data_points) |dp| {
+        var ndp = metrics_v1.NumberDataPoint.init(allocator);
+        ndp.attributes = std.ArrayList(common_v1.KeyValue).init(allocator);
+
+        // Convert attributes
+        for (dp.attributes) |attr| {
+            const kv = common_v1.KeyValue{
+                .key = protobuf.ManagedString.managed(attr.key),
+                .value = try convertAttributeValue(allocator, attr.value),
+            };
+            try ndp.attributes.append(kv);
+        }
+
+        ndp.time_unix_nano = dp.timestamp_ns;
+        ndp.start_time_unix_nano = dp.start_timestamp_ns orelse 0;
+
+        // Set value based on type
+        switch (dp.value) {
+            .i64_gauge => |i| ndp.value = .{ .as_int = i },
+            .f64_gauge => |d| ndp.value = .{ .as_double = d },
+            .i64_sum => |i| ndp.value = .{ .as_int = i },
+            .f64_sum => |d| ndp.value = .{ .as_double = d },
+            .i64_histogram, .f64_histogram => unreachable, // Histogram data points are handled separately
+        }
+
+        ndp.exemplars = std.ArrayList(metrics_v1.Exemplar).init(allocator);
+        ndp.flags = 0;
+
+        try result.append(ndp);
+    }
+
+    return result;
+}
+
+fn convertHistogramDataPoints(allocator: std.mem.Allocator, data_points: []const MetricDataPoint) !std.ArrayList(metrics_v1.HistogramDataPoint) {
+    var result = std.ArrayList(metrics_v1.HistogramDataPoint).init(allocator);
+
+    for (data_points) |dp| {
+        var hdp = metrics_v1.HistogramDataPoint.init(allocator);
+        hdp.attributes = std.ArrayList(common_v1.KeyValue).init(allocator);
+
+        // Convert attributes
+        for (dp.attributes) |attr| {
+            const kv = common_v1.KeyValue{
+                .key = protobuf.ManagedString.managed(attr.key),
+                .value = try convertAttributeValue(allocator, attr.value),
+            };
+            try hdp.attributes.append(kv);
+        }
+
+        hdp.time_unix_nano = dp.timestamp_ns;
+        hdp.start_time_unix_nano = dp.start_timestamp_ns orelse 0;
+
+        switch (dp.value) {
+            .i64_histogram => |h| {
+                hdp.count = h.count;
+                hdp.sum = @floatFromInt(h.sum);
+
+                hdp.bucket_counts = std.ArrayList(u64).init(allocator);
+                for (h.bucket_counts) |count| {
+                    try hdp.bucket_counts.append(count);
+                }
+
+                hdp.explicit_bounds = std.ArrayList(f64).init(allocator);
+                for (h.boundaries) |bound| {
+                    try hdp.explicit_bounds.append(bound);
+                }
+
+                hdp.min = if (h.min) |min| @floatFromInt(min) else null;
+                hdp.max = if (h.max) |max| @floatFromInt(max) else null;
+            },
+            .f64_histogram => |h| {
+                hdp.count = h.count;
+                hdp.sum = h.sum;
+
+                hdp.bucket_counts = std.ArrayList(u64).init(allocator);
+                for (h.bucket_counts) |count| {
+                    try hdp.bucket_counts.append(count);
+                }
+
+                hdp.explicit_bounds = std.ArrayList(f64).init(allocator);
+                for (h.boundaries) |bound| {
+                    try hdp.explicit_bounds.append(bound);
+                }
+
+                hdp.min = h.min;
+                hdp.max = h.max;
+            },
+            else => unreachable, // Only histogram data points should be passed here
+        }
+
+        hdp.exemplars = std.ArrayList(metrics_v1.Exemplar).init(allocator);
+        hdp.flags = 0;
+
+        try result.append(hdp);
+    }
+
+    return result;
+}
+
+test "convertToOtlpFormat with histogram" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // Create test resource
+    const resource_attrs = [_]otel_api.common.AttributeKeyValue{
+        .{ .key = "service.name", .value = .{ .string = "test-service" } },
+    };
+    const resource = otel_sdk.resource.Resource.init(&resource_attrs, null) catch unreachable;
+
+    // Create test instrumentation scope
+    const scope = otel_api.InstrumentationScope{
+        .name = "test-scope",
+        .version = "1.0.0",
+        .schema_url = null,
+        .attributes = &[_]otel_api.common.AttributeKeyValue{},
     };
 
-    // Serialize to JSON
-    var json_buffer = std.ArrayList(u8).init(allocator);
-    defer json_buffer.deinit();
+    // Create test histogram data
+    const boundaries = [_]f64{ 1.0, 5.0, 10.0 };
+    const bucket_counts = [_]u64{ 2, 3, 1, 0 };
+    const histogram = otel_sdk.metrics.F64HistogramData{
+        .count = 6,
+        .sum = 25.5,
+        .min = 0.5,
+        .max = 9.2,
+        .boundaries = &boundaries,
+        .bucket_counts = &bucket_counts,
+    };
 
-    try std.json.stringify(.{ .resourceMetrics = &[_]OtlpResourceMetrics{resource_metrics} }, .{ .emit_null_optional_fields = false }, json_buffer.writer());
-    return try json_buffer.toOwnedSlice();
+    const data_point = otel_sdk.metrics.MetricDataPoint{
+        .attributes = &[_]otel_api.common.AttributeKeyValue{},
+        .timestamp_ns = 1234567890,
+        .start_timestamp_ns = 1234567000,
+        .value = .{ .f64_histogram = histogram },
+    };
+
+    const metric_data = otel_sdk.metrics.MetricData{
+        .resource = resource,
+        .scope = scope,
+        .name = "test_histogram",
+        .description = "A test histogram",
+        .unit = "ms",
+        .type = .histogram,
+        .data_points = &[_]otel_sdk.metrics.MetricDataPoint{data_point},
+    };
+
+    const metrics = [_]otel_sdk.metrics.MetricData{metric_data};
+    var result = try convertToOtlpFormat(allocator, &metrics);
+    defer result.deinit();
+
+    try testing.expect(result.resource_metrics.items.len == 1);
+    const rm = result.resource_metrics.items[0];
+    try testing.expect(rm.scope_metrics.items.len == 1);
+
+    const sm = rm.scope_metrics.items[0];
+    try testing.expect(sm.metrics.items.len == 1);
+
+    const metric = sm.metrics.items[0];
+    try testing.expect(std.mem.eql(u8, metric.name.getSlice(), "test_histogram"));
+
+    if (metric.data) |data| {
+        switch (data) {
+            .histogram => |hist| {
+                try testing.expect(hist.data_points.items.len == 1);
+                const hdp = hist.data_points.items[0];
+                try testing.expectEqual(@as(u64, 6), hdp.count);
+                if (hdp.sum) |sum| {
+                    try testing.expectApproxEqAbs(@as(f64, 25.5), sum, 0.001);
+                } else {
+                    try testing.expect(false); // sum should be present
+                }
+            },
+            else => try testing.expect(false),
+        }
+    } else {
+        try testing.expect(false);
+    }
 }

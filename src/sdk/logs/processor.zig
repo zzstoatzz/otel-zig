@@ -49,7 +49,7 @@ pub const LogProcessor = union(enum) {
     }
 
     /// Clean up processor resources
-    pub fn deinit(self: *LogProcessor) void {
+    pub fn deinit(self: *const LogProcessor) void {
         switch (self.*) {
             .noop => {},
             .simple => |processor| processor.deinit(),

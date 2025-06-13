@@ -20,6 +20,7 @@ const Context = @import("../context/root.zig").Context;
 const Counter = @import("instrument.zig").Counter;
 const UpDownCounter = @import("instrument.zig").UpDownCounter;
 const Gauge = @import("instrument.zig").Gauge;
+const Histogram = @import("instrument.zig").Histogram;
 
 /// Meter interface using tagged union for polymorphism
 pub const Meter = union(enum) {
@@ -94,6 +95,29 @@ pub const Meter = union(enum) {
         };
     }
 
+    /// Create a Histogram instrument
+    pub inline fn createHistogram(
+        self: *Meter,
+        comptime T: type,
+        name: []const u8,
+        description: ?[]const u8,
+        unit: ?[]const u8,
+    ) !Histogram(T) {
+        comptime switch (T) {
+            i64, f64 => {},
+            else => @compileError("Histograms must be of type i64 or f64"),
+        };
+
+        return switch (self.*) {
+            .noop => |_| Histogram(T){ .noop = name },
+            .bridge => |*bridge| switch (T) {
+                i64 => bridge.createHistogramI64Fn(bridge.meter_ptr, name, description, unit),
+                f64 => bridge.createHistogramF64Fn(bridge.meter_ptr, name, description, unit),
+                else => unreachable,
+            },
+        };
+    }
+
     /// Clean up meter resources
     pub fn deinit(self: *Meter) void {
         switch (self.*) {
@@ -112,6 +136,8 @@ pub const MeterBridge = struct {
     createUpDownCounterF64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!UpDownCounter(f64),
     createGaugeI64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!Gauge(i64),
     createGaugeF64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!Gauge(f64),
+    createHistogramI64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!Histogram(i64),
+    createHistogramF64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!Histogram(f64),
     deinitFn: *const fn (meter_ptr: *anyopaque) void,
 
     pub fn init(ptr: anytype) MeterBridge {
@@ -143,6 +169,14 @@ pub const MeterBridge = struct {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.createGaugeI64(self, name, description, unit);
             }
+            pub fn createHistogramF64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!Histogram(f64) {
+                const self: T = @ptrCast(@alignCast(pointer));
+                return ptr_info.pointer.child.createHistogramF64(self, name, description, unit);
+            }
+            pub fn createHistogramI64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!Histogram(i64) {
+                const self: T = @ptrCast(@alignCast(pointer));
+                return ptr_info.pointer.child.createHistogramI64(self, name, description, unit);
+            }
             pub fn deinit(pointer: *anyopaque) void {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.deinit(self);
@@ -157,6 +191,8 @@ pub const MeterBridge = struct {
             .createUpDownCounterF64Fn = VTable.createUpDownCounterF64,
             .createGaugeI64Fn = VTable.createGaugeI64,
             .createGaugeF64Fn = VTable.createGaugeF64,
+            .createHistogramI64Fn = VTable.createHistogramI64,
+            .createHistogramF64Fn = VTable.createHistogramF64,
             .deinitFn = VTable.deinit,
         };
     }

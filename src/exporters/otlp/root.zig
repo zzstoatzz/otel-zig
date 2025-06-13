@@ -15,7 +15,6 @@
 //! All OTLP exporters share common configuration:
 //! - `endpoint` - The OTLP receiver endpoint
 //! - `headers` - Additional headers for authentication
-//! - `compression` - Compression method (gzip, none)
 //! - `timeout` - Request timeout
 //! - `retry_config` - Retry behavior for failed exports
 //!
@@ -24,7 +23,6 @@
 //! const otlp_exporter = createLogExporter(.{
 //!     .endpoint = "http://localhost:4317",
 //!     .headers = &.{.{ "api-key", "secret" }},
-//!     .compression = .gzip,
 //! });
 //! ```
 //!
@@ -35,10 +33,15 @@ const std = @import("std");
 const otel_api = @import("otel-api");
 const otel_sdk = @import("otel-sdk");
 
-// Re-export types (placeholders)
+// Re-export types
 pub const OtlpLogExporter = @import("logs.zig").OtlpLogExporter;
 pub const OtlpTraceExporter = @import("traces.zig").OtlpTraceExporter;
 pub const OtlpMetricExporter = @import("metrics.zig").OtlpMetricExporter;
+
+// Re-export creation functions
+pub const createLogExporterWithConfig = @import("logs.zig").createLogExporterWithConfig;
+pub const createTraceExporter = @import("traces.zig").createTraceExporter;
+pub const createTraceExporterWithConfig = @import("traces.zig").createTraceExporterWithConfig;
 
 // Transport types
 pub const Transport = enum {
@@ -53,7 +56,7 @@ pub const OtlpExporterConfig = struct {
     endpoint: []const u8 = "http://localhost:4318",
 
     /// Transport mechanism
-    transport: Transport = .http_json,
+    transport: Transport = .http_protobuf,
 
     /// Headers for authentication/metadata
     headers: []const std.http.Header = &[_]std.http.Header{},

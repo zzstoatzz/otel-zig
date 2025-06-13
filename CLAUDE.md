@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Versions
+
+The code targets zig version 0.14.1. Because zig prefers structs instead of individual arguments, you need to pass `.{}` as the second argument to `std.debug.print`, event when you aren't formatting any output. You can also often skip the full type name if the destination value is already known; for example, if the method signature was `fn method(v: AttributeValue) void`, you can call it like `method(.{.string = "foo"});`, which allows you to avoid repeating an easily inferred type. The same is true of return statements.
+
 ## Build Commands
 
 - `zig build` - Build all libraries and examples
@@ -14,10 +18,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `zig build example-dns-query-otlp` - Run DNS query OTLP example
 - `zig build example-metrics` - Run metrics demo
 - `zig build example-metrics-otlp` - Run metrics OTLP demo
+- `zig build example-simple-trace-otlp` - Run simple trace OTLP example
 
 ## Architecture Overview
 
-This is a Zig implementation of the OpenTelemetry API and SDK following the official OpenTelemetry specification. The codebase is structured with clear separation between API interfaces and SDK implementations.
+This is a Zig implementation of the OpenTelemetry API and SDK following the official OpenTelemetry specification. The codebase is structured with clear separation between API interfaces and SDK implementations. The API
 
 ### Module Structure
 
@@ -49,14 +54,28 @@ This pattern is consistent across logs, metrics, and traces (when implemented).
 The codebase uses a bridge pattern to separate API from SDK:
 
 - **API Layer**: Defines interfaces using tagged unions (`Logger`, `LoggerProvider`, etc.)
-- **Bridge Types**: Enable SDK implementations to plug into API interfaces
+- **Bridge Types**: Enable SDK implementations to plug into API interfaces. These are provided in the API layer and use template meta progamming (`LoggerProviderBridge`)
 - **SDK Layer**: Provides concrete implementations (`StandardLogger`, `StandardLoggerProvider`, etc.)
 
 ### Memory Management
 
-All API types are **non-owning** - they hold references, not owned data. Callers are responsible for data lifetime management. The SDK provides owned variants when needed.
+All API types are **non-owning** - they hold references, not owned data. Callers are responsible for data lifetime management. The SDK tries to avoid creating new variants unless required. Usually a cloning method added to the API is sufficient (e.g. `AttributeKeyValue` has `initOwned()`, `initOwnedSlice`, `deinitOwned`, and `deinitOwnedSlice`). Types and collections are usually immutable. A builder should be used when cases of mutability are required (e.g. `AttributeBuilder`).
+
+SDK types have more flexibilty in terms of owning the memory and mutability.
+
+Exporters should copy and own memory when they are buffering or otherwise asyncronously using data.
 
 ## Key Patterns
+
+### Resource
+Every provider requires a `Resource` when it is created. Always use a `ResourceBuilder` for creating resources instead of manual or stack based constructions.
+
+```zig
+// example use builder.
+const resource = try ResourceBuilder.init(allocator)
+    .withDefaults()
+    .finish(allocator);
+```
 
 ### Instrumentation Scope
 Every logger/meter/tracer has an associated `InstrumentationScope` that identifies the instrumentation library (name, version, schema_url, attributes).
@@ -66,40 +85,32 @@ Every logger/meter/tracer has an associated `InstrumentationScope` that identifi
 - `AttributeKeyValue`: Key-value pairs for metadata
 - `AttributeBuilder`: Functional-style builder for attribute collections
 
+Prefer to use `[]AttributeKeyValue` rather than using an ArrayList.
+
 ### Global Provider Registry
 Thread-safe global provider management through `provider_registry.zig` with mutex-protected storage.
 
+### Span Lifecycle
+Two-phase pattern where `.end()` marks span completion and `.deinit()` handles memory cleanup, following Zig RAII patterns. Spans remain queryable after ending but become non-recording.
+
 ## Current State
 
-The logs implementation is fully functional with working examples. The metrics implementation exists but may need refinement. Tracing is planned but not yet implemented.
+The logs and metrics implementations exist but may need refinement. Tracing implementation exists but may need refinement. TODO.md lists some of the ongoing tracing work.
 
-Key areas mentioned in TODO.md that may need attention:
-- Inconsistent KeyValue interfaces across different components
-- Memory cleanup in simple setup functions
-- API/SDK division clarity in some areas
-- Missing unit tests (removed during refactoring)
+### Tracing Implementation Status
+- **API Layer**: Complete with bridge pattern and spec-compliant interfaces
+- **SDK Layer**: Core implementation complete (StandardTracer, StandardTracerProvider, RecordingSpan)
+- **Memory Management**: Two-phase span lifecycle (.end()/.deinit()) with zero-leak examples
+- **Exporters**: OTLP and console exporters functional with JSON serialization
+- **Sampling**: Basic samplers implemented (TraceIdRatioBasedSampler, ParentBasedSampler)
+- **Context Integration**: Proper context propagation with explicit span injection
+- **Remaining Work**: BatchSpanProcessor, advanced features, performance optimization (see TODO.md)
 
-## Example Usage Pattern
+Semantic conventions has not been started.
 
-```zig
-const otel = @import("otel");
+Exporters have been started for OTLP and console, but are currently in an MVP state, and don't support batching of output.
 
-// Create exporter
-const exporter = otel.exporters.console.createLogExporter(.{});
+The examples are useful for integration tests, but still need refinement to be more comprehensive.
 
-// Set up logging with simple synchronous configuration
-const logger_provider = try otel.sdk.logs.createSimpleSyncLogging(
-    allocator,
-    "my-service",
-    exporter,
-);
-
-// Set as global provider
-otel.api.provider_registry.setLoggerProvider(logger_provider);
-
-// Get logger and use it
-const logger = otel.api.provider_registry.getLoggerProvider().getLogger(.{
-    .name = "example",
-});
-logger.info("Hello, OpenTelemetry!");
-```
+## Local Resources
+The OTel specification is in the `spec` directory. A C++ reference implementation is in the `reference/cpp-sdk` directory. The protobuf definitions are in the `opentelemetry-proto` directory.

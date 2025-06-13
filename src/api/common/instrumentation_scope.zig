@@ -69,6 +69,23 @@ pub const InstrumentationScope = struct {
         };
     }
 
+    pub fn initOwned(allocator: std.mem.Allocator, unowned: InstrumentationScope) !InstrumentationScope {
+        const owned_name = try allocator.dupe(u8, unowned.name);
+        errdefer allocator.free(owned_name);
+        const owned_version = if (unowned.version) |version| try allocator.dupe(u8, version) else null;
+        errdefer if (owned_version) |version| allocator.free(version);
+        const owned_schema_url = if (unowned.schema_url) |url| try allocator.dupe(u8, url) else null;
+        errdefer if (owned_schema_url) |url| allocator.free(url);
+        const owned_attributes = try AttributeKeyValue.initOwnedSlice(allocator, unowned.attributes);
+        errdefer AttributeKeyValue.deinitOwnedSlice(allocator, owned_attributes);
+        return init(
+            owned_name,
+            owned_version,
+            owned_schema_url,
+            owned_attributes,
+        );
+    }
+
     /// Create a simple InstrumentationScope with just name and optional version
     pub fn initSimple(name: []const u8, version: ?[]const u8) !InstrumentationScope {
         return init(name, version, null, &[_]AttributeKeyValue{});

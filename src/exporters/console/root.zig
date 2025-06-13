@@ -31,7 +31,6 @@ const LogRecord = otel_api.logs.LogRecord;
 const ExportResult = otel_sdk.logs.ExportResult;
 
 // Re-export types
-pub const ConsoleLogExporter = @import("logs.zig").ConsoleLogExporter;
 pub const ConsoleTraceExporter = @import("traces.zig").ConsoleTraceExporter;
 pub const ConsoleMetricExporter = @import("metrics.zig").ConsoleMetricExporter;
 
@@ -58,7 +57,7 @@ pub const ConsoleExporterConfig = struct {
 };
 
 // Factory functions
-pub const createLogExporter = @import("logs.zig").createLogExporter;
+pub const createLogExporterWithConfig = @import("logs.zig").createLogExporterWithConfig;
 pub const createTraceExporter = @import("traces.zig").createTraceExporter;
 pub const createMetricExporter = @import("metrics.zig").createMetricExporter;
 

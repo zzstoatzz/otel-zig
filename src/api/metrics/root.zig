@@ -23,6 +23,7 @@ const instrument_zig = @import("instrument.zig");
 pub const Counter = instrument_zig.Counter;
 pub const UpDownCounter = instrument_zig.UpDownCounter;
 pub const Gauge = instrument_zig.Gauge;
+pub const Histogram = instrument_zig.Histogram;
 pub const InstrumentBridge = instrument_zig.InstrumentBridge;
 
 test {

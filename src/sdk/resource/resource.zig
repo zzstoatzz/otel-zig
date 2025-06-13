@@ -71,73 +71,127 @@ pub const Resource = struct {
         const merged_attrs = try builder.finish(allocator);
 
         // Schema URL precedence: other -> self -> null
-        const schema = other.schema_url orelse self.schema_url;
+        // Clone the schema URL to make it owned
+        const schema_source = other.schema_url orelse self.schema_url;
+        const owned_schema = if (schema_source) |url| try allocator.dupe(u8, url) else null;
 
-        return Resource.init(merged_attrs, schema);
+        return Resource.init(merged_attrs, owned_schema);
     }
 };
 
+/// ResourceBuilder provides a fluent interface for constructing Resources.
+///
+/// Example usage:
+/// ```zig
+/// const resource = try ResourceBuilder.init(allocator)
+///     .withDefaults()  // Add telemetry.sdk.* attributes
+///     .addKeyValue(.{ .key = "service.name", .value = .{ .string = "my-service" }})
+///     .withSchemaUrl("https://opentelemetry.io/schemas/1.21.0")
+///     .finish(allocator);
+/// defer resource.deinitOwned(allocator);
+/// ```
+///
+/// Note: Later added values overwrite earlier added values.
+///
+/// The builder pattern is the recommended way to create Resources in the SDK,
+/// as it handles attribute merging and memory management cleanly.
 pub const ResourceBuilder = union(enum) {
     valid: struct {
         allocator: std.mem.Allocator,
-        attributes: []AttributeKeyValue,
+        attributes: AttributeBuilder,
         schema_url: ?[]const u8,
     },
     invalid: anyerror,
 
+    /// Create a new, blank ResourceBuilder.
+    ///
+    /// The `allocator` is used for the intermediatary Builder state, and has
+    /// no impact on the memory ownership of the result from calling `finish()`.
     pub fn init(allocator: std.mem.Allocator) ResourceBuilder {
-        return ResourceBuilder{ .valid = .{
+        const attr_builder = AttributeBuilder.init(allocator);
+        return .{ .valid = .{
             .allocator = allocator,
-            .attributes = &[_]AttributeKeyValue{},
+            .attributes = attr_builder,
             .schema_url = null,
         } };
     }
 
+    /// Release local copy of the memory.
     pub fn deinit(self: ResourceBuilder) void {
         switch (self) {
             .valid => |builder| {
-                builder.allocator.free(builder.attributes);
+                builder.attributes.deinit();
             },
             .invalid => {},
         }
     }
 
-    // Return
+    /// Get the deep copy slice of `AttributeKeyValue` and `schema_url`, then
+    /// destroy this builder.
+    ///
+    /// The provided allocator will be used for the resulting resource, not the
+    /// allocator provided when the builder was created.
+    ///
+    /// Returned slice must be released with `Resource.deinitOwned` to
+    /// release the keys, the values, and the schema url.
     pub fn finish(self: ResourceBuilder, allocator: std.mem.Allocator) !Resource {
         defer self.deinit();
         return switch (self) {
             .valid => |builder| blk: {
+                // if the attribute builder cannot provide attributes,
+                // surface the error, and let the `defer self.deinit()`
+                // takeover.
+                const attributes = try AttributeKeyValue.initOwnedSlice(
+                    allocator,
+                    try builder.attributes.build(),
+                );
+                errdefer AttributeKeyValue.deinitOwnedSlice(allocator, attributes);
+
                 const owned_schema_url = if (builder.schema_url) |url| try allocator.dupe(u8, url) else null;
                 errdefer if (owned_schema_url) |url| allocator.free(url);
 
-                const kvs = try AttributeKeyValue.initOwnedSlice(allocator, builder.attributes);
-                errdefer AttributeKeyValue.deinitOwnedSlice(allocator, kvs);
-
-                const resource = Resource{
+                break :blk .{
+                    .attributes = attributes,
                     .schema_url = owned_schema_url,
-                    .attributes = kvs,
                 };
-                break :blk resource;
             },
             .invalid => |e| e,
         };
     }
 
+    pub inline fn withDefaults(self: ResourceBuilder) ResourceBuilder {
+        return self.addResource(.default);
+    }
+
+    /// Adds a resource to the builder. This is effecitively the merge
+    /// operation.
+    ///
+    /// The resource must like longer than the builder.
     pub fn addResource(self: ResourceBuilder, resource: Resource) ResourceBuilder {
         defer self.deinit();
         return switch (self) {
             .valid => |builder| blk: {
-                const new_len = builder.attributes.len + resource.attributes.len;
-                var new_attributes = builder.allocator.alloc(AttributeKeyValue, new_len) catch |e| return ResourceBuilder{ .invalid = e };
-                errdefer builder.allocator.free(new_attributes);
-                @memcpy(new_attributes[0..builder.attributes.len], builder.attributes);
-                @memcpy(new_attributes[builder.attributes.len..], resource.attributes);
+                // if the attribute builder cannot provide attributes,
+                // invalidate the builder, and let the `defer self.deinit()`
+                // takeover.
+                const self_kvs = builder.attributes.build() catch |e| {
+                    break :blk .{ .invalid = e };
+                };
 
-                break :blk ResourceBuilder{
+                // Merge the attributes.
+                const attr_builder = AttributeBuilder.init(builder.allocator)
+                    .addKeyValues(self_kvs)
+                    .addKeyValues(resource.attributes);
+                errdefer attr_builder.deinit();
+
+                // Take the new schema url if it isn't null.
+                const schema_url = resource.schema_url orelse builder.schema_url;
+
+                break :blk .{
                     .valid = .{
                         .allocator = builder.allocator,
-                        .schema_url = resource.schema_url,
-                        .attributes = new_attributes,
+                        .attributes = attr_builder,
+                        .schema_url = schema_url,
                     },
                 };
             },
@@ -145,21 +199,94 @@ pub const ResourceBuilder = union(enum) {
         };
     }
 
+    /// Add Attributes to the resource builder.
+    ///
+    /// The slice of attributeKeyValues must live longer than the builder.
+    pub fn addKeyValues(self: ResourceBuilder, kvs: []const AttributeKeyValue) ResourceBuilder {
+        defer self.deinit();
+        return switch (self) {
+            .valid => |builder| blk: {
+                // if the attribute builder cannot provide attributes,
+                // invalidate the builder, and let the `defer self.deinit()`
+                // takeover.
+                const self_kvs = builder.attributes.build() catch |e| {
+                    break :blk .{ .invalid = e };
+                };
+
+                // Merge the attributes.
+                const attr_builder = AttributeBuilder.init(builder.allocator)
+                    .addKeyValues(self_kvs)
+                    .addKeyValues(kvs);
+                errdefer attr_builder.deinit();
+
+                break :blk .{
+                    .valid = .{
+                        .allocator = builder.allocator,
+                        .attributes = attr_builder,
+                        .schema_url = builder.schema_url,
+                    },
+                };
+            },
+            .invalid => self,
+        };
+    }
+
+    /// Add an attribute to the resource builder.
+    ///
+    /// The AttributeKeyValues must live longer than the builder.
     pub fn addKeyValue(self: ResourceBuilder, kv: AttributeKeyValue) ResourceBuilder {
         defer self.deinit();
         return switch (self) {
             .valid => |builder| blk: {
-                const new_len = builder.attributes.len + 1;
-                var new_attributes = builder.allocator.alloc(AttributeKeyValue, new_len) catch |e| return ResourceBuilder{ .invalid = e };
-                errdefer builder.allocator.free(new_attributes);
-                @memcpy(new_attributes[0..builder.attributes.len], builder.attributes);
-                new_attributes[builder.attributes.len] = kv;
+                // if the attribute builder cannot provide attributes,
+                // invalidate the builder, and let the `defer self.deinit()`
+                // takeover.
+                const self_kvs = builder.attributes.build() catch |e| {
+                    break :blk .{ .invalid = e };
+                };
 
-                break :blk ResourceBuilder{
+                // Merge the attributes.
+                const attr_builder = AttributeBuilder.init(builder.allocator)
+                    .addKeyValues(self_kvs)
+                    .addKeyValue(kv);
+                errdefer attr_builder.deinit();
+
+                break :blk .{
                     .valid = .{
                         .allocator = builder.allocator,
+                        .attributes = attr_builder,
                         .schema_url = builder.schema_url,
-                        .attributes = new_attributes,
+                    },
+                };
+            },
+            .invalid => self,
+        };
+    }
+
+    /// Add a schema url.
+    ///
+    /// If the `url` argument is null, this method unsets the schema url.
+    pub fn addSchemaUrl(self: ResourceBuilder, url: ?[]const u8) ResourceBuilder {
+        defer self.deinit();
+        return switch (self) {
+            .valid => |builder| blk: {
+                // if the attribute builder cannot provide attributes,
+                // invalidate the builder, and let the `defer self.deinit()`
+                // takeover.
+                const self_kvs = builder.attributes.build() catch |e| {
+                    break :blk .{ .invalid = e };
+                };
+
+                // make the new attributes builder.
+                const attr_builder = AttributeBuilder.init(builder.allocator)
+                    .addKeyValues(self_kvs);
+                errdefer attr_builder.deinit();
+
+                break :blk .{
+                    .valid = .{
+                        .allocator = builder.allocator,
+                        .attributes = attr_builder,
+                        .schema_url = url,
                     },
                 };
             },
@@ -167,29 +294,6 @@ pub const ResourceBuilder = union(enum) {
         };
     }
 };
-
-/// Get default resource with telemetry SDK information
-pub fn getDefaultResource(allocator: std.mem.Allocator) !Resource {
-    var attrs = std.ArrayList(AttributeKeyValue).init(allocator);
-    defer attrs.deinit();
-
-    try attrs.append(try AttributeKeyValue.initOwned(allocator, "telemetry.sdk.name", .{ .string = "opentelemetry" }));
-    try attrs.append(try AttributeKeyValue.initOwned(allocator, "telemetry.sdk.language", .{ .string = "zig" }));
-    try attrs.append(try AttributeKeyValue.initOwned(allocator, "telemetry.sdk.version", .{ .string = "0.1.0" }));
-
-    return Resource.init(try attrs.toOwnedSlice(), null);
-}
-
-/// Get telemetry SDK resource attributes
-pub fn getTelemetrySDKResource(allocator: std.mem.Allocator) !Resource {
-    return getDefaultResource(allocator);
-}
-
-/// Create an empty resource
-pub fn createEmptyResource(allocator: std.mem.Allocator) !Resource {
-    const attrs = try allocator.alloc(AttributeKeyValue, 0);
-    return Resource.init(attrs, null);
-}
 
 test "Resource basic operations" {
     const testing = std.testing;
@@ -268,8 +372,8 @@ test "Empty resource" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    var resource = try createEmptyResource(allocator);
-    defer allocator.free(resource.attributes);
+    var resource = try ResourceBuilder.init(allocator).finish(allocator);
+    defer resource.deinitOwned(allocator);
 
     try testing.expectEqual(@as(usize, 0), resource.attributes.len);
     try testing.expect(resource.getAttribute("any.key") == null);
@@ -279,7 +383,7 @@ test "Default resource" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    var resource = try getDefaultResource(allocator);
+    var resource = try ResourceBuilder.init(allocator).withDefaults().finish(allocator);
     defer resource.deinitOwned(allocator);
 
     try testing.expect(resource.attributes.len > 0);
@@ -287,7 +391,33 @@ test "Default resource" {
     try testing.expect(resource.getAttribute("telemetry.sdk.language") != null);
     try testing.expect(resource.getAttribute("telemetry.sdk.version") != null);
 
-    if (resource.getAttribute("telemetry.sdk.language")) |value| {
-        try testing.expectEqualStrings("zig", value.string);
+    const sdk_name = resource.getAttribute("telemetry.sdk.name").?;
+    try testing.expectEqualStrings("opentelemetry", sdk_name.string);
+}
+
+test "Resource merge clones schema_url" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const attrs1 = [_]AttributeKeyValue{
+        .{ .key = "service.name", .value = .{ .string = "service-a" } },
+    };
+    const resource1 = try Resource.init(&attrs1, "https://schema1.example.com");
+
+    const attrs2 = [_]AttributeKeyValue{
+        .{ .key = "service.version", .value = .{ .string = "1.0.0" } },
+    };
+    const resource2 = try Resource.init(&attrs2, "https://schema2.example.com");
+
+    // Merge resources - should clone the schema_url from resource2 (precedence: other -> self)
+    const merged = try Resource.merge(allocator, resource1, resource2);
+    defer merged.deinitOwned(allocator);
+
+    // Verify schema_url was copied from resource2 and is owned
+    try testing.expect(merged.schema_url != null);
+    if (merged.schema_url) |url| {
+        try testing.expectEqualStrings("https://schema2.example.com", url);
+        // The key test: this should not crash when we call deinitOwned
+        // because the schema_url should be an owned copy
     }
 }

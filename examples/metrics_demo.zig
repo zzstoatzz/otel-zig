@@ -14,7 +14,7 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var console_exporter = otel_exporters.console.ConsoleMetricExporter.init(.{});
+    var console_exporter = otel_exporters.console.ConsoleMetricExporter.init(allocator, .{});
     var exporter = otel_sdk.metrics.MetricExporter{
         .bridge = otel_sdk.metrics.BridgeMetricExporter.init(&console_exporter),
     };
@@ -139,11 +139,16 @@ pub fn main() !void {
     temperature_gauge.record(ctx, 23.8, temp_attrs);
     std.debug.print("  Temperature: 23.8°C (latest)\n", .{});
 
-    // In a real application, the aggregated values would be exported by a metrics exporter
-    // (e.g., ConsoleExporter, OTLPExporter, PrometheusExporter)
-    // For this MVP demo, the values are stored internally in the SDK but not exported
+    // Force flush to trigger export of collected metrics
+    std.debug.print("\n=== Forcing Metrics Export ===\n", .{});
+    const flush_result = provider.forceFlush(5000); // 5 second timeout
+    if (flush_result == .success) {
+        std.debug.print("✅ Metrics exported successfully!\n", .{});
+    } else {
+        std.debug.print("❌ Failed to export metrics\n", .{});
+    }
+
     std.debug.print("\n=== Metrics Collection Complete ===\n", .{});
-    std.debug.print("In a production setup, an exporter would read and send these metrics.\n", .{});
 
     std.debug.print("\nMetrics demo completed!\n", .{});
 }

@@ -1,7 +1,6 @@
 const std = @import("std");
 const otel_api = @import("otel-api");
 
-
 const ExportResult = @import("otel-api").common.ExportResult;
 const MetricData = @import("../metrics/data.zig").MetricData;
 
@@ -10,7 +9,12 @@ pub const MetricExporter = union(enum) {
     noop: void,
     bridge: BridgeMetricExporter,
 
-    pub fn exportMetrics(self: *MetricExporter, metrics: std.ArrayList(MetricData)) ExportResult {
+    /// Export a batch of metrics
+    ///
+    /// The caller is required to manage `metrics`. The exporter must be finished with
+    /// the memory when this function returns. That includes making deep copies if
+    /// necessary for buffering.
+    pub fn exportMetrics(self: *MetricExporter, metrics: []const MetricData) ExportResult {
         return switch (self.*) {
             .noop => .success,
             .bridge => |exporter| exporter.exportFn(exporter, metrics),
@@ -34,7 +38,7 @@ pub const MetricExporter = union(enum) {
     }
 
     /// Clean up exporter resources
-    pub fn deinit(self: *MetricExporter) void {
+    pub fn deinit(self: *const MetricExporter) void {
         switch (self.*) {
             .noop => {},
             .bridge => |exporter| exporter.deinitFn(exporter),
@@ -44,7 +48,7 @@ pub const MetricExporter = union(enum) {
 
 pub const BridgeMetricExporter = struct {
     exporter_ptr: *anyopaque,
-    exportFn: *const fn (ptr: BridgeMetricExporter, metrics: std.ArrayList(MetricData)) ExportResult,
+    exportFn: *const fn (ptr: BridgeMetricExporter, metrics: []const MetricData) ExportResult,
     forceFlushFn: *const fn (ptr: BridgeMetricExporter, timeout_ms: ?u64) ExportResult,
     shutdownFn: *const fn (ptr: BridgeMetricExporter, timeout_ms: ?u64) ExportResult,
     deinitFn: *const fn (self: BridgeMetricExporter) void,
@@ -54,7 +58,7 @@ pub const BridgeMetricExporter = struct {
         const ptr_info = @typeInfo(T);
 
         const VTable = struct {
-            pub fn exportMetrics(self: BridgeMetricExporter, metrics: std.ArrayList(MetricData)) ExportResult {
+            pub fn exportMetrics(self: BridgeMetricExporter, metrics: []const MetricData) ExportResult {
                 const actual_self: T = @ptrCast(@alignCast(self.exporter_ptr));
                 return ptr_info.pointer.child.exportMetrics(actual_self, metrics);
             }

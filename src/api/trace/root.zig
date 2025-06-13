@@ -19,39 +19,44 @@
 
 const std = @import("std");
 
-// TODO: Implement trace API types
-// pub const Span = @import("span.zig").Span;
-// pub const Tracer = @import("tracer.zig").Tracer;
-// pub const TracerProvider = @import("tracer_provider.zig").TracerProvider;
-// pub const SpanContext = @import("span_context.zig").SpanContext;
-// pub const SpanKind = @import("span_kind.zig").SpanKind;
-// pub const StatusCode = @import("status.zig").StatusCode;
-// pub const Link = @import("link.zig").Link;
+pub const SpanContext = @import("span_context.zig").SpanContext;
+pub const Event = @import("event.zig").Event;
 
-// Placeholder types until implementation
-pub const Span = struct {};
-pub const Tracer = struct {};
-pub const TracerProvider = struct {};
-pub const SpanContext = struct {};
-pub const SpanKind = enum {
-    internal,
-    server,
-    client,
-    producer,
-    consumer,
-};
-pub const StatusCode = enum {
-    unset,
-    ok,
-    @"error",
-};
+// Context integration (Phase 2 - Implemented)
+pub const context_keys = @import("context_keys.zig");
+pub const W3cPropagator = @import("w3c_propagator.zig").W3cPropagator;
+pub const createW3cPropagator = @import("w3c_propagator.zig").createW3cPropagator;
 
+// Spans
+const span = @import("span.zig");
+pub const Span = span.Span;
+pub const SpanBridge = span.SpanBridge;
+pub const SpanKind = span.SpanKind;
+pub const SpanStartOptions = span.SpanStartOptions;
+pub const SpanEndOptions = span.SpanEndOptions;
+pub const Status = span.Status;
+pub const StatusCode = span.StatusCode;
+pub const Link = span.Link;
+
+pub const SpanLimits = @import("span_limits.zig").SpanLimits;
+pub const sampling_config = @import("sampling_config.zig");
+pub const SamplingDecision = sampling_config.SamplingDecision;
+pub const SamplingResult = sampling_config.SamplingResult;
+pub const SampleParams = sampling_config.SampleParams;
+pub const Sampler = sampling_config.Sampler;
+pub const SamplerBridge = sampling_config.SamplerBridge;
+
+// Re-export commonly used context utilities for convenience
+pub const trace_context = @import("context_utils.zig");
+
+// Core interfaces (Phase 4 - Implemented)
+pub const Tracer = @import("tracer.zig").Tracer;
+pub const SpanResult = @import("tracer.zig").SpanResult;
+pub const TracerBridge = @import("tracer.zig").TracerBridge;
+pub const TracerProvider = @import("tracer_provider.zig").TracerProvider;
+pub const TracerProviderBridge = @import("tracer_provider.zig").TracerProviderBridge;
+
+// Tests
 test "trace api module compilation" {
-    _ = std.testing;
-    _ = Span;
-    _ = Tracer;
-    _ = TracerProvider;
-    _ = SpanContext;
-    _ = SpanKind;
-    _ = StatusCode;
+    std.testing.refAllDecls(@This());
 }

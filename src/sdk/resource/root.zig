@@ -30,8 +30,10 @@ const std = @import("std");
 const otel_api = @import("otel-api");
 
 // Resource types
-pub const Resource = @import("resource.zig").Resource;
-pub const createEmptyResource = @import("resource.zig").createEmptyResource;
+const resource_zig = @import("resource.zig");
+pub const Resource = resource_zig.Resource;
+pub const ResourceBuilder = resource_zig.ResourceBuilder;
+
 pub const mergeResources = Resource.merge;
 
 // Resource detection
@@ -40,10 +42,6 @@ pub const DefaultDetector = @import("detector.zig").DefaultDetector;
 pub const ProcessDetector = @import("detector.zig").ProcessDetector;
 pub const HostDetector = @import("detector.zig").HostDetector;
 pub const detectResource = @import("detector.zig").detectResource;
-
-// Common resource utilities
-pub const getDefaultResource = @import("resource.zig").getDefaultResource;
-pub const getTelemetrySDKResource = @import("resource.zig").getTelemetrySDKResource;
 
 test {
     std.testing.refAllDecls(@This());

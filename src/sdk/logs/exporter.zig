@@ -18,7 +18,11 @@ pub const LogExporter = union(enum) {
     noop: void,
     bridge: BridgeLogExporter,
 
-    /// Export a batch of log records
+    /// Export a batch of log records.
+    ///
+    /// The caller is required to manage `records`. The exporter must be finished with
+    /// the memory when this function returns. That includes making deep copies if
+    /// necessary for buffering.
     pub fn exportRecords(self: *LogExporter, records: []const LogRecord, resource: Resource) ExportResult {
         return switch (self.*) {
             .noop => .success,
@@ -43,7 +47,7 @@ pub const LogExporter = union(enum) {
     }
 
     /// Clean up exporter resources
-    pub fn deinit(self: *LogExporter) void {
+    pub fn deinit(self: *const LogExporter) void {
         switch (self.*) {
             .noop => {},
             .bridge => |exporter| exporter.deinitFn(exporter),

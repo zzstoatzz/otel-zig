@@ -1,6 +1,6 @@
 # Zig Otel
 
-This is a zig implementation of the OTel API and SDK.
+This is a zig implementation of the OTel API and SDK. It was build for zig 0.14.1.
 
 ## The API
 

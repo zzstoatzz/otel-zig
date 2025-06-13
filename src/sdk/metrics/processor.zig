@@ -102,19 +102,22 @@ pub const SimpleMetricProcessor = struct {
     }
 
     pub fn collect(self: *SimpleMetricProcessor) void {
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const arena_allocator = arena.allocator();
+
         self.mutex.lock();
         defer self.mutex.unlock();
 
         if (self.is_shutdown) return;
 
         // Initialize collection data structure
-        var collected_metrics = std.ArrayList(MetricData).init(self.allocator);
-        // Note: Not deferring deinit - exporter owns the memory now
+        var collected_metrics = std.ArrayList(MetricData).init(arena_allocator);
 
         // Iterate through registered meters
         for (self.registered_meters.items) |meter| {
             // Collect from each meter, continue on errors
-            const meter_metrics = meter.collectMetrics(self.allocator) catch {
+            const meter_metrics = meter.collectMetrics(arena_allocator) catch {
                 // Log error if needed, but continue with next meter
                 continue;
             };
@@ -126,9 +129,10 @@ pub const SimpleMetricProcessor = struct {
             };
         }
 
-        // Export all collected metrics
-        _ = self.exporter.exportMetrics(collected_metrics);
-        // Exporter is responsible for freeing the ArrayList
+        // Export all collected metrics. Exporter must copy memory
+        // that it needs beyond the duration of this call.
+        _ = self.exporter.exportMetrics(collected_metrics.items);
+        // Arena cleans up all the memory.
     }
 
     pub fn forceFlush(self: *SimpleMetricProcessor, timeout_ms: ?u64) ProcessResult {

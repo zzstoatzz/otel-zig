@@ -41,25 +41,17 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var otlp_exporter = otel_exporters.otlp.OtlpLogExporter.init(allocator, .{
+    const exporter_config = otel_exporters.otlp.OtlpExporterConfig{
         .endpoint = "http://localhost:4318",
         .transport = .http_json,
-    });
-    var exporter = otel_sdk.logs.LogExporter{
-        .bridge = otel_sdk.logs.BridgeLogExporter.init(&otlp_exporter),
     };
-    errdefer exporter.deinit();
-
-    var provider = try otel_sdk.logs.createSimpleSyncLogging(
-        allocator,
-        "dns_query_logging_otlp",
-        exporter,
-    );
-    defer {
-        provider.deinit();
-        _ = otel_api.provider_registry.setGlobalLoggerProvider(null);
-    }
-    _ = otel_api.provider_registry.setGlobalLoggerProvider(&provider);
+    try otel_sdk.logs.buildProvider(allocator)
+        .withExporterClosure(exporter_config, otel_exporters.otlp.createLogExporterWithConfig)
+        .withBasicProcessor()
+        .withDefaultResource()
+        .withBasicProvider()
+        .finish();
+    defer otel_sdk.logs.destroyProvider();
 
     // Create execution context
     var ctx = otel_api.Context.empty(allocator);

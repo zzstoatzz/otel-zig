@@ -22,12 +22,6 @@ pub const SystemClock = @import("clock.zig").SystemClock;
 pub const getTimestamp = @import("clock.zig").getTimestamp;
 pub const getMonotonicTime = @import("clock.zig").getMonotonicTime;
 
-// ID generation
-pub const IdGenerator = @import("id_generator.zig").IdGenerator;
-pub const RandomIdGenerator = @import("id_generator.zig").RandomIdGenerator;
-pub const generateTraceId = @import("id_generator.zig").generateTraceId;
-pub const generateSpanId = @import("id_generator.zig").generateSpanId;
-
 // Configuration
 pub const Config = @import("config.zig").Config;
 pub const Limits = @import("config.zig").Limits;

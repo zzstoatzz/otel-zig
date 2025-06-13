@@ -562,9 +562,12 @@ pub const AttributeBuilder = union(enum) {
 
     /// Get the slice of `AttributeKeyValue`.
     ///
-    /// Returned slice is unowned. `deinit` must be manually called on the
-    /// builder when this method is used.
-    pub fn build(self: AttributeBuilder) ![]AttributeBuilder {
+    /// Returned slice is owned by the builder, but the values in the slice
+    /// are not owned copies; they still refer to the slices passed in the
+    /// `addKeyValue` call (relevant for slice and string types).
+    ///
+    /// `deinit` must be manually called on the builder when this method is used.
+    pub fn build(self: AttributeBuilder) ![]const AttributeKeyValue {
         return switch (self) {
             .valid => |builder| builder.entries,
             .invalid => |e| e,

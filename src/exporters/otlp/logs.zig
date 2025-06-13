@@ -11,6 +11,7 @@ const LogRecord = otel_sdk.logs.LogRecord;
 const ExportResult = otel_api.common.ExportResult;
 const OtlpExporterConfig = @import("root.zig").OtlpExporterConfig;
 const Resource = otel_sdk.resource.Resource;
+const ResourceBuilder = otel_sdk.resource.ResourceBuilder;
 
 /// OTLP JSON structures for serialization
 const OtlpResourceLogs = struct {
@@ -62,20 +63,21 @@ pub const OtlpLogExporter = struct {
     allocator: std.mem.Allocator,
     is_shutdown: bool,
     mutex: std.Thread.Mutex,
-    http_client: std.http.Client,
 
-    pub fn init(allocator: std.mem.Allocator, config: OtlpExporterConfig) OtlpLogExporter {
-        return .{
+    pub fn init(allocator: std.mem.Allocator, config: OtlpExporterConfig) !*OtlpLogExporter {
+        const self = try allocator.create(OtlpLogExporter);
+        errdefer allocator.destroy(self);
+        self.* = .{
             .config = config,
             .allocator = allocator,
             .is_shutdown = false,
             .mutex = .{},
-            .http_client = std.http.Client{ .allocator = allocator },
         };
+        return self;
     }
 
     pub fn deinit(self: *OtlpLogExporter) void {
-        self.http_client.deinit();
+        self.allocator.destroy(self);
     }
 
     pub fn exportRecords(self: *OtlpLogExporter, records: []const LogRecord, resource: Resource) ExportResult {
@@ -122,14 +124,14 @@ pub const OtlpLogExporter = struct {
         self.is_shutdown = true;
         _ = timeout_ms;
 
-        // Close HTTP client connections
-        self.http_client.deinit();
-        self.http_client = std.http.Client{ .allocator = self.allocator };
-
         return .success;
     }
 
     fn sendRequest(self: *OtlpLogExporter, allocator: std.mem.Allocator, data: []const u8) !ExportResult {
+        // Create stack-based HTTP client
+        var client = std.http.Client{ .allocator = self.allocator };
+        defer client.deinit();
+
         // Parse endpoint URL with detailed error context
         const uri = std.Uri.parse(self.config.endpoint) catch |err| {
             std.log.err("OTLP URL Parsing Error: {s} - {s}", .{ self.config.endpoint, @errorName(err) });
@@ -148,8 +150,9 @@ pub const OtlpLogExporter = struct {
 
         // Create HTTP request
         const full_uri = try std.Uri.parse(full_url);
-        var req = try self.http_client.open(.POST, full_uri, .{
-            .server_header_buffer = try allocator.alloc(u8, 8192),
+        var server_header_buffer: [8192]u8 = undefined;
+        var req = try client.open(.POST, full_uri, .{
+            .server_header_buffer = &server_header_buffer,
         });
         defer req.deinit();
 
@@ -184,6 +187,10 @@ pub const OtlpLogExporter = struct {
                 return .failure;
             },
         }
+    }
+
+    pub fn logExporter(self: *OtlpLogExporter) otel_sdk.logs.LogExporter {
+        return .{ .bridge = otel_sdk.logs.BridgeLogExporter.init(self) };
     }
 };
 
@@ -427,23 +434,17 @@ fn convertToOtlpFormat(allocator: std.mem.Allocator, records: []const LogRecord,
     return try json_buffer.toOwnedSlice();
 }
 
-/// Create a log exporter with default configuration
-pub fn createLogExporter() *OtlpLogExporter {
-    return createLogExporterWithConfig(std.heap.page_allocator, .{});
-}
-
 /// Create an OTLP log exporter with custom configuration
-pub fn createLogExporterWithConfig(allocator: std.mem.Allocator, config: OtlpExporterConfig) *OtlpLogExporter {
-    const exporter = allocator.create(OtlpLogExporter) catch unreachable;
-    exporter.* = OtlpLogExporter.init(allocator, config);
-    return exporter;
+pub fn createLogExporterWithConfig(config: OtlpExporterConfig, allocator: std.mem.Allocator) !otel_sdk.logs.LogExporter {
+    const exporter = try OtlpLogExporter.init(allocator, config);
+    return exporter.logExporter();
 }
 
 test "OtlpLogExporter basic functionality" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    var exporter = OtlpLogExporter.init(allocator, .{
+    var exporter = try OtlpLogExporter.init(allocator, .{
         .endpoint = "http://localhost:4318",
         .transport = .http_json,
     });
@@ -464,7 +465,9 @@ test "OtlpLogExporter basic functionality" {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    const test_resource = try otel_sdk.resource.getDefaultResource(arena.allocator());
+    const test_resource = try ResourceBuilder.init(arena.allocator())
+        .withDefaults()
+        .finish(arena.allocator());
     const json_data = try convertToOtlpFormat(arena.allocator(), &records, test_resource);
     defer arena.allocator().free(json_data);
 

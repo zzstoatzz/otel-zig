@@ -49,6 +49,8 @@ pub const LogExporter = exporter_zig.LogExporter;
 pub const BridgeLogExporter = exporter_zig.BridgeLogExporter;
 
 // Re-export the setup helper functions
+pub const buildProvider = @import("setup.zig").buildProvider;
+pub const destroyProvider = @import("setup.zig").destroyProvider;
 pub const createSimpleSyncLogging = @import("setup.zig").createSimpleSyncLogging;
 
 test "logs sdk module compilation" {

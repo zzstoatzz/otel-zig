@@ -15,7 +15,6 @@ const Context = otel_api.Context;
 const LogRecord = otel_api.logs.LogRecord;
 
 const Resource = @import("../resource/resource.zig").Resource;
-const getDefaultResource = @import("../resource/resource.zig").getDefaultResource;
 const LogProcessor = @import("processor.zig").LogProcessor;
 const StandardLogger = @import("logger.zig").StandardLogger;
 

@@ -17,10 +17,14 @@ pub const StandardMeter = @import("meter.zig").StandardMeter;
 pub const StandardCounter = @import("instruments.zig").StandardCounter;
 pub const StandardUpDownCounter = @import("instruments.zig").StandardUpDownCounter;
 pub const StandardGauge = @import("instruments.zig").StandardGauge;
+pub const StandardHistogram = @import("instruments.zig").StandardHistogram;
 
 // Aggregation exports (for advanced use)
 pub const SumAggregation = @import("instruments.zig").SumAggregation;
 pub const LastValueAggregation = @import("instruments.zig").LastValueAggregation;
+pub const HistogramAggregation = @import("instruments.zig").HistogramAggregation;
+pub const HistogramAggregationConfig = @import("instruments.zig").HistogramAggregationConfig;
+pub const DEFAULT_HISTOGRAM_BOUNDARIES = @import("instruments.zig").DEFAULT_HISTOGRAM_BOUNDARIES;
 
 // Processor and exporter types
 pub const processor = @import("processor.zig");
@@ -28,11 +32,17 @@ pub const MetricProcessor = processor.MetricProcessor;
 pub const SimpleMetricProcessor = processor.SimpleMetricProcessor;
 pub const BridgeMetricProcessor = processor.BridgeMetricProcessor;
 
+const processor_periodic_zig = @import("processor_periodic.zig");
+pub const PeriodicProcessor = processor_periodic_zig.PeriodicProcessor;
+pub const createPeriodicProcessor = processor_periodic_zig.createPeriodicProcessor;
+
 const data_zig = @import("data.zig");
 pub const MetricData = data_zig.MetricData;
 pub const MetricDataPoint = data_zig.MetricDataPoint;
 pub const MetricType = data_zig.MetricType;
 pub const MetricValue = data_zig.MetricValue;
+pub const I64HistogramData = data_zig.I64HistogramData;
+pub const F64HistogramData = data_zig.F64HistogramData;
 
 const exporter_zig = @import("exporter.zig");
 pub const MetricExporter = exporter_zig.MetricExporter;

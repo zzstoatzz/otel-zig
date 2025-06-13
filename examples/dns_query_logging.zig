@@ -14,22 +14,14 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var console_exporter = otel_exporters.console.ConsoleLogExporter.init(.{});
-    var exporter = otel_sdk.logs.LogExporter{
-        .bridge = otel_sdk.logs.BridgeLogExporter.init(&console_exporter),
-    };
-    errdefer exporter.deinit();
-
-    var provider = try otel_sdk.logs.createSimpleSyncLogging(
-        allocator,
-        "dns_query_logging",
-        exporter,
-    );
-    defer {
-        provider.deinit();
-        _ = otel_api.provider_registry.setGlobalLoggerProvider(null);
-    }
-    _ = otel_api.provider_registry.setGlobalLoggerProvider(&provider);
+    const exporter_config = otel_exporters.console.ConsoleExporterConfig{};
+    try otel_sdk.logs.buildProvider(allocator)
+        .withExporterClosure(exporter_config, otel_exporters.console.createLogExporterWithConfig)
+        .withBasicProcessor()
+        .withDefaultResource()
+        .withBasicProvider()
+        .finish();
+    defer otel_sdk.logs.destroyProvider();
 
     // Get application logger from global registry (now backed by SDK)
     const scope = try otel_api.InstrumentationScope.initSimple("dns.query.example", "1.0.0");

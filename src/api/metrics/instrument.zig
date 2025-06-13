@@ -15,7 +15,7 @@ const Context = @import("../context/root.zig").Context;
 const AttributeKeyValue = @import("../common/root.zig").AttributeKeyValue;
 
 /// Counter is a monotonic sum instrument
-/// T must be a numeric type (i64, u64, f64)
+/// T must be a numeric type (i64, f64)
 pub fn Counter(comptime T: type) type {
     return union(enum) {
         noop: []const u8,
@@ -87,7 +87,7 @@ pub fn UpDownCounter(comptime T: type) type {
 }
 
 /// Gauge records non-additive values (last value wins)
-/// T must be a numeric type (i64, u64, f64)
+/// T must be a numeric type (i64, f64)
 pub fn Gauge(comptime T: type) type {
     return union(enum) {
         noop: []const u8,
@@ -102,6 +102,42 @@ pub fn Gauge(comptime T: type) type {
         }
 
         /// Record a value
+        pub inline fn record(self: *const @This(), ctx: Context, value: T, attributes: []const AttributeKeyValue) void {
+            switch (self.*) {
+                .noop => {}, // No-op implementation does nothing
+                .bridge => |bridge| {
+                    switch (T) {
+                        i64 => bridge.recordI64Fn(bridge.instrument_ptr, ctx, value, attributes),
+                        f64 => bridge.recordF64Fn(bridge.instrument_ptr, ctx, value, attributes),
+                        else => unreachable,
+                    }
+                },
+            }
+        }
+
+        /// Convenience method to record without attributes
+        pub inline fn recordSimple(self: *@This(), ctx: Context, value: T) void {
+            self.record(ctx, value, &[_]AttributeKeyValue{});
+        }
+    };
+}
+
+/// Histogram is a metric instrument that aggregates values into buckets
+/// T must be a numeric type (i64, f64)
+pub fn Histogram(comptime T: type) type {
+    return union(enum) {
+        noop: []const u8,
+        bridge: InstrumentBridge,
+
+        /// Get the name of this instrument
+        pub inline fn getName(self: *const @This()) []const u8 {
+            return switch (self.*) {
+                .noop => |name| name,
+                .bridge => |bridge| bridge.getNameFn(bridge.instrument_ptr),
+            };
+        }
+
+        /// Record a value in the histogram
         pub inline fn record(self: *const @This(), ctx: Context, value: T, attributes: []const AttributeKeyValue) void {
             switch (self.*) {
                 .noop => {}, // No-op implementation does nothing

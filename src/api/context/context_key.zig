@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const BaggageKeyValue = @import("../baggage/baggage.zig").BaggageKeyValue;
+const SpanContext = @import("../trace/span_context.zig").SpanContext;
 
 /// Context value types that can be stored in a context.
 /// This is a simplified version without span/baggage references.
@@ -16,6 +17,8 @@ pub const ContextValue = union(enum) {
     float: f64,
     string: []const u8,
     baggage: []BaggageKeyValue,
+    span_context: SpanContext,
+    byte: u8,
 
     /// Create a ContextValue from a typed value
     pub fn from(value: anytype) ContextValue {
@@ -27,10 +30,12 @@ pub const ContextValue = union(enum) {
             f64 => .{ .float = value },
             []const u8 => .{ .string = value },
             []BaggageKeyValue => .{ .baggage = value },
+            SpanContext => .{ .span_context = value },
+            u8 => .{ .byte = value },
             comptime_int => .{ .integer = @as(i64, value) },
             comptime_float => .{ .float = @as(f64, value) },
             else => @compileError("Unsupported context value type: " ++ @typeName(T) ++
-                ". Supported types: bool, i64, u64, f64, []const u8, []BaggageKeyValue"),
+                ". Supported types: bool, i64, u64, f64, []const u8, []BaggageKeyValue, SpanContext"),
         };
     }
 
@@ -43,6 +48,8 @@ pub const ContextValue = union(enum) {
             f64 => self == .float,
             []const u8 => self == .string,
             []BaggageKeyValue => self == .baggage,
+            SpanContext => self == .span_context,
+            u8 => self == .byte,
             else => false,
         };
     }
@@ -74,6 +81,14 @@ pub const ContextValue = union(enum) {
                 .baggage => |v| v,
                 else => null,
             },
+            SpanContext => switch (self) {
+                .span_context => |v| v,
+                else => null,
+            },
+            u8 => switch (self) {
+                .byte => |v| v,
+                else => null,
+            },
             else => null,
         };
     }
@@ -99,9 +114,9 @@ pub fn ContextKey(comptime T: type, comptime name: []const u8) type {
 
         // Validate supported types
         switch (T) {
-            bool, i64, u64, f64, []const u8, []BaggageKeyValue => {},
+            bool, i64, u64, f64, []const u8, []BaggageKeyValue, SpanContext, u8 => {},
             else => @compileError("Unsupported context key type: " ++ @typeName(T) ++
-                ". Supported types: bool, i64, u64, f64, []const u8, []BaggageKeyValue"),
+                ". Supported types: bool, i64, u64, f64, []const u8, []BaggageKeyValue, SpanContext, u8"),
         }
     }
 
@@ -145,6 +160,8 @@ pub fn ContextKey(comptime T: type, comptime name: []const u8) type {
                 f64 => ContextValue{ .float = value },
                 []const u8 => ContextValue{ .string = value },
                 []BaggageKeyValue => ContextValue{ .baggage = value },
+                SpanContext => ContextValue{ .span_context = value },
+                u8 => ContextValue{ .byte = value },
                 else => unreachable, // Compile-time validation prevents this
             };
         }
