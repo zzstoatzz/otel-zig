@@ -13,49 +13,21 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Create an OTLP trace exporter
-    var otlp_exporter = otel_exporters.otlp.createTraceExporter(allocator);
+    // Set up trace provider using the new builder pattern
+    try otel_sdk.trace.buildProvider(allocator)
+        .withExporterClosure(otel_exporters.otlp.OtlpExporterConfig{}, otel_exporters.otlp.createTraceExporterWithConfig)
+        .withBasicProcessor()
+        .withDefaultResource()
+        .withBasicProvider()
+        .finish();
+    defer otel_sdk.trace.destroyProvider();
 
-    // Create resource with service information
-    const resource = try otel_sdk.resource.ResourceBuilder.init(allocator)
-        .withDefaults()
-        .addKeyValue(.{
-            .key = "service.name",
-            .value = .{ .string = "simple-trace-example" },
-        })
-        .addKeyValue(.{
-            .key = "service.version",
-            .value = .{ .string = "1.0.0" },
-        })
-        .finish(allocator);
-    errdefer resource.deinitOwned(allocator);
-
-    // Create a simple span processor
-    const processor = try otel_sdk.trace.createSimpleSpanProcessor(
-        allocator,
-        (&otlp_exporter).spanExporter(),
-        resource,
-    );
-
-    // Create a tracer provider
-    const provider = try otel_sdk.trace.createTracerProvider(
-        allocator,
-        resource,
-        processor.spanProcessor(),
-        otel_sdk.trace.samplers.always_on,
-    );
-    defer provider.deinit();
-
-    // Get the tracer provider interface
-    var tp = provider.tracerProvider();
+    // Get the global tracer provider interface
+    var tp = otel_api.getGlobalTracerProvider();
 
     // Get a tracer
-    var tracer = try tp.getTracerWithScope(.{
-        .name = "example-component",
-        .version = "1.0.0",
-        .schema_url = null,
-        .attributes = &.{},
-    });
+    const scope = try otel_api.InstrumentationScope.initSimple("example-component", "1.0.0");
+    var tracer = try tp.getTracerWithScope(scope);
 
     // Create a root context
     const ctx = otel_api.Context.empty(allocator);
@@ -135,5 +107,5 @@ pub fn main() !void {
     std.debug.print("\nSpans exported via OTLP to http://localhost:4318/v1/traces\n", .{});
 
     // Force flush to ensure all spans are exported
-    _ = provider.forceFlush(null);
+    _ = tp.forceFlush(null);
 }

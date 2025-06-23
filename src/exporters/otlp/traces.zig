@@ -104,6 +104,10 @@ pub const OtlpTraceExporter = struct {
         _ = self;
     }
 
+    pub fn destroy(self: *OtlpTraceExporter) void {
+        self.allocator.destroy(self);
+    }
+
     pub fn exportSpans(self: *OtlpTraceExporter, spans: []const *RecordingSpan, resource: Resource) ProcessResult {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -429,13 +433,19 @@ fn convertAttributeValue(value: otel_api.common.AttributeValue) OtlpAnyValue {
 }
 
 /// Create an OTLP trace exporter with default configuration
-pub fn createTraceExporter(allocator: std.mem.Allocator) OtlpTraceExporter {
-    return createTraceExporterWithConfig(allocator, .{});
+pub fn createTraceExporter(allocator: std.mem.Allocator) !SpanExporter {
+    const exporter = try allocator.create(OtlpTraceExporter);
+    errdefer allocator.destroy(exporter);
+    exporter.* = OtlpTraceExporter.init(allocator, .{});
+    return exporter.spanExporter();
 }
 
 /// Create an OTLP trace exporter with custom configuration
-pub fn createTraceExporterWithConfig(allocator: std.mem.Allocator, config: OtlpExporterConfig) OtlpTraceExporter {
-    return OtlpTraceExporter.init(allocator, config);
+pub fn createTraceExporterWithConfig(config: OtlpExporterConfig, allocator: std.mem.Allocator) !SpanExporter {
+    const exporter = try allocator.create(OtlpTraceExporter);
+    errdefer allocator.destroy(exporter);
+    exporter.* = OtlpTraceExporter.init(allocator, config);
+    return exporter.spanExporter();
 }
 
 test "OtlpTraceExporter basic functionality" {

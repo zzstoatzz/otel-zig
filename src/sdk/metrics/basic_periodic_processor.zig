@@ -1,6 +1,6 @@
-//! Periodic Metrics Processor
+//! Basic Periodic Metrics Processor
 //!
-//! This module provides a metrics processor that collects metrics from registered
+//! This module provides a basic metrics processor that collects metrics from registered
 //! meters on a periodic basis using a background thread. It uses POSIX threads
 //! for cross-platform compatibility.
 //!
@@ -14,32 +14,45 @@ const otel_api = @import("otel-api");
 const ProcessResult = otel_api.common.ProcessResult;
 const MetricData = @import("data.zig").MetricData;
 const MetricExporter = @import("exporter.zig").MetricExporter;
-const StandardMeter = @import("meter.zig").StandardMeter;
+const BasicMeter = @import("basic_provider.zig").BasicMeter;
 const MetricProcessor = @import("processor.zig").MetricProcessor;
 
-/// Periodic metrics processor that collects metrics at regular intervals
-pub const PeriodicProcessor = struct {
+/// Basic periodic metrics processor that collects metrics at regular intervals
+pub const BasicPeriodicProcessor = struct {
+    pub const PipelineStep = @import("../common/pipeline.zig").PipelineStepInstructions(
+        BasicPeriodicProcessor,
+        MetricProcessor,
+        ?u32,
+        metricProcessor,
+        _initFn,
+        setExporter,
+    );
+    pub fn _initFn(interval: ?u32, allocator: std.mem.Allocator) !BasicPeriodicProcessor {
+        var processor = init(allocator, null, interval);
+        errdefer processor.deinit();
+
+        try processor.start();
+        return processor;
+    }
+
     allocator: std.mem.Allocator,
-    exporter: MetricExporter,
+    exporter: ?MetricExporter,
     mutex: std.Thread.Mutex,
     condition: std.Thread.Condition,
     is_shutdown: bool,
     is_running: bool,
     thread: ?std.Thread,
     collection_interval_ms: u32,
-    registered_meters: std.ArrayListUnmanaged(*StandardMeter),
+    registered_meters: std.ArrayListUnmanaged(*BasicMeter),
 
-    /// Initialize a new periodic metrics processor
+    /// Initialize a new basic periodic metrics processor
     /// collection_interval_ms: How often to collect metrics (default: 60000ms = 60s)
     pub fn init(
         allocator: std.mem.Allocator,
-        exporter: MetricExporter,
+        exporter: ?MetricExporter,
         collection_interval_ms: ?u32,
-    ) !*PeriodicProcessor {
-        const self = try allocator.create(PeriodicProcessor);
-        errdefer allocator.destroy(self);
-
-        self.* = .{
+    ) BasicPeriodicProcessor {
+        return .{
             .allocator = allocator,
             .exporter = exporter,
             .mutex = .{},
@@ -50,12 +63,10 @@ pub const PeriodicProcessor = struct {
             .collection_interval_ms = collection_interval_ms orelse 60000, // 60 seconds default
             .registered_meters = .{},
         };
-
-        return self;
     }
 
     /// Start the background collection thread
-    pub fn start(self: *PeriodicProcessor) !void {
+    pub fn start(self: *BasicPeriodicProcessor) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -68,7 +79,7 @@ pub const PeriodicProcessor = struct {
     }
 
     /// Stop the background collection thread and clean up resources
-    pub fn deinit(self: *PeriodicProcessor) void {
+    pub fn deinit(self: *BasicPeriodicProcessor) void {
         // Signal shutdown
         self.mutex.lock();
         if (!self.is_shutdown) {
@@ -84,12 +95,19 @@ pub const PeriodicProcessor = struct {
 
         // Clean up resources
         self.registered_meters.deinit(self.allocator);
-        self.exporter.deinit();
+        if (self.exporter) |exporter| {
+            exporter.deinit();
+            exporter.destroy();
+        }
+    }
+
+    /// Destroy the processor and free its memory
+    pub fn destroy(self: *BasicPeriodicProcessor) void {
         self.allocator.destroy(self);
     }
 
     /// Collect metrics from all registered meters (called by background thread)
-    pub fn collect(self: *PeriodicProcessor) void {
+    pub fn collect(self: *BasicPeriodicProcessor) void {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const arena_allocator = arena.allocator();
@@ -119,12 +137,12 @@ pub const PeriodicProcessor = struct {
 
         // Export all collected metrics. Exporter must copy memory
         // that it needs beyond the duration of this call.
-        _ = self.exporter.exportMetrics(collected_metrics.items);
+        if (self.exporter) |*exporter| _ = exporter.exportMetrics(collected_metrics.items);
         // Arena cleans up all the memory.
     }
 
     /// Force flush the exporter
-    pub fn forceFlush(self: *PeriodicProcessor, timeout_ms: ?u64) ProcessResult {
+    pub fn forceFlush(self: *BasicPeriodicProcessor, timeout_ms: ?u64) ProcessResult {
         // Collect immediately before flushing
         // This has to be before the mutex, because collect expects
         // to take the mutex.
@@ -138,12 +156,12 @@ pub const PeriodicProcessor = struct {
         }
 
         // Flush the exporter
-        const result = self.exporter.forceFlush(timeout_ms);
+        const result = if (self.exporter) |*exporter| exporter.forceFlush(timeout_ms) else .success;
         return if (result == .success) .success else .failure;
     }
 
     /// Shutdown the processor
-    pub fn shutdown(self: *PeriodicProcessor, timeout_ms: ?u64) ProcessResult {
+    pub fn shutdown(self: *BasicPeriodicProcessor, timeout_ms: ?u64) ProcessResult {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -155,12 +173,12 @@ pub const PeriodicProcessor = struct {
         self.condition.signal(); // Wake up the collection thread
 
         // Shutdown the exporter
-        const result = self.exporter.shutdown(timeout_ms);
+        const result = if (self.exporter) |*exporter| exporter.shutdown(timeout_ms) else .success;
         return if (result == .success) .success else .failure;
     }
 
     /// Register a meter for periodic collection
-    pub fn registerMeter(self: *PeriodicProcessor, meter: *StandardMeter) void {
+    pub fn registerMeter(self: *BasicPeriodicProcessor, meter: *BasicMeter) void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -173,7 +191,7 @@ pub const PeriodicProcessor = struct {
     }
 
     /// Unregister a meter from periodic collection
-    pub fn unregisterMeter(self: *PeriodicProcessor, meter: *StandardMeter) void {
+    pub fn unregisterMeter(self: *BasicPeriodicProcessor, meter: *BasicMeter) void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -187,15 +205,24 @@ pub const PeriodicProcessor = struct {
         }
     }
 
+    /// Set the exporter for this processor
+    pub fn setExporter(self: *BasicPeriodicProcessor, exporter: ?MetricExporter) !void {
+        if (self.exporter) |old_exporter| {
+            old_exporter.deinit();
+            old_exporter.destroy();
+        }
+        self.exporter = exporter;
+    }
+
     /// Get the processor as a MetricProcessor union
-    pub fn metricProcessor(self: *PeriodicProcessor) MetricProcessor {
+    pub fn metricProcessor(self: *BasicPeriodicProcessor) MetricProcessor {
         return MetricProcessor{
             .bridge = @import("processor.zig").BridgeMetricProcessor.init(self),
         };
     }
 
     /// Background thread function that periodically collects metrics
-    fn collectionThreadFn(self: *PeriodicProcessor) void {
+    fn collectionThreadFn(self: *BasicPeriodicProcessor) void {
         while (true) {
             self.mutex.lock();
 
@@ -230,14 +257,3 @@ pub const PeriodicProcessor = struct {
         }
     }
 };
-
-/// Create a periodic metrics processor with the specified collection interval
-pub fn createPeriodicProcessor(
-    allocator: std.mem.Allocator,
-    exporter: MetricExporter,
-    collection_interval_ms: ?u32,
-) !*PeriodicProcessor {
-    const processor = try PeriodicProcessor.init(allocator, exporter, collection_interval_ms);
-    try processor.start();
-    return processor;
-}

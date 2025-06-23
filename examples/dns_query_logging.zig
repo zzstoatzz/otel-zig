@@ -14,14 +14,16 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const exporter_config = otel_exporters.console.ConsoleExporterConfig{};
-    try otel_sdk.logs.buildProvider(allocator)
-        .withExporterClosure(exporter_config, otel_exporters.console.createLogExporterWithConfig)
-        .withBasicProcessor()
-        .withDefaultResource()
-        .withBasicProvider()
-        .finish();
-    defer otel_sdk.logs.destroyProvider();
+    // Clean up global providers at program exit
+    defer otel_api.provider_registry.unsetAllProviders();
+
+    // Setup global provider with pipeline configuration in one call
+    const provider = try otel_sdk.logs.setupGlobalProvider(allocator, .{otel_sdk.logs.BasicLogProcessor.PipelineStep.init({})
+        .flowTo(otel_exporters.console.StreamLogExporter(std.fs.File.Writer).PipelineStep.init(.{}))});
+    defer {
+        provider.deinit();
+        provider.destroy();
+    }
 
     // Get application logger from global registry (now backed by SDK)
     const scope = try otel_api.InstrumentationScope.initSimple("dns.query.example", "1.0.0");

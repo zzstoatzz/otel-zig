@@ -8,33 +8,16 @@
 const std = @import("std");
 
 // MeterProvider exports
-pub const StandardMeterProvider = @import("meter_provider.zig").StandardMeterProvider;
-
-// Meter exports
-pub const StandardMeter = @import("meter.zig").StandardMeter;
-
-// Instrument exports
-pub const StandardCounter = @import("instruments.zig").StandardCounter;
-pub const StandardUpDownCounter = @import("instruments.zig").StandardUpDownCounter;
-pub const StandardGauge = @import("instruments.zig").StandardGauge;
-pub const StandardHistogram = @import("instruments.zig").StandardHistogram;
-
-// Aggregation exports (for advanced use)
-pub const SumAggregation = @import("instruments.zig").SumAggregation;
-pub const LastValueAggregation = @import("instruments.zig").LastValueAggregation;
-pub const HistogramAggregation = @import("instruments.zig").HistogramAggregation;
-pub const HistogramAggregationConfig = @import("instruments.zig").HistogramAggregationConfig;
-pub const DEFAULT_HISTOGRAM_BOUNDARIES = @import("instruments.zig").DEFAULT_HISTOGRAM_BOUNDARIES;
+pub const BasicMeterProvider = @import("basic_provider.zig").BasicMeterProvider;
 
 // Processor and exporter types
 pub const processor = @import("processor.zig");
 pub const MetricProcessor = processor.MetricProcessor;
-pub const SimpleMetricProcessor = processor.SimpleMetricProcessor;
+pub const BasicMetricProcessor = @import("basic_processor.zig").BasicMetricProcessor;
 pub const BridgeMetricProcessor = processor.BridgeMetricProcessor;
 
-const processor_periodic_zig = @import("processor_periodic.zig");
-pub const PeriodicProcessor = processor_periodic_zig.PeriodicProcessor;
-pub const createPeriodicProcessor = processor_periodic_zig.createPeriodicProcessor;
+const basic_periodic_processor_zig = @import("basic_periodic_processor.zig");
+pub const BasicPeriodicProcessor = basic_periodic_processor_zig.BasicPeriodicProcessor;
 
 const data_zig = @import("data.zig");
 pub const MetricData = data_zig.MetricData;
@@ -49,7 +32,7 @@ pub const MetricExporter = exporter_zig.MetricExporter;
 pub const BridgeMetricExporter = exporter_zig.BridgeMetricExporter;
 
 // Re-export the setup helper functions
-pub const createSimpleSyncMetrics = @import("setup.zig").createSimpleSyncMetrics;
+pub const setupGlobalProvider = @import("setup.zig").setupGlobalProvider;
 
 test {
     std.testing.refAllDecls(@This());

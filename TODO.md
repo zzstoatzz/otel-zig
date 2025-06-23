@@ -112,6 +112,9 @@ This document tracks the remaining work for the OpenTelemetry Zig implementation
 - **Performance Impact:** Minimal overhead added while maintaining zero-allocation design goals
 
 ### Phase 9 - Quality & Performance
+- [x] Make the provider registry easier to work with.
+  - [x] Implement a more intuitive API for building, registering, and destroying providers.
+- [ ] Add a forced flush to the LoggerProvider.
 - [ ] **Error Handling Cleanup** - Refine error handling strategy from Phase 4, implementing hybrid approach (programming errors return errors, resource failures handled silently)
 - [ ] Performance benchmarks for trace operations
 - [ ] Memory usage optimization

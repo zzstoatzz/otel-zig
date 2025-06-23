@@ -532,6 +532,20 @@ fn writeAnyValue(jw: anytype, value: common_v1.AnyValue) JsonError!void {
 
 /// Console metric exporter implementation using JSON output
 pub const ConsoleMetricExporter = struct {
+    pub const PipelineStep = otel_sdk.common.PipelineStepInstructions(
+        Self,
+        otel_sdk.logs.LogExporter,
+        ConsoleExporterConfig,
+        metricsExporter,
+        _init,
+        otel_sdk.common.PipelineDeinitConnection,
+    );
+    const Self = @This();
+
+    pub fn _init(ctx: ConsoleExporterConfig, allocator: std.mem.Allocator) !Self {
+        return init(allocator, ctx);
+    }
+
     config: ConsoleExporterConfig,
     writer: std.fs.File.Writer,
     mutex: std.Thread.Mutex,
@@ -549,6 +563,10 @@ pub const ConsoleMetricExporter = struct {
 
     pub fn deinit(self: *ConsoleMetricExporter) void {
         _ = self;
+    }
+
+    pub fn destroy(self: *ConsoleMetricExporter) void {
+        self.allocator.destroy(self);
     }
 
     pub fn exportMetrics(self: *ConsoleMetricExporter, metrics: []const otel_sdk.metrics.MetricData) ExportResult {
@@ -902,25 +920,29 @@ pub const ConsoleMetricExporter = struct {
         _ = timeout_ms;
         return .success;
     }
+
+    pub fn metricsExporter(self: *ConsoleMetricExporter) otel_sdk.metrics.MetricExporter {
+        return .{
+            .bridge = otel_sdk.metrics.BridgeMetricExporter.init(self),
+        };
+    }
 };
 
-/// Create a console metric exporter with default configuration
-pub fn createMetricExporter(allocator: std.mem.Allocator) *ConsoleMetricExporter {
-    return createMetricExporterWithConfig(allocator, .{});
-}
-
 /// Create a console metric exporter with custom configuration
-pub fn createMetricExporterWithConfig(allocator: std.mem.Allocator, config: ConsoleExporterConfig) *ConsoleMetricExporter {
-    const exporter = allocator.create(ConsoleMetricExporter) catch unreachable;
+pub fn createMetricExporterWithConfig(config: ConsoleExporterConfig, allocator: std.mem.Allocator) !otel_sdk.metrics.MetricExporter {
+    const exporter = try allocator.create(ConsoleMetricExporter);
+    errdefer allocator.destroy(exporter);
     exporter.* = ConsoleMetricExporter.init(allocator, config);
-    return exporter;
+    return exporter.metricsExporter();
 }
 
 test "ConsoleMetricExporter JSON output" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    var exporter = ConsoleMetricExporter.init(allocator, .{});
+    var exporter = try allocator.create(ConsoleMetricExporter);
+    defer allocator.destroy(exporter);
+    exporter.* = ConsoleMetricExporter.init(allocator, .{});
     defer exporter.deinit();
 
     const result = exporter.forceFlush(5000);

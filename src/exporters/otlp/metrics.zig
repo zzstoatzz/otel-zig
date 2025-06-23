@@ -16,6 +16,20 @@ const common_v1 = @import("proto/opentelemetry/proto/common/v1.pb.zig");
 const resource_v1 = @import("proto/opentelemetry/proto/resource/v1.pb.zig");
 
 pub const OtlpMetricExporter = struct {
+    pub const PipelineStep = otel_sdk.common.PipelineStepInstructions(
+        Self,
+        otel_sdk.logs.LogExporter,
+        OtlpExporterConfig,
+        metricsExporter,
+        _init,
+        otel_sdk.common.PipelineDeinitConnection,
+    );
+    const Self = @This();
+
+    pub fn _init(ctx: OtlpExporterConfig, allocator: std.mem.Allocator) !Self {
+        return init(allocator, ctx);
+    }
+
     config: OtlpExporterConfig,
     allocator: std.mem.Allocator,
     is_shutdown: bool = false,
@@ -32,6 +46,10 @@ pub const OtlpMetricExporter = struct {
         _ = self;
     }
 
+    pub fn destroy(self: *OtlpMetricExporter) void {
+        self.allocator.destroy(self);
+    }
+
     pub fn exportMetrics(self: *OtlpMetricExporter, metrics: []const MetricData) ExportResult {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -45,7 +63,7 @@ pub const OtlpMetricExporter = struct {
             return .failure;
         };
         defer metrics_data.deinit();
- 
+
         self.sendRequest(metrics_data) catch |err| {
             std.log.err("Failed to send metrics: {}", .{err});
             return .failure;
@@ -69,6 +87,12 @@ pub const OtlpMetricExporter = struct {
         _ = timeout_ms;
         self.is_shutdown = true;
         return .success;
+    }
+
+    pub fn metricsExporter(self: *OtlpMetricExporter) MetricExporter {
+        return .{
+            .bridge = otel_sdk.metrics.BridgeMetricExporter.init(self),
+        };
     }
 
     fn sendRequest(self: *OtlpMetricExporter, metrics_data: metrics_v1.MetricsData) !void {
@@ -118,6 +142,14 @@ pub const OtlpMetricExporter = struct {
         }
     }
 };
+
+/// Create a console metric exporter with custom configuration
+pub fn createMetricExporterWithConfig(config: OtlpExporterConfig, allocator: std.mem.Allocator) !otel_sdk.metrics.MetricExporter {
+    const exporter = try allocator.create(OtlpMetricExporter);
+    errdefer allocator.destroy(exporter);
+    exporter.* = OtlpMetricExporter.init(allocator, config);
+    return exporter.metricsExporter();
+}
 
 fn convertToOtlpFormat(allocator: std.mem.Allocator, metrics: []const MetricData) !metrics_v1.MetricsData {
     var resource_metrics_map = std.StringHashMap(std.ArrayList(MetricData)).init(allocator);

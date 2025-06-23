@@ -14,25 +14,23 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var console_exporter = otel_exporters.console.ConsoleMetricExporter.init(allocator, .{});
-    var exporter = otel_sdk.metrics.MetricExporter{
-        .bridge = otel_sdk.metrics.BridgeMetricExporter.init(&console_exporter),
-    };
-    errdefer exporter.deinit();
+    try basicProcessorDemo(allocator);
+    try advancedProcessorDemo(allocator);
+}
 
-    var provider = try otel_sdk.metrics.createSimpleSyncMetrics(
+/// Example that sets up a very simple meter provider with a console exporter.
+pub fn basicProcessorDemo(allocator: std.mem.Allocator) !void {
+    const concrete_provider = try otel_sdk.metrics.setupGlobalProvider(
         allocator,
-        "metrics_demo",
-        exporter,
+        .{otel_sdk.metrics.BasicMetricProcessor.PipelineStep.init({})
+            .flowTo(otel_exporters.otlp.OtlpMetricExporter.PipelineStep.init(.{}))},
     );
     defer {
-        provider.deinit();
-        _ = otel_api.provider_registry.setGlobalMeterProvider(null);
+        concrete_provider.deinit();
+        concrete_provider.destroy();
     }
-    _ = otel_api.provider_registry.setGlobalMeterProvider(&provider);
 
     // Get a meter for our application
-    //     // Get application logger from global registry (now backed by SDK)
     const scope = try otel_api.InstrumentationScope.initSimple("dns.query.example", "1.0.0");
     var meter = try otel_api.getGlobalMeterProvider().getMeterWithScope(scope);
 
@@ -141,7 +139,7 @@ pub fn main() !void {
 
     // Force flush to trigger export of collected metrics
     std.debug.print("\n=== Forcing Metrics Export ===\n", .{});
-    const flush_result = provider.forceFlush(5000); // 5 second timeout
+    const flush_result = concrete_provider.forceFlush(5000); // 5 second timeout
     if (flush_result == .success) {
         std.debug.print("✅ Metrics exported successfully!\n", .{});
     } else {
@@ -151,4 +149,89 @@ pub fn main() !void {
     std.debug.print("\n=== Metrics Collection Complete ===\n", .{});
 
     std.debug.print("\nMetrics demo completed!\n", .{});
+}
+
+pub fn advancedProcessorDemo(allocator: std.mem.Allocator) !void {
+    const concrete_provider = try otel_sdk.metrics.setupGlobalProvider(
+        allocator,
+        .{otel_sdk.metrics.BasicPeriodicProcessor.PipelineStep.init(5000)
+            .flowTo(otel_exporters.otlp.OtlpMetricExporter.PipelineStep.init(.{}))},
+    );
+    defer {
+        concrete_provider.deinit();
+        concrete_provider.destroy();
+    }
+
+    // Get a meter for our application
+    const scope = try otel_api.InstrumentationScope.initSimple("periodic_metrics_demo", "1.0.0");
+    var meter = try otel_api.getGlobalMeterProvider().getMeterWithScope(scope);
+
+    // Create various instruments
+    const request_counter = try meter.createCounter(
+        i64,
+        "http.requests.total",
+        "Total number of HTTP requests",
+        "1", // unit: count
+    );
+
+    const active_connections = try meter.createUpDownCounter(
+        i64,
+        "connections.active",
+        "Number of active connections",
+        "1",
+    );
+
+    const cpu_usage = try meter.createGauge(
+        f64,
+        "cpu.usage",
+        "Current CPU usage percentage",
+        "%",
+    );
+
+    const response_time = try meter.createHistogram(
+        f64,
+        "http.response_time",
+        "HTTP response time in milliseconds",
+        "ms",
+    );
+
+    const response_nonce = try meter.createHistogram(i64, "foo.bar.baz.thoughts", "random thoughts", "thought");
+
+    std.log.info("Created instruments, starting metric recording...", .{});
+    std.log.info("Metrics will be exported every 5 seconds by the background thread", .{});
+
+    // Create a context for recording
+    const ctx = otel_api.Context.empty(allocator);
+
+    // Simulate activity for 5 minutes (300 seconds)
+    var i: u32 = 0;
+    while (i < 90) : (i += 1) {
+        // Simulate HTTP requests
+        request_counter.add(ctx, std.crypto.random.intRangeAtMost(i64, 1, 10), &[_]otel_api.AttributeKeyValue{});
+
+        // Simulate connection changes
+        const conn_change = std.crypto.random.intRangeAtMost(i64, -3, 5);
+        active_connections.add(ctx, conn_change, &[_]otel_api.AttributeKeyValue{});
+
+        // Simulate CPU usage
+        const cpu_val = 20.0 + @as(f64, @floatFromInt(std.crypto.random.intRangeAtMost(u32, 0, 60)));
+        cpu_usage.record(ctx, cpu_val, &[_]otel_api.AttributeKeyValue{});
+
+        // Simulate response times
+        const response_ms = 50.0 + @as(f64, @floatFromInt(std.crypto.random.intRangeAtMost(u32, 0, 200)));
+        response_time.record(ctx, response_ms, &[_]otel_api.AttributeKeyValue{});
+
+        const thoughts = 20 + @as(i64, std.crypto.random.intRangeAtMost(u32, 0, 2000));
+        response_nonce.record(ctx, thoughts, &[_]otel_api.AttributeKeyValue{});
+
+        std.log.info("Iteration {}: recorded metrics", .{i + 1});
+        std.time.sleep(std.time.ns_per_s); // Sleep for 1 second
+    }
+
+    std.log.info("Demo completed. Shutting down...", .{});
+
+    // Force a final flush before shutdown
+    _ = concrete_provider.forceFlush(5000);
+
+    std.log.info("Final flush completed. Exiting.", .{});
 }

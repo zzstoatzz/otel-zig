@@ -59,7 +59,7 @@ pub const SpanProcessor = union(enum) {
     }
 
     /// Clean up processor resources
-    pub fn deinit(self: *SpanProcessor) void {
+    pub fn deinit(self: *const SpanProcessor) void {
         switch (self.*) {
             .noop => {},
             .simple => |processor| processor.deinit(),

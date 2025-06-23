@@ -20,7 +20,7 @@ pub const TracerProvider = union(enum) {
     bridge: TracerProviderBridge, // SDK provider bridge
 
     /// Get or create a tracer with instrumentation scope (OpenTelemetry API specification compliant)
-    pub inline fn getTracerWithScope(self: *TracerProvider, scope: InstrumentationScope) !Tracer {
+    pub inline fn getTracerWithScope(self: *const TracerProvider, scope: InstrumentationScope) !Tracer {
         return switch (self.*) {
             .noop => |_| Tracer{ .noop = scope },
             .bridge => |*bridge| bridge.getTracerWithScopeFn(bridge.provider_ptr, scope),
@@ -28,7 +28,7 @@ pub const TracerProvider = union(enum) {
     }
 
     /// Force flush all meters managed by this provider
-    pub fn forceFlush(self: *TracerProvider, timeout_ms: ?u64) FlushResult {
+    pub fn forceFlush(self: *const TracerProvider, timeout_ms: ?u64) FlushResult {
         return switch (self.*) {
             .noop => FlushResult.success,
             .bridge => |*bridge| bridge.forceFlushFn(bridge.provider_ptr, timeout_ms),
@@ -36,7 +36,7 @@ pub const TracerProvider = union(enum) {
     }
 
     /// Clean up provider resources
-    pub fn deinit(self: *TracerProvider) void {
+    pub fn deinit(self: *const TracerProvider) void {
         switch (self.*) {
             .noop => |_| {},
             .bridge => |*bridge| bridge.deinitFn(bridge.provider_ptr),

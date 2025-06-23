@@ -41,17 +41,20 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    // Clean up global providers at program exit
+    defer otel_api.provider_registry.unsetAllProviders();
+
+    // Setup global provider with pipeline configuration in one call
     const exporter_config = otel_exporters.otlp.OtlpExporterConfig{
         .endpoint = "http://localhost:4318",
         .transport = .http_json,
     };
-    try otel_sdk.logs.buildProvider(allocator)
-        .withExporterClosure(exporter_config, otel_exporters.otlp.createLogExporterWithConfig)
-        .withBasicProcessor()
-        .withDefaultResource()
-        .withBasicProvider()
-        .finish();
-    defer otel_sdk.logs.destroyProvider();
+    const provider = try otel_sdk.logs.setupGlobalProvider(allocator, .{otel_sdk.logs.BasicLogProcessor.PipelineStep.init({})
+        .flowTo(otel_exporters.otlp.OtlpLogExporter.PipelineStep.init(exporter_config))});
+    defer {
+        provider.deinit();
+        provider.destroy();
+    }
 
     // Create execution context
     var ctx = otel_api.Context.empty(allocator);

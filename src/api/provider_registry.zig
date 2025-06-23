@@ -7,43 +7,59 @@ const logs = @import("logs/root.zig");
 const trace = @import("trace/root.zig");
 const metrics = @import("metrics/root.zig");
 
+// Default global providers, if providers are not setup.
+const default_logger_provider: logs.LoggerProvider = .{ .noop = {} };
+const default_tracer_provider: trace.TracerProvider = .{ .noop = {} };
+const default_meter_provider: metrics.MeterProvider = .{ .noop = {} };
+
 // Global provider storage with thread safety
-var global_logger_provider: ?*logs.LoggerProvider = null;
+var global_logger_provider: std.atomic.Value(?*logs.LoggerProvider) = std.atomic.Value(?*logs.LoggerProvider).init(null);
 var global_tracer_provider: ?*trace.TracerProvider = null;
-var global_meter_provider: ?*metrics.MeterProvider = null;
+var global_meter_provider: std.atomic.Value(?*metrics.MeterProvider) = std.atomic.Value(?*metrics.MeterProvider).init(null);
+var logger_mutex = std.Thread.Mutex{};
 var mutex = std.Thread.Mutex{};
+var meter_mutex = std.Thread.Mutex{};
 
 /// Get the global logger provider. Fatal if a provider is not setup.
-pub fn getGlobalLoggerProvider() *logs.LoggerProvider {
-    mutex.lock();
-    defer mutex.unlock();
-
-    if (global_logger_provider) |provider| {
-        return provider;
-    }
-    unreachable;
+pub fn getGlobalLoggerProvider() *const logs.LoggerProvider {
+    const provider = global_logger_provider.load(.acquire);
+    return if (provider) |p| p else &default_logger_provider;
 }
 
-/// Set the global logger provider, returns the old provider.
-///
-/// Callers responsiblitiy to manage the lifecycle of the returned, old provider.
-pub fn setGlobalLoggerProvider(provider: ?*logs.LoggerProvider) ?*logs.LoggerProvider {
-    mutex.lock();
-    defer mutex.unlock();
-    const old_provider = global_logger_provider;
-    global_logger_provider = provider;
-    return old_provider;
+/// Set the global logger provider by value, managing interface wrapper memory internally.
+/// Uses page allocator to manage the interface wrapper memory.
+/// Returns error if allocation fails.
+pub fn setGlobalLoggerProvider(provider: ?logs.LoggerProvider) !void {
+    logger_mutex.lock();
+    defer logger_mutex.unlock();
+
+    // Get old value atomically
+    const old_provider = global_logger_provider.load(.acquire);
+
+    if (provider) |new_provider| {
+        // Allocate new interface wrapper using page allocator
+        const provider_ptr = try std.heap.page_allocator.create(logs.LoggerProvider);
+        provider_ptr.* = new_provider;
+
+        // Store new provider atomically first
+        global_logger_provider.store(provider_ptr, .release);
+    } else {
+        // Setting to null
+        global_logger_provider.store(null, .release);
+    }
+
+    // Clean up old provider if exists
+    if (old_provider) |old| {
+        std.heap.page_allocator.destroy(old);
+    }
 }
 
 /// Get the global tracer provider. Fatal if a provider is not setup.
-pub fn getGlobalTracerProvider() *trace.TracerProvider {
+pub fn getGlobalTracerProvider() *const trace.TracerProvider {
     mutex.lock();
     defer mutex.unlock();
 
-    if (global_tracer_provider) |provider| {
-        return provider;
-    }
-    unreachable;
+    return if (global_tracer_provider) |provider| provider else &default_tracer_provider;
 }
 
 /// Set the global tracer provider, returns the old provider.
@@ -59,34 +75,42 @@ pub fn setGlobalTracerProvider(provider: ?*trace.TracerProvider) ?*trace.TracerP
 }
 
 /// Get the global meter provider
-pub fn getGlobalMeterProvider() *metrics.MeterProvider {
-    mutex.lock();
-    defer mutex.unlock();
-
-    if (global_meter_provider) |provider| {
-        return provider;
-    }
-    unreachable;
+pub fn getGlobalMeterProvider() *const metrics.MeterProvider {
+    const provider = global_meter_provider.load(.acquire);
+    return if (provider) |p| p else &default_meter_provider;
 }
 
 /// Set the global meter provider, returns the old provider.
 ///
 /// Callers responsiblitiy to manage the lifecycle of the returned, old provider.
-pub fn setGlobalMeterProvider(provider: ?*metrics.MeterProvider) ?*metrics.MeterProvider {
-    mutex.lock();
-    defer mutex.unlock();
+pub fn setGlobalMeterProvider(provider: ?metrics.MeterProvider) !void {
+    meter_mutex.lock();
+    defer meter_mutex.unlock();
 
-    const old_provider = global_meter_provider;
-    global_meter_provider = provider;
-    return old_provider;
+    // Get old value atomically
+    const old_provider = global_meter_provider.load(.acquire);
+
+    if (provider) |new_provider| {
+        // Allocate new interface wrapper using page allocator
+        const provider_ptr = try std.heap.page_allocator.create(metrics.MeterProvider);
+        provider_ptr.* = new_provider;
+
+        // Store new provider atomically first
+        global_meter_provider.store(provider_ptr, .release);
+    } else {
+        // Setting to null
+        global_meter_provider.store(null, .release);
+    }
+
+    // Clean up old provider if exists
+    if (old_provider) |old| {
+        std.heap.page_allocator.destroy(old);
+    }
 }
 
-/// Clean up all global providers
-pub fn deinit() void {
-    mutex.lock();
-    defer mutex.unlock();
-
-    if (setGlobalLoggerProvider(null)) |old_provider| old_provider.deinit();
-    if (setGlobalTracerProvider(null)) |old_provider| old_provider.deinit();
-    if (setGlobalMeterProvider(null)) |old_provider| old_provider.deinit();
+/// Clean up all global providers by setting them to null.
+/// This will automatically free any allocated interface wrappers.
+pub fn unsetAllProviders() void {
+    setGlobalLoggerProvider(null) catch {};
+    setGlobalMeterProvider(null) catch {};
 }

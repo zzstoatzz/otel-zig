@@ -29,10 +29,6 @@ pub fn main() !void {
     print("🚀 Starting Comprehensive Trace SDK Example\n", .{});
     print("=" ** 50 ++ "\n", .{});
 
-    // Create console trace exporter (managed here for proper lifetime)
-    var console_exporter = otel_exporters.console.createTraceExporter(allocator);
-    defer console_exporter.deinit();
-
     // Create resource with comprehensive service information
     const resource = try otel_sdk.resource.ResourceBuilder.init(allocator)
         .withDefaults()
@@ -45,27 +41,18 @@ pub fn main() !void {
         .finish(allocator);
     errdefer resource.deinitOwned(allocator);
 
-    // Create span processor and tracer provider
-    const processor = try otel_sdk.trace.createSimpleSpanProcessor(
-        allocator,
-        console_exporter.spanExporter(),
-        resource,
-    );
-
-    const provider = try otel_sdk.trace.createTracerProvider(
-        allocator,
-        resource,
-        processor.spanProcessor(),
-        otel_sdk.trace.samplers.always_on,
-    );
-    defer provider.deinit();
+    // Set up trace provider using the new builder pattern with custom resource
+    try otel_sdk.trace.buildProvider(allocator)
+        .withExporterClosure(otel_exporters.console.ConsoleExporterConfig{}, otel_exporters.console.createTraceExporterWithConfig)
+        .withBasicProcessor()
+        .withResource(resource)
+        .withBasicProvider()
+        .finish();
+    defer otel_sdk.trace.destroyProvider();
 
     var trace_setup = TraceSetup{
         .allocator = allocator,
-        .processor = processor,
-        .provider = provider,
-        .tracer_provider = provider.tracerProvider(),
-        .resource_attrs = &.{}, // No longer needed with ResourceBuilder
+        .tracer_provider = otel_api.getGlobalTracerProvider(),
     };
 
     // Run different test scenarios
@@ -81,10 +68,7 @@ pub fn main() !void {
 
 const TraceSetup = struct {
     allocator: std.mem.Allocator,
-    processor: *otel_sdk.trace.SimpleSpanProcessor,
-    provider: *otel_sdk.trace.StandardTracerProvider,
-    tracer_provider: otel_api.trace.TracerProvider,
-    resource_attrs: []otel_api.common.AttributeKeyValue,
+    tracer_provider: *otel_api.trace.TracerProvider,
 };
 
 fn getTracer(setup: *TraceSetup, component: ServiceComponent) !otel_api.trace.Tracer {
@@ -97,12 +81,8 @@ fn getTracer(setup: *TraceSetup, component: ServiceComponent) !otel_api.trace.Tr
         .payment_service => "payment-service",
     };
 
-    return try setup.tracer_provider.getTracerWithScope(.{
-        .name = component_name,
-        .version = "1.0.0",
-        .schema_url = "https://opentelemetry.io/schemas/1.21.0",
-        .attributes = &.{},
-    });
+    const scope = try otel_api.InstrumentationScope.initSimple(component_name, "1.0.0");
+    return try setup.tracer_provider.getTracerWithScope(scope);
 }
 
 fn runHttpRequestScenario(setup: *TraceSetup) !void {

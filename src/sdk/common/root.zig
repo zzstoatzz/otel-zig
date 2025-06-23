@@ -23,15 +23,19 @@ pub const getTimestamp = @import("clock.zig").getTimestamp;
 pub const getMonotonicTime = @import("clock.zig").getMonotonicTime;
 
 // Configuration
-pub const Config = @import("config.zig").Config;
-pub const Limits = @import("config.zig").Limits;
-pub const AttributeLimits = @import("config.zig").AttributeLimits;
-pub const SpanLimits = @import("config.zig").SpanLimits;
-pub const LogRecordLimits = @import("config.zig").LogRecordLimits;
+const config_zig = @import("config.zig");
+pub const Config = config_zig.Config;
+pub const Limits = config_zig.Limits;
+pub const AttributeLimits = config_zig.AttributeLimits;
+pub const SpanLimits = config_zig.SpanLimits;
+pub const LogRecordLimits = config_zig.LogRecordLimits;
+pub const parseEnvironmentVariable = config_zig.parseEnvironmentVariable;
+pub const getEnvironmentVariable = config_zig.getEnvironmentVariable;
 
-// Utilities
-pub const parseEnvironmentVariable = @import("config.zig").parseEnvironmentVariable;
-pub const getEnvironmentVariable = @import("config.zig").getEnvironmentVariable;
+const pipeline_zig = @import("pipeline.zig");
+pub const PipelineBuilder = pipeline_zig.PipelineBuilder;
+pub const PipelineStepInstructions = pipeline_zig.PipelineStepInstructions;
+pub const PipelineDeinitConnection = pipeline_zig.PipelineDeinitConnection;
 
 test {
     std.testing.refAllDecls(@This());

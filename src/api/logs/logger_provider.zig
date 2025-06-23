@@ -20,15 +20,15 @@ pub const LoggerProvider = union(enum) {
     bridge: LoggerProviderBridge, // SDK provider bridge
 
     /// Get or create a logger with direct parameters (OpenTelemetry API specification compliant)
-    pub inline fn getLoggerWithScope(self: *LoggerProvider, scope: InstrumentationScope) !Logger {
+    pub inline fn getLoggerWithScope(self: *const LoggerProvider, scope: InstrumentationScope) !Logger {
         return switch (self.*) {
-            .noop => |_| Logger{ .noop = scope },
+            .noop => |_| Logger{ .noop = {} },
             .bridge => |*bridge| bridge.getLoggerWithScopeFn(bridge.provider_ptr, scope),
         };
     }
 
     /// Clean up provider resources
-    pub fn deinit(self: *LoggerProvider) void {
+    pub fn deinit(self: *const LoggerProvider) void {
         switch (self.*) {
             .noop => |_| {},
             .bridge => |*bridge| bridge.deinitFn(bridge.provider_ptr),

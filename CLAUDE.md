@@ -17,7 +17,8 @@ The code targets zig version 0.14.1. Because zig prefers structs instead of indi
 - `zig build example-dns-query` - Run DNS query logging example
 - `zig build example-dns-query-otlp` - Run DNS query OTLP example
 - `zig build example-metrics` - Run metrics demo
-- `zig build example-metrics-otlp` - Run metrics OTLP demo
+- `zig build example-metrics-histogram` - Run metrics histogram example.
+- `zig build example-metrics-otlp` - Run metrics OTLP example
 - `zig build example-simple-trace-otlp` - Run simple trace OTLP example
 
 ## Architecture Overview
@@ -89,6 +90,27 @@ Prefer to use `[]AttributeKeyValue` rather than using an ArrayList.
 
 ### Global Provider Registry
 Thread-safe global provider management through `provider_registry.zig` with mutex-protected storage.
+
+#### Provider Setup
+Providers are configured using a builder pattern with method chaining. The setup typically involves configuring an exporter, processor, resource, and provider implementation:
+
+```zig
+// Setup logging provider with console exporter
+const exporter_config = otel_exporters.console.ConsoleExporterConfig{};
+try otel_sdk.logs.buildProvider(allocator)
+    .withExporterClosure(exporter_config, otel_exporters.console.createLogExporterWithConfig)
+    .withBasicProcessor()
+    .withDefaultResource()
+    .withBasicProvider()
+    .finish();
+defer otel_sdk.logs.destroyProvider();
+
+// Get logger from global registry (now backed by SDK)
+const scope = try otel_api.InstrumentationScope.initSimple("my.app", "1.0.0");
+var logger = try otel_api.getGlobalLoggerProvider().getLoggerWithScope(scope);
+```
+
+This pattern registers the provider globally, making it available through the API's global registry functions.
 
 ### Span Lifecycle
 Two-phase pattern where `.end()` marks span completion and `.deinit()` handles memory cleanup, following Zig RAII patterns. Spans remain queryable after ending but become non-recording.

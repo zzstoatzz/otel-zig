@@ -57,9 +57,30 @@ pub const ConsoleExporterConfig = struct {
 };
 
 // Factory functions
-pub const createLogExporterWithConfig = @import("logs.zig").createLogExporterWithConfig;
-pub const createTraceExporter = @import("traces.zig").createTraceExporter;
-pub const createMetricExporter = @import("metrics.zig").createMetricExporter;
+pub const LogPipelineConfig = struct {
+    pub const ConcreteType = StreamLogExporter(std.fs.File.Writer);
+    pub const InterfaceType = otel_sdk.logs.LogExporter;
+    pub const ContextType = ConsoleExporterConfig;
+    pub const converterFn = StreamLogExporter(std.fs.File.Writer).logExporter;
+    pub const initFn = init;
+
+    ctx: ContextType,
+
+    pub fn init(ctx: ContextType, allocator: std.mem.Allocator) !*ConcreteType {
+        const file = if (ctx.use_stderr) std.io.getStdErr() else std.io.getStdOut();
+        const stream_config = StreamLogExporterConfig{
+            .pretty_print = ctx.pretty_print,
+            .include_timestamp = ctx.include_timestamp,
+            .include_attributes = ctx.include_attributes,
+            .max_attribute_length = ctx.max_attribute_length,
+        };
+
+        return try StreamLogExporter(std.fs.File.Writer).init(allocator, stream_config, file.writer());
+    }
+};
+
+pub const createMetricExporterWithConfig = @import("metrics.zig").createMetricExporterWithConfig;
+pub const createTraceExporterWithConfig = @import("traces.zig").createTraceExporterWithConfig;
 
 test {
     std.testing.refAllDecls(@This());

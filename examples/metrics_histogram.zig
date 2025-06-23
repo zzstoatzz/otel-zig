@@ -4,30 +4,28 @@
 //! of values, such as request latencies or response sizes.
 
 const std = @import("std");
-const otel = @import("otel");
+const otel_api = @import("otel-api");
+const otel_sdk = @import("otel-sdk");
+const otel_exporters = @import("otel-exporters");
 
 pub fn main() !void {
-    const allocator = std.heap.page_allocator;
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
 
-    // Create a console exporter for metrics
-    var console_exporter = otel.exporters.console.ConsoleMetricExporter.init(allocator, .{});
-    const exporter = otel.sdk.metrics.MetricExporter{
-        .bridge = otel.sdk.metrics.BridgeMetricExporter.init(&console_exporter),
-    };
-
-    // Set up metrics with simple synchronous configuration
-    var meter_provider = try otel.sdk.metrics.createSimpleSyncMetrics(
+    const concrete_provider = try otel_sdk.metrics.setupGlobalProvider(
         allocator,
-        "histogram-example",
-        exporter,
+        .{otel_sdk.metrics.BasicMetricProcessor.PipelineStep.init({})
+            .flowTo(otel_exporters.console.ConsoleMetricExporter.PipelineStep.init(.{}))},
     );
-
-    // Set as global provider
-    _ = otel.api.provider_registry.setGlobalMeterProvider(&meter_provider);
+    defer {
+        concrete_provider.deinit();
+        concrete_provider.destroy();
+    }
 
     // Get a meter
-    const scope = try otel.api.InstrumentationScope.initSimple("example.histogram", "1.0.0");
-    var meter = try meter_provider.getMeterWithScope(scope);
+    const scope = try otel_api.InstrumentationScope.initSimple("example.histogram", "1.0.0");
+    var meter = try otel_api.getGlobalMeterProvider().getMeterWithScope(scope);
 
     // Create a histogram to track request latencies
     const latency_histogram = try meter.createHistogram(
@@ -45,7 +43,7 @@ pub fn main() !void {
         "bytes",
     );
 
-    const ctx = otel.api.Context.empty(allocator);
+    const ctx = otel_api.Context.empty(allocator);
 
     // Simulate recording some request latencies (in milliseconds)
     const latencies = [_]f64{
@@ -56,7 +54,7 @@ pub fn main() !void {
 
     std.debug.print("Recording request latencies...\n", .{});
     for (latencies) |latency| {
-        latency_histogram.record(ctx, latency, &[_]otel.api.AttributeKeyValue{});
+        latency_histogram.record(ctx, latency, &[_]otel_api.AttributeKeyValue{});
     }
 
     // Simulate recording some response sizes (in bytes)
@@ -67,13 +65,13 @@ pub fn main() !void {
 
     std.debug.print("Recording response sizes...\n", .{});
     for (sizes) |size| {
-        size_histogram.record(ctx, @intCast(size), &[_]otel.api.AttributeKeyValue{});
+        size_histogram.record(ctx, @intCast(size), &[_]otel_api.AttributeKeyValue{});
     }
 
     // In a real application, the metrics would be exported periodically by the configured exporter
     // For this example, we'll force a flush to ensure metrics are processed
     std.debug.print("\n--- Flushing Metrics ---\n", .{});
-    _ = meter_provider.forceFlush(5000);
+    _ = concrete_provider.forceFlush(5000);
 
     std.debug.print("\n--- Summary Statistics (Application-side) ---\n", .{});
 

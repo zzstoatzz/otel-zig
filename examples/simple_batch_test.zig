@@ -15,56 +15,23 @@ pub fn main() !void {
 
     std.debug.print("=== Simple Batch Processor Test ===\n", .{});
 
-    const resource = try otel_sdk.resource.ResourceBuilder.init(allocator)
-        .withDefaults()
-        .finish(allocator);
-    errdefer resource.deinitOwned(allocator);
-
-    // Create console exporter
-    var console_exporter = otel_exporters.console.createTraceExporter(allocator);
-    defer console_exporter.deinit();
-    const exporter = console_exporter.spanExporter();
-
-    // Create batch processor with very short interval for testing
-    const batch_processor = try otel_sdk.trace.BatchSpanProcessor.init(
-        allocator,
-        exporter,
-        resource,
-        500, // Export every 500ms
-        5, // Small queue for testing
-    );
-
-    // Start the processor
-    try batch_processor.start();
+    // Set up trace provider using the new builder pattern with batch processor
+    try otel_sdk.trace.buildProvider(allocator)
+        .withExporterClosure(otel_exporters.console.ConsoleExporterConfig{}, otel_exporters.console.createTraceExporterWithConfig)
+        .withBatchProcessor(500, 5) // Export every 500ms, small queue for testing
+        .withDefaultResource()
+        .withBasicProvider()
+        .finish();
+    defer otel_sdk.trace.destroyProvider();
 
     std.debug.print("Batch processor started with 500ms interval\n", .{});
 
-    // Create processor bridge
-    const processor_bridge = otel_sdk.trace.BridgeSpanProcessor.init(batch_processor);
-    const processor = otel_sdk.trace.SpanProcessor{ .bridge = processor_bridge };
-
-    // Create tracer provider
-    const id_generator = otel_sdk.trace.createDefaultIdGenerator();
-    const sampler = otel_api.trace.Sampler{ .keep = {} };
-
-    const tracer_provider = try otel_sdk.trace.StandardTracerProvider.init(
-        allocator,
-        resource,
-        id_generator,
-        sampler,
-        processor,
-        null,
-    );
-    defer tracer_provider.deinit();
+    // Get the global tracer provider interface
+    var tp = otel_api.getGlobalTracerProvider();
 
     // Get tracer
-    var tp = tracer_provider.tracerProvider();
-    var tracer = try tp.getTracerWithScope(.{
-        .name = "simple-batch-test",
-        .version = "1.0.0",
-        .schema_url = null,
-        .attributes = &.{},
-    });
+    const scope = try otel_api.InstrumentationScope.initSimple("simple-batch-test", "1.0.0");
+    var tracer = try tp.getTracerWithScope(scope);
 
     // Create context
     const ctx = otel_api.Context.empty(allocator);
@@ -134,15 +101,7 @@ pub fn main() !void {
         std.debug.print("Force flush failed\n", .{});
     }
 
-    std.debug.print("Shutting down...\n", .{});
-
-    // Shutdown
-    const shutdown_result = batch_processor.shutdown(1000);
-    if (shutdown_result == .success) {
-        std.debug.print("Shutdown successful\n", .{});
-    } else {
-        std.debug.print("Shutdown failed\n", .{});
-    }
+    std.debug.print("Final flush and cleanup will be handled by destroyProvider()...\n", .{});
 
     std.debug.print("=== Test Complete ===\n", .{});
 }

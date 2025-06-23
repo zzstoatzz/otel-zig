@@ -10,7 +10,6 @@
 
 const std = @import("std");
 
-const InstrumentationScope = @import("../common/root.zig").InstrumentationScope;
 const AttributeValue = @import("../common/root.zig").AttributeValue;
 const AttributeKeyValue = @import("../common/root.zig").AttributeKeyValue;
 const Context = @import("../context/root.zig").Context;
@@ -20,7 +19,7 @@ const Severity = @import("severity.zig").Severity;
 /// In the API layer, only the noop implementation is provided.
 /// SDK implementations will extend this with concrete loggers.
 pub const Logger = union(enum) {
-    noop: InstrumentationScope,
+    noop: void,
     bridge: LoggerBridge, // SDK logger bridge
 
     /// Emit a log record with individual parameters
@@ -75,14 +74,6 @@ pub const Logger = union(enum) {
         return switch (self.*) {
             .noop => |_| return false,
             .bridge => |bridge| bridge.enabledWithEventFn(bridge.logger_ptr, ctx, severity, event_name),
-        };
-    }
-
-    /// Get the instrumentation scope for this logger
-    pub inline fn getInstrumentationScope(self: *const Logger) InstrumentationScope {
-        return switch (self.*) {
-            .noop => |scope| scope,
-            .bridge => |bridge| bridge.getInstrumentationScopeFn(bridge.logger_ptr),
         };
     }
 
@@ -179,7 +170,6 @@ pub const LoggerBridge = struct {
     ) void,
     enabledFn: *const fn (logger_ptr: *anyopaque, ctx: Context, severity: Severity) bool,
     enabledWithEventFn: *const fn (logger_ptr: *anyopaque, ctx: Context, severity: Severity, event_name: []const u8) bool,
-    getInstrumentationScopeFn: *const fn (logger_ptr: *anyopaque) InstrumentationScope,
     deinitFn: *const fn (logger_ptr: *anyopaque) void,
 
     pub fn init(ptr: anytype) LoggerBridge {
@@ -229,10 +219,6 @@ pub const LoggerBridge = struct {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.enabledWithEvent(self, ctx, severity, event_name);
             }
-            pub fn getInstrumentationScope(pointer: *anyopaque) InstrumentationScope {
-                const self: T = @ptrCast(@alignCast(pointer));
-                return ptr_info.pointer.child.getInstrumentationScope(self);
-            }
         };
 
         return .{
@@ -240,7 +226,6 @@ pub const LoggerBridge = struct {
             .emitLogRecordFn = VTable.emitLogRecord,
             .enabledFn = VTable.enabled,
             .enabledWithEventFn = VTable.enabledWithEvent,
-            .getInstrumentationScopeFn = VTable.getInstrumentationScope,
             .deinitFn = VTable.deinit,
         };
     }

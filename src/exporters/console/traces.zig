@@ -42,7 +42,7 @@ pub const ConsoleTraceExporter = struct {
     }
 
     pub fn deinit(self: *ConsoleTraceExporter) void {
-        _ = self;
+        self.allocator.destroy(self);
     }
 
     pub fn exportSpans(self: *ConsoleTraceExporter, spans: []const *RecordingSpan, resource: Resource) ProcessResult {
@@ -574,11 +574,17 @@ fn writeHexBytes(jw: anytype, bytes: []const u8) JsonError!void {
 }
 
 /// Create a console trace exporter with default configuration
-pub fn createTraceExporter(allocator: std.mem.Allocator) ConsoleTraceExporter {
-    return ConsoleTraceExporter.init(allocator, .{});
+pub fn createTraceExporter(allocator: std.mem.Allocator) !SpanExporter {
+    const exporter = try allocator.create(ConsoleTraceExporter);
+    errdefer allocator.destroy(exporter);
+    exporter.* = ConsoleTraceExporter.init(allocator, .{});
+    return exporter.spanExporter();
 }
 
 /// Create a console trace exporter with custom configuration
-pub fn createTraceExporterWithConfig(allocator: std.mem.Allocator, config: ConsoleExporterConfig) ConsoleTraceExporter {
-    return ConsoleTraceExporter.init(allocator, config);
+pub fn createTraceExporterWithConfig(config: ConsoleExporterConfig, allocator: std.mem.Allocator) !SpanExporter {
+    const exporter = try allocator.create(ConsoleTraceExporter);
+    errdefer allocator.destroy(exporter);
+    exporter.* = ConsoleTraceExporter.init(allocator, config);
+    return exporter.spanExporter();
 }

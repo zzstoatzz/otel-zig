@@ -59,24 +59,38 @@ const OtlpAnyValue = union(enum) {
 
 /// OTLP log exporter implementation
 pub const OtlpLogExporter = struct {
+    pub const PipelineStep = otel_sdk.common.PipelineStepInstructions(
+        OtlpLogExporter,
+        otel_sdk.logs.LogExporter,
+        OtlpExporterConfig,
+        logExporter,
+        _init,
+        otel_sdk.common.PipelineDeinitConnection,
+    );
+
     config: OtlpExporterConfig,
     allocator: std.mem.Allocator,
     is_shutdown: bool,
     mutex: std.Thread.Mutex,
 
-    pub fn init(allocator: std.mem.Allocator, config: OtlpExporterConfig) !*OtlpLogExporter {
-        const self = try allocator.create(OtlpLogExporter);
-        errdefer allocator.destroy(self);
-        self.* = .{
+    pub fn _init(config: OtlpExporterConfig, allocator: std.mem.Allocator) !OtlpLogExporter {
+        return init(allocator, config);
+    }
+
+    pub fn init(allocator: std.mem.Allocator, config: OtlpExporterConfig) OtlpLogExporter {
+        return .{
             .config = config,
             .allocator = allocator,
             .is_shutdown = false,
             .mutex = .{},
         };
-        return self;
     }
 
     pub fn deinit(self: *OtlpLogExporter) void {
+        _ = self;
+    }
+
+    pub fn destroy(self: *OtlpLogExporter) void {
         self.allocator.destroy(self);
     }
 
@@ -434,17 +448,11 @@ fn convertToOtlpFormat(allocator: std.mem.Allocator, records: []const LogRecord,
     return try json_buffer.toOwnedSlice();
 }
 
-/// Create an OTLP log exporter with custom configuration
-pub fn createLogExporterWithConfig(config: OtlpExporterConfig, allocator: std.mem.Allocator) !otel_sdk.logs.LogExporter {
-    const exporter = try OtlpLogExporter.init(allocator, config);
-    return exporter.logExporter();
-}
-
 test "OtlpLogExporter basic functionality" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    var exporter = try OtlpLogExporter.init(allocator, .{
+    var exporter = OtlpLogExporter.init(allocator, .{
         .endpoint = "http://localhost:4318",
         .transport = .http_json,
     });

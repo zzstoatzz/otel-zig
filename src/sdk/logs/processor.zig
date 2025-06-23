@@ -18,14 +18,12 @@ const ProcessResult = @import("otel-api").common.ProcessResult;
 /// LogProcessor interface using tagged union for polymorphism
 pub const LogProcessor = union(enum) {
     noop: void,
-    simple: *SimpleLogProcessor,
     bridge: BridgeLogProcessor,
 
     /// Called when a log record is emitted
-    pub fn onEmit(self: *LogProcessor, record: LogRecord, ctx: Context, resource: Resource) void {
+    pub fn onEmit(self: *const LogProcessor, record: LogRecord, ctx: Context, resource: Resource) void {
         switch (self.*) {
             .noop => {},
-            .simple => |processor| processor.onEmit(record, ctx, resource),
             .bridge => |processor| processor.onEmitFn(processor.processor_ptr, record, ctx, resource),
         }
     }
@@ -34,7 +32,6 @@ pub const LogProcessor = union(enum) {
     pub fn forceFlush(self: *LogProcessor, timeout_ms: ?u64) ProcessResult {
         return switch (self.*) {
             .noop => .success,
-            .simple => |processor| processor.forceFlush(timeout_ms),
             .bridge => |processor| processor.forceFlushFn(processor.processor_ptr, timeout_ms),
         };
     }
@@ -43,7 +40,6 @@ pub const LogProcessor = union(enum) {
     pub fn shutdown(self: *LogProcessor, timeout_ms: ?u64) ProcessResult {
         return switch (self.*) {
             .noop => .success,
-            .simple => |processor| processor.shutdown(timeout_ms),
             .bridge => |processor| processor.shutdownFn(processor.processor_ptr, timeout_ms),
         };
     }
@@ -52,82 +48,16 @@ pub const LogProcessor = union(enum) {
     pub fn deinit(self: *const LogProcessor) void {
         switch (self.*) {
             .noop => {},
-            .simple => |processor| processor.deinit(),
             .bridge => |processor| processor.deinitFn(processor.processor_ptr),
         }
     }
-};
 
-/// Simple log processor implementation.
-///
-/// Implementation is a pass through to the exporter.
-pub const SimpleLogProcessor = struct {
-    allocator: std.mem.Allocator,
-    exporter: LogExporter,
-    mutex: std.Thread.Mutex,
-    is_shutdown: bool,
-
-    pub fn init(allocator: std.mem.Allocator, exporter: LogExporter) !*SimpleLogProcessor {
-        const self = try allocator.create(SimpleLogProcessor);
-        self.* = .{
-            .allocator = allocator,
-            .exporter = exporter,
-            .mutex = .{},
-            .is_shutdown = false,
-        };
-        return self;
-    }
-
-    pub fn deinit(self: *SimpleLogProcessor) void {
-        self.exporter.deinit();
-        self.allocator.destroy(self);
-    }
-
-    pub inline fn onEmit(self: *SimpleLogProcessor, record: LogRecord, ctx: Context, resource: Resource) void {
-        _ = ctx;
-
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        if (self.is_shutdown) {
-            return;
+    /// Destroy processor memory
+    pub fn destroy(self: *const LogProcessor) void {
+        switch (self.*) {
+            .noop => {},
+            .bridge => |processor| processor.destroyFn(processor.processor_ptr),
         }
-
-        // Export single record immediately
-        const records = [_]LogRecord{record};
-        _ = self.exporter.exportRecords(&records, resource);
-    }
-
-    pub inline fn forceFlush(self: *SimpleLogProcessor, timeout_ms: ?u64) ProcessResult {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        if (self.is_shutdown) {
-            return .failure;
-        }
-
-        // Flush the exporter
-        const result = self.exporter.forceFlush(timeout_ms);
-        return if (result == .success) .success else .failure;
-    }
-
-    pub fn shutdown(self: *SimpleLogProcessor, timeout_ms: ?u64) ProcessResult {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        if (self.is_shutdown) {
-            return .success;
-        }
-
-        self.is_shutdown = true;
-
-        // Shutdown the exporter
-        const result = self.exporter.shutdown(timeout_ms);
-        return if (result == .success) .success else .failure;
-    }
-
-    pub fn logProcessor(self: *SimpleLogProcessor) LogProcessor {
-        return LogProcessor{ .simple = self };
     }
 };
 
@@ -138,6 +68,7 @@ pub const BridgeLogProcessor = struct {
     forceFlushFn: *const fn (processor_ptr: *anyopaque, timeout_ms: ?u64) ProcessResult,
     shutdownFn: *const fn (processor_ptr: *anyopaque, timeout_ms: ?u64) ProcessResult,
     deinitFn: *const fn (processor_ptr: *anyopaque) void,
+    destroyFn: *const fn (processor_ptr: *anyopaque) void,
 
     pub fn init(ptr: anytype) BridgeLogProcessor {
         const T = @TypeOf(ptr);
@@ -160,6 +91,10 @@ pub const BridgeLogProcessor = struct {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.deinit(self);
             }
+            pub fn destroy(pointer: *anyopaque) void {
+                const self: T = @ptrCast(@alignCast(pointer));
+                return ptr_info.pointer.child.destroy(self);
+            }
         };
 
         return .{
@@ -168,6 +103,7 @@ pub const BridgeLogProcessor = struct {
             .forceFlushFn = VTable.forceFlush,
             .shutdownFn = VTable.shutdown,
             .deinitFn = VTable.deinit,
+            .destroyFn = VTable.destroy,
         };
     }
 };

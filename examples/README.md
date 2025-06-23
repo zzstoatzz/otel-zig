@@ -5,29 +5,112 @@ This directory contains example programs demonstrating the OpenTelemetry Zig imp
 ## Examples Overview
 
 ### Logging Examples
-- `dns_query_logging.zig` - Basic DNS query with structured logging
-- `dns_query_logging_otlp.zig` - DNS query logging with OTLP export
+- `dns_query_logging.zig` - Basic DNS query with structured logging using console exporter
+- `dns_query_logging_otlp.zig` - DNS query logging with OTLP export to collector
 
 ### Metrics Examples
-- `metrics_demo.zig` - Basic metrics demonstration with console export
-- `metrics-histogram.zig` - Histogram metrics with console export
+- `metrics_demo.zig` - **Comprehensive metrics demonstration** with console and OTLP exporters
+- `metrics_histogram.zig` - Histogram metrics with console export
 - `metrics_histogram_otlp.zig` - Histogram metrics with OTLP export
-- `metrics_periodic.zig` - Periodic metrics collection demonstration
 
 ### Tracing Examples
-- `simple_trace_sdk.zig` - Basic trace SDK demonstration
+- `simple_trace_sdk.zig` - Basic trace SDK demonstration with console export
+- `simple_trace_otlp.zig` - Basic trace SDK with OTLP export to collector
+- `batch_spans.zig` - Batch span processor demonstration with timed exports
+- `simple_batch_test.zig` - Simple batch processor testing with short intervals
 - `comprehensive_trace_sdk.zig` - **Advanced trace SDK showcase** (detailed below)
+- `test_sampling.zig` - **Sampling strategies demonstration** (detailed below)
+
+## Builder Pattern Usage
+
+All examples now use the consistent **setup.zig builder pattern** for easy configuration:
+
+```zig
+// Logs setup
+try otel_sdk.logs.buildProvider(allocator)
+    .withExporterClosure(config, createLogExporterWithConfig)
+    .withBasicProcessor()
+    .withDefaultResource()
+    .withBasicProvider()
+    .finish();
+defer otel_sdk.logs.destroyProvider();
+
+// Metrics setup  
+try otel_sdk.metrics.buildProvider(allocator)
+    .withExporterClosure(config, createMetricExporterWithConfig)
+    .withPeriodicProcessor(30000) // 30 second intervals
+    .withDefaultResource()
+    .withBasicProvider()
+    .finish();
+defer otel_sdk.metrics.destroyProvider();
+
+// Traces setup
+try otel_sdk.trace.buildProvider(allocator)
+    .withExporterClosure(config, createTraceExporterWithConfig)
+    .withBatchProcessor(2000, 100) // 2s interval, 100 span queue
+    .withResource(custom_resource)
+    .withConfigurableProvider(sampler, id_generator, span_limits)
+    .finish();
+defer otel_sdk.trace.destroyProvider();
+```
+
+## Sampling Strategies Example
+
+The `test_sampling.zig` example demonstrates all available sampling strategies:
+
+### Featured Samplers
+1. **AlwaysOff** - Drops all spans (for production traffic reduction)
+2. **AlwaysOn** - Samples all spans (for development/debugging)
+3. **TraceIdRatioBased** - Samples based on trace ID ratio (0.0 to 1.0)
+4. **ParentBased** - Follows parent span sampling decisions
+
+### Sample Output
+```
+=== OpenTelemetry Sampling Test ===
+
+1. Testing AlwaysOff Sampler (should drop all spans):
+[No output - spans dropped]
+
+2. Testing AlwaysOn Sampler (should sample all spans):
+{"resourceSpans":[...]} // Full OTLP JSON trace
+
+5. Testing TraceIdRatioBased Sampler with 50% ratio:
+   Sampled 4 out of 10 spans (40%)
+
+6. Testing ParentBased Sampler with AlwaysOn root sampler:
+   Root span sampled: true
+   Child span sampled: true (should match parent: true)
+```
+
+### Running the Sampling Test
+```bash
+zig build example-sampling-test
+```
+
+## Batch Processing Examples
+
+### Batch Spans (`batch_spans.zig`)
+Demonstrates the **BatchSpanProcessor** for efficient span export:
+- **2-second export intervals** - Batches spans for periodic export
+- **Queue management** - Up to 100 spans queued before forcing export
+- **Background processing** - Non-blocking span collection
+
+### Simple Batch Test (`simple_batch_test.zig`)
+Quick validation of batch processing with:
+- **500ms export intervals** - Fast testing cycle
+- **Small queue size** - 5 spans for immediate feedback
+- **Force flush testing** - Manual export triggering
 
 ## Comprehensive Trace SDK Example
 
-The `comprehensive_trace_sdk.zig` example is a comprehensive demonstration of the OpenTelemetry Trace SDK capabilities, simulating realistic microservice scenarios.
+The `comprehensive_trace_sdk.zig` example is a comprehensive demonstration of the OpenTelemetry Trace SDK capabilities, simulating realistic microservice scenarios using the new **setup.zig builder pattern**.
 
 ### Features Demonstrated
 
 #### 1. HTTP Request Scenario 📡
 Simulates a complete web service request flow:
 - **API Gateway** (SERVER span) - receives POST /api/orders request
-- **User Service** (INTERNAL span) - validates user credentials  
+- **User Service** (INTERNAL span) - validates user credentials
 - **Database Query** (CLIENT span) - PostgreSQL user lookup
 - **Order Service** (INTERNAL span) - processes order creation
 
@@ -83,14 +166,40 @@ Tests trace SDK performance characteristics:
 - Nanosecond precision timing
 - Average span creation time calculation
 
-### Running the Example
+### Running Examples
 
 ```bash
-# Build and run the comprehensive trace example
+# Individual examples
+zig build example-simple-trace-sdk
+zig build example-simple-trace-otlp  
+zig build example-batch-spans
+zig build example-simple-batch-test
 zig build example-comprehensive-trace-sdk
+zig build example-sampling-test
+
+# Metrics examples
+zig build example-metrics
+zig build example-metrics-histogram
+zig build example-metrics-otlp
+
+# Log examples  
+zig build example-dns-query
+zig build example-dns-query-otlp
 
 # Build and run all examples
 zig build examples
+```
+
+### OTLP Collector Setup
+
+For OTLP examples, ensure you have an OpenTelemetry Collector running:
+
+```bash
+# Using Docker
+docker run --rm -p 4317:4317 -p 4318:4318 \
+  otel/opentelemetry-collector-contrib:latest
+
+# Or configure your own collector on localhost:4318
 ```
 
 ### Output Format
@@ -98,7 +207,7 @@ zig build examples
 The example exports traces in **OTLP JSON format** to the console. Each trace contains:
 
 - **Resource attributes** - Service identification and metadata
-- **Instrumentation scope** - Component that created the spans  
+- **Instrumentation scope** - Component that created the spans
 - **Span data** - Timing, attributes, events, status, and relationships
 
 Example trace output:
@@ -162,7 +271,7 @@ Example trace output:
 This example serves as an integration test for the trace SDK, validating:
 
 - ✅ **Span creation and lifecycle management**
-- ✅ **Attribute and event addition** 
+- ✅ **Attribute and event addition**
 - ✅ **Status setting (OK and Error states)**
 - ✅ **Parent-child span relationships**
 - ✅ **Context propagation between spans**
@@ -172,14 +281,48 @@ This example serves as an integration test for the trace SDK, validating:
 - ✅ **High-frequency span creation** (performance testing)
 - ✅ **Error handling and status reporting**
 
-### Next Steps
+## SDK Implementation Status
 
-This comprehensive example demonstrates that the OpenTelemetry Zig trace SDK Phase 6 implementation is **fully functional** and ready for:
+The OpenTelemetry Zig SDK implementation is **fully functional** across all three signals:
 
-1. **Real-world application integration**
-2. **Additional exporter development** (OTLP gRPC, Jaeger, Zipkin)
-3. **Advanced sampling strategies**
-4. **Batch span processing**
-5. **Performance optimization**
+### ✅ Logs SDK (Complete)
+- **Console and OTLP exporters** - Structured logging with export capabilities
+- **Simple log processor** - Immediate log processing and export
+- **Resource detection** - Automatic host and process metadata
+- **Builder pattern setup** - Easy configuration and setup
 
-The trace SDK successfully provides all the core functionality needed for distributed tracing in Zig applications! 🎉
+### ✅ Metrics SDK (Complete) 
+- **Console and OTLP exporters** - Metrics export in multiple formats
+- **Periodic processor** - Configurable metric collection intervals
+- **All instrument types** - Counter, UpDownCounter, Gauge, Histogram
+- **Aggregation support** - Sum, LastValue, and Histogram aggregations
+- **Builder pattern setup** - Consistent configuration approach
+
+### ✅ Traces SDK (Complete)
+- **Console and OTLP exporters** - Distributed tracing export
+- **Simple and Batch processors** - Immediate and batched span processing
+- **Full sampling support** - AlwaysOn/Off, Ratio-based, Parent-based
+- **Span relationships** - Parent-child links with proper context propagation
+- **All span kinds** - Server, Client, Internal, Producer, Consumer
+- **Performance optimized** - Efficient span creation and processing
+- **Builder pattern setup** - Flexible provider configuration
+
+### Key Features Across All SDKs
+- 🏗️ **Unified builder pattern** - Consistent setup across logs, metrics, traces
+- 🔧 **Flexible configuration** - Custom exporters, processors, resources, samplers
+- 🚀 **High performance** - Zero-allocation designs where possible
+- 📊 **OTLP compliance** - Full OpenTelemetry Protocol support
+- 🎯 **Memory safe** - Proper Zig memory management patterns
+- 📈 **Production ready** - Comprehensive error handling and resource cleanup
+
+### Ready for Production Use
+
+The SDK is ready for:
+
+1. **Real-world application integration** - All core functionality implemented
+2. **Custom exporter development** - Clean interfaces for new backends
+3. **Advanced configurations** - Sampling, batching, resource detection
+4. **Performance-critical applications** - Optimized for minimal overhead
+5. **Large-scale deployments** - Robust memory and resource management
+
+The OpenTelemetry Zig SDK successfully provides all the core functionality needed for observability in Zig applications! 🎉

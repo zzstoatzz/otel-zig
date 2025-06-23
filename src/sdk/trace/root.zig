@@ -53,6 +53,10 @@ pub const generateSpanId = @import("id_generator.zig").generateSpanId;
 // Resource type
 const Resource = @import("../resource/resource.zig").Resource;
 
+// Re-export the setup helper functions
+pub const buildProvider = @import("setup.zig").buildProvider;
+pub const destroyProvider = @import("setup.zig").destroyProvider;
+
 /// Create a tracer provider with the given configuration
 pub fn createTracerProvider(
     allocator: std.mem.Allocator,

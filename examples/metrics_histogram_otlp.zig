@@ -25,30 +25,19 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Create an OTLP exporter for metrics
-    // Default endpoint is http://localhost:4318/v1/metrics
-    var otlp_exporter = otel_exporters.otlp.OtlpMetricExporter.init(allocator, .{});
-    defer otlp_exporter.deinit();
-
-    const exporter = otel_sdk.metrics.MetricExporter{
-        .bridge = otel_sdk.metrics.BridgeMetricExporter.init(&otlp_exporter),
-    };
-
-    // Set up metrics with OTLP exporter
-    var meter_provider = try otel_sdk.metrics.createSimpleSyncMetrics(
+    const concrete_provider = try otel_sdk.metrics.setupGlobalProvider(
         allocator,
-        "comprehensive-metrics-otlp-example",
-        exporter,
+        .{otel_sdk.metrics.BasicMetricProcessor.PipelineStep.init({})
+            .flowTo(otel_exporters.otlp.OtlpMetricExporter.PipelineStep.init(.{}))},
     );
-    defer meter_provider.deinit();
-
-    // Set as global provider
-    _ = otel_api.provider_registry.setGlobalMeterProvider(&meter_provider);
-    defer _ = otel_api.provider_registry.setGlobalMeterProvider(null);
+    defer {
+        concrete_provider.deinit();
+        concrete_provider.destroy();
+    }
 
     // Get a meter
     const scope = try otel_api.InstrumentationScope.initSimple("example.comprehensive.otlp", "1.0.0");
-    var meter = try meter_provider.getMeterWithScope(scope);
+    var meter = try otel_api.getGlobalMeterProvider().getMeterWithScope(scope);
 
     std.debug.print("=== Comprehensive OpenTelemetry Metrics OTLP Export Demo ===\n\n", .{});
 
@@ -344,7 +333,7 @@ pub fn main() !void {
     std.debug.print("\nFlushing metrics to OTLP endpoint...\n", .{});
 
     // Force flush to ensure metrics are sent
-    const flush_result = meter_provider.forceFlush(5000);
+    const flush_result = concrete_provider.forceFlush(5000);
     if (flush_result == .success) {
         std.debug.print("✅ Metrics successfully exported to OTLP endpoint!\n", .{});
         std.debug.print("\nCheck your OTLP backend to view:\n", .{});

@@ -33,25 +33,40 @@ pub const StreamLogExporterConfig = struct {
 /// Generic stream-based log exporter that can write to any writer
 pub fn StreamLogExporter(comptime WriterType: type) type {
     return struct {
+        pub const PipelineStep = otel_sdk.common.PipelineStepInstructions(
+            Self,
+            otel_sdk.logs.LogExporter,
+            StreamLogExporterConfig,
+            logExporter,
+            _init,
+            otel_sdk.common.PipelineDeinitConnection,
+        );
         const Self = @This();
+
+        pub fn _init(config: StreamLogExporterConfig, allocator: std.mem.Allocator) !Self {
+            const file = std.io.getStdOut();
+            return init(allocator, config, file.writer());
+        }
 
         allocator: std.mem.Allocator,
         config: StreamLogExporterConfig,
         writer: WriterType,
         mutex: std.Thread.Mutex,
 
-        pub fn init(allocator: std.mem.Allocator, config: StreamLogExporterConfig, writer: WriterType) !*Self {
-            const self = try allocator.create(Self);
-            self.* = .{
+        pub fn init(allocator: std.mem.Allocator, config: StreamLogExporterConfig, writer: WriterType) Self {
+            return .{
                 .allocator = allocator,
                 .config = config,
                 .writer = writer,
                 .mutex = .{},
             };
-            return self;
         }
 
         pub fn deinit(self: *Self) void {
+            _ = self;
+        }
+
+        pub fn destroy(self: *Self) void {
             self.allocator.destroy(self);
         }
 
@@ -235,19 +250,6 @@ pub fn StreamLogExporter(comptime WriterType: type) type {
     };
 }
 
-pub fn createLogExporterWithConfig(config: ConsoleExporterConfig, allocator: std.mem.Allocator) !otel_sdk.logs.LogExporter {
-    const file = if (config.use_stderr) std.io.getStdErr() else std.io.getStdOut();
-    const stream_config = StreamLogExporterConfig{
-        .pretty_print = config.pretty_print,
-        .include_timestamp = config.include_timestamp,
-        .include_attributes = config.include_attributes,
-        .max_attribute_length = config.max_attribute_length,
-    };
-
-    const exporter = try StreamLogExporter(std.fs.File.Writer).init(allocator, stream_config, file.writer());
-    return exporter.logExporter();
-}
-
 // Tests using buffer writers
 test "StreamLogExporter basic export with buffer" {
     const testing = std.testing;
@@ -256,7 +258,7 @@ test "StreamLogExporter basic export with buffer" {
     var buffer = std.ArrayList(u8).init(allocator);
     defer buffer.deinit();
 
-    var stream_exporter = try StreamLogExporter(std.ArrayList(u8).Writer).init(allocator, .{
+    var stream_exporter = StreamLogExporter(std.ArrayList(u8).Writer).init(allocator, .{
         .pretty_print = false,
         .include_timestamp = false,
     }, buffer.writer());
@@ -293,8 +295,8 @@ test "StreamLogExporter with attributes and buffer" {
     var buffer = std.ArrayList(u8).init(allocator);
     defer buffer.deinit();
 
-    var stream_exporter = try StreamLogExporter(std.ArrayList(u8).Writer).init(allocator, .{
-        .pretty_print = true,
+    var stream_exporter = StreamLogExporter(std.ArrayList(u8).Writer).init(allocator, .{
+        .pretty_print = false,
         .include_timestamp = false,
     }, buffer.writer());
     defer stream_exporter.deinit();
@@ -335,7 +337,7 @@ test "StreamLogExporter formatting modes" {
         var buffer = std.ArrayList(u8).init(allocator);
         defer buffer.deinit();
 
-        var stream_exporter = try StreamLogExporter(std.ArrayList(u8).Writer).init(allocator, .{
+        var stream_exporter = StreamLogExporter(std.ArrayList(u8).Writer).init(allocator, .{
             .pretty_print = false,
             .include_timestamp = false,
             .include_attributes = true,
@@ -369,7 +371,7 @@ test "StreamLogExporter formatting modes" {
         var buffer = std.ArrayList(u8).init(allocator);
         defer buffer.deinit();
 
-        var stream_exporter = try StreamLogExporter(std.ArrayList(u8).Writer).init(allocator, .{
+        var stream_exporter = StreamLogExporter(std.ArrayList(u8).Writer).init(allocator, .{
             .pretty_print = true,
             .include_timestamp = false,
             .include_attributes = true,

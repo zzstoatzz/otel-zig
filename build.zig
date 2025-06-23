@@ -265,7 +265,7 @@ pub fn build(b: *std.Build) void {
     // Metrics Histogram Example
     const metrics_histogram_example = b.addExecutable(.{
         .name = "metrics_histogram",
-        .root_source_file = b.path("examples/metrics-histogram.zig"),
+        .root_source_file = b.path("examples/metrics_histogram.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -293,21 +293,6 @@ pub fn build(b: *std.Build) void {
     const run_metrics_comprehensive_otlp = b.addRunArtifact(metrics_comprehensive_otlp_example);
     const metrics_comprehensive_otlp_step = b.step("example-metrics-otlp", "Run comprehensive metrics OTLP example");
     metrics_comprehensive_otlp_step.dependOn(&run_metrics_comprehensive_otlp.step);
-
-    // Metrics Periodic Example
-    const metrics_periodic_example = b.addExecutable(.{
-        .name = "metrics_periodic",
-        .root_source_file = b.path("examples/metrics_periodic.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    metrics_periodic_example.root_module.addImport("otel-api", otel_api_mod);
-    metrics_periodic_example.root_module.addImport("otel-sdk", otel_sdk_mod);
-    metrics_periodic_example.root_module.addImport("otel-exporters", otel_exporters_mod);
-
-    const run_metrics_periodic = b.addRunArtifact(metrics_periodic_example);
-    const metrics_periodic_step = b.step("example-metrics-periodic", "Run metrics periodic example");
-    metrics_periodic_step.dependOn(&run_metrics_periodic.step);
 
     // Simple Trace SDK Example
     const simple_trace_sdk_example = b.addExecutable(.{
@@ -412,7 +397,6 @@ pub fn build(b: *std.Build) void {
     examples_step.dependOn(&run_metrics_demo.step);
     examples_step.dependOn(&run_metrics_histogram.step);
     examples_step.dependOn(&run_metrics_comprehensive_otlp.step);
-    examples_step.dependOn(&run_metrics_periodic.step);
     examples_step.dependOn(&run_simple_trace_sdk.step);
     examples_step.dependOn(&run_comprehensive_trace_sdk.step);
     examples_step.dependOn(&run_simple_trace_otlp.step);

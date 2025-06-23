@@ -39,7 +39,7 @@ pub const OtlpTraceExporter = @import("traces.zig").OtlpTraceExporter;
 pub const OtlpMetricExporter = @import("metrics.zig").OtlpMetricExporter;
 
 // Re-export creation functions
-pub const createLogExporterWithConfig = @import("logs.zig").createLogExporterWithConfig;
+pub const createMetricExporterWithConfig = @import("metrics.zig").createMetricExporterWithConfig;
 pub const createTraceExporter = @import("traces.zig").createTraceExporter;
 pub const createTraceExporterWithConfig = @import("traces.zig").createTraceExporterWithConfig;
 

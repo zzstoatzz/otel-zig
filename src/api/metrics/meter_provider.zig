@@ -15,7 +15,6 @@ const Meter = @import("meter.zig").Meter;
 const Context = @import("../context/root.zig").Context;
 const InstrumentationScope = @import("../common/root.zig").InstrumentationScope;
 const AttributeValue = @import("../common/root.zig").AttributeValue;
-const FlushResult = @import("../common/results.zig").FlushResult;
 
 /// MeterProvider interface using tagged union for polymorphism
 pub const MeterProvider = union(enum) {
@@ -23,23 +22,15 @@ pub const MeterProvider = union(enum) {
     bridge: MeterProviderBridge,
 
     /// Get or create a meter for the given instrumentation scope
-    pub inline fn getMeterWithScope(self: *MeterProvider, scope: InstrumentationScope) !Meter {
+    pub inline fn getMeterWithScope(self: *const MeterProvider, scope: InstrumentationScope) !Meter {
         return switch (self.*) {
             .noop => Meter{ .noop = scope },
             .bridge => |*bridge| bridge.getMeterWithScopeFn(bridge.provider_ptr, scope),
         };
     }
 
-    /// Force flush all meters managed by this provider
-    pub fn forceFlush(self: *MeterProvider, timeout_ms: ?u64) FlushResult {
-        return switch (self.*) {
-            .noop => FlushResult.success,
-            .bridge => |*bridge| bridge.forceFlushFn(bridge.provider_ptr, timeout_ms),
-        };
-    }
-
     /// Clean up provider resources
-    pub fn deinit(self: *MeterProvider) void {
+    pub fn deinit(self: *const MeterProvider) void {
         switch (self.*) {
             .noop => {},
             .bridge => |*bridge| bridge.deinitFn(bridge.provider_ptr),
@@ -51,7 +42,7 @@ pub const MeterProvider = union(enum) {
 pub const MeterProviderBridge = struct {
     provider_ptr: *anyopaque,
     getMeterWithScopeFn: *const fn (provider_ptr: *anyopaque, scope: InstrumentationScope) anyerror!Meter,
-    forceFlushFn: *const fn (provider_ptr: *anyopaque, timeout_ns: ?u64) FlushResult,
+
     deinitFn: *const fn (provider_ptr: *anyopaque) void,
 
     pub fn init(ptr: anytype) MeterProviderBridge {
@@ -63,10 +54,7 @@ pub const MeterProviderBridge = struct {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.getMeterWithScope(self, scope);
             }
-            pub fn forceFlush(pointer: *anyopaque, timeout_ms: ?u64) FlushResult {
-                const self: T = @ptrCast(@alignCast(pointer));
-                return ptr_info.pointer.child.forceFlush(self, timeout_ms);
-            }
+
             pub fn deinit(pointer: *anyopaque) void {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.deinit(self);
@@ -76,7 +64,6 @@ pub const MeterProviderBridge = struct {
         return .{
             .provider_ptr = ptr,
             .getMeterWithScopeFn = VTable.getMeterWithScope,
-            .forceFlushFn = VTable.forceFlush,
             .deinitFn = VTable.deinit,
         };
     }

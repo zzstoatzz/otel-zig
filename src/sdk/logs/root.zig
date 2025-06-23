@@ -5,10 +5,10 @@
 //! In the future, this will be refactored to properly separate API and SDK concerns.
 //!
 //! ## Components
-//! - `StandardLogger` - Concrete logger implementation with filtering and handlers
-//! - `StandardLoggerProvider` - Provider with caching and configuration
+//! - `BasicLogger` - Concrete logger implementation with filtering and handlers
+//! - `BasicLoggerProvider` - Provider with caching and configuration
 //! - `LogProcessor` - Interface for processing log records
-//! - `SimpleLogProcessor` - Immediately exports each log record
+//! - `BasicLogProcessor` - Immediately exports each log record
 //! - `LogExporter` - Interface for exporting log records
 //!
 //! ## Usage
@@ -31,17 +31,17 @@ const std = @import("std");
 // Core log data types
 pub const LogRecord = @import("log_record.zig").LogRecord;
 
-// SDK Logger types
-pub const StandardLogger = @import("logger.zig").StandardLogger;
-
 // SDK Logger Provider types
-pub const StandardLoggerProvider = @import("logger_provider.zig").StandardLoggerProvider;
+pub const BasicLoggerProvider = @import("basic_provider.zig").BasicLoggerProvider;
 
 // Re-export processor types
 const processor_zig = @import("processor.zig");
 pub const LogProcessor = processor_zig.LogProcessor;
-pub const SimpleLogProcessor = processor_zig.SimpleLogProcessor;
 pub const BridgeLogProcessor = processor_zig.BridgeLogProcessor;
+
+// Re-export basic processor types
+const basic_processor_zig = @import("basic_processor.zig");
+pub const BasicLogProcessor = basic_processor_zig.BasicLogProcessor;
 
 // Re-export exporter interface
 const exporter_zig = @import("exporter.zig");
@@ -49,9 +49,8 @@ pub const LogExporter = exporter_zig.LogExporter;
 pub const BridgeLogExporter = exporter_zig.BridgeLogExporter;
 
 // Re-export the setup helper functions
-pub const buildProvider = @import("setup.zig").buildProvider;
-pub const destroyProvider = @import("setup.zig").destroyProvider;
-pub const createSimpleSyncLogging = @import("setup.zig").createSimpleSyncLogging;
+const setup_zig = @import("setup.zig");
+pub const setupGlobalProvider = setup_zig.setupGlobalProvider;
 
 test "logs sdk module compilation" {
     std.testing.refAllDecls(@This());

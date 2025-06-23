@@ -16,66 +16,21 @@ pub fn main() !void {
 
     std.debug.print("=== Batch Span Processor Example ===\n", .{});
 
-    // Create resource with service information
-    const resource = try otel_sdk.resource.ResourceBuilder.init(allocator)
-        .withDefaults()
-        .addKeyValue(.{
-            .key = "service.name",
-            .value = .{ .string = "batch-example" },
-        })
-        .addKeyValue(.{
-            .key = "service.version",
-            .value = .{ .string = "1.0.0" },
-        })
-        .addSchemaUrl("https://opentelemetry.io/schemas/1.24.0")
-        .finish(allocator);
-    errdefer resource.deinitOwned(allocator);
+    // Set up trace provider using the new builder pattern with batch processor
+    try otel_sdk.trace.buildProvider(allocator)
+        .withExporterClosure(otel_exporters.console.ConsoleExporterConfig{}, otel_exporters.console.createTraceExporterWithConfig)
+        .withBatchProcessor(2000, 100) // Export every 2 seconds, queue up to 100 spans
+        .withDefaultResource()
+        .withBasicProvider()
+        .finish();
+    defer otel_sdk.trace.destroyProvider();
 
-    // Create console exporter
-    var console_exporter = otel_exporters.console.createTraceExporter(allocator);
-    defer console_exporter.deinit();
-    const exporter = console_exporter.spanExporter();
-
-    // Create batch processor with short interval for demo
-    const batch_processor = try otel_sdk.trace.BatchSpanProcessor.init(
-        allocator,
-        exporter,
-        resource,
-        2000, // Export every 2 seconds
-        100, // Queue up to 100 spans
-    );
-
-    // Start the background export thread
-    try batch_processor.start();
-
-    // Create processor bridge for use with SDK
-    const processor_bridge = otel_sdk.trace.BridgeSpanProcessor.init(batch_processor);
-    const processor = otel_sdk.trace.SpanProcessor{ .bridge = processor_bridge };
-
-    // Create tracer provider with batch processor
-    const id_generator = otel_sdk.trace.createDefaultIdGenerator();
-    const sampler = otel_api.trace.Sampler{ .keep = {} }; // Sample all spans
-
-    const tracer_provider = try otel_sdk.trace.StandardTracerProvider.init(
-        allocator,
-        resource,
-        id_generator,
-        sampler,
-        processor,
-        null, // Use default span limits
-    );
-    defer tracer_provider.deinit();
-
-    // Get the tracer provider interface
-    var tp = tracer_provider.tracerProvider();
+    // Get the global tracer provider interface
+    var tp = otel_api.getGlobalTracerProvider();
 
     // Get a tracer
-    var tracer = try tp.getTracerWithScope(.{
-        .name = "batch-example",
-        .version = "1.0.0",
-        .schema_url = null,
-        .attributes = &.{},
-    });
+    const scope = try otel_api.InstrumentationScope.initSimple("batch-example", "1.0.0");
+    var tracer = try tp.getTracerWithScope(scope);
 
     // Create a root context
     const ctx = otel_api.Context.empty(allocator);
@@ -158,22 +113,14 @@ pub fn main() !void {
     std.debug.print("Forcing flush to export remaining spans...\n", .{});
 
     // Force flush to export any remaining spans
-    const flush_result = batch_processor.forceFlush(5000); // 5 second timeout
+    const flush_result = tp.forceFlush(5000); // 5 second timeout
     if (flush_result == .success) {
         std.debug.print("Force flush completed successfully\n", .{});
     } else {
         std.debug.print("Force flush failed\n", .{});
     }
 
-    std.debug.print("Shutting down...\n", .{});
-
-    // Shutdown will export any remaining spans
-    const shutdown_result = batch_processor.shutdown(5000);
-    if (shutdown_result == .success) {
-        std.debug.print("Shutdown completed successfully\n", .{});
-    } else {
-        std.debug.print("Shutdown failed\n", .{});
-    }
+    std.debug.print("Final cleanup will be handled by destroyProvider()...\n", .{});
 
     std.debug.print("=== Batch Span Processor Example Complete ===\n", .{});
 }
