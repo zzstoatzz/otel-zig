@@ -12,13 +12,95 @@ const std = @import("std");
 const otel_api = @import("otel-api");
 
 const ProcessResult = otel_api.common.ProcessResult;
+const ExportResult = otel_api.common.ExportResult;
 const SpanLimits = otel_api.trace.SpanLimits;
 const RecordingSpan = @import("data.zig").RecordingSpan;
 const SpanExporter = @import("exporter.zig").SpanExporter;
 const Resource = @import("../resource/resource.zig").Resource;
 
+// Import error handler for structured error reporting
+const error_handler = otel_api.common;
+
+// Import the processor interface and bridge
+const processor_zig = @import("processor.zig");
+const SpanProcessor = processor_zig.SpanProcessor;
+const BridgeSpanProcessor = processor_zig.BridgeSpanProcessor;
+
+/// Convert ExportResult to ProcessResult
+fn exportResultToProcessResult(result: ExportResult) ProcessResult {
+    return switch (result) {
+        .success => .success,
+        .failure => .failure,
+    };
+}
+
+/// Noop exporter for initial BatchSpanProcessor state
+const NoopExporter = struct {
+    pub fn exportSpans(self: *NoopExporter, spans: []const *RecordingSpan, resource: Resource) ExportResult {
+        _ = self;
+        _ = spans;
+        _ = resource;
+        return .success;
+    }
+
+    pub fn forceFlush(self: *NoopExporter, timeout_ms: ?u64) ExportResult {
+        _ = self;
+        _ = timeout_ms;
+        return .success;
+    }
+
+    pub fn shutdown(self: *NoopExporter, timeout_ms: ?u64) ExportResult {
+        _ = self;
+        _ = timeout_ms;
+        return .success;
+    }
+
+    pub fn deinit(self: *NoopExporter) void {
+        _ = self;
+    }
+
+    pub fn destroy(self: *NoopExporter) void {
+        _ = self;
+    }
+};
+
+var noop_exporter_instance = NoopExporter{};
+
+/// Configuration for BatchSpanProcessor PipelineStep
+pub const BatchConfig = struct {
+    export_interval_ms: ?u32 = null,
+    max_queue_size: ?usize = null,
+};
+
 /// Batch span processor that exports spans at regular intervals
 pub const BatchSpanProcessor = struct {
+    pub const PipelineStep = @import("../common/pipeline.zig").PipelineStepInstructions(
+        BatchSpanProcessor,
+        SpanProcessor,
+        BatchConfig,
+        spanProcessor,
+        _initFn,
+        setExporter,
+    );
+
+    pub fn _initFn(config: BatchConfig, allocator: std.mem.Allocator) !BatchSpanProcessor {
+        // Note: BatchSpanProcessor traditionally returns a pointer from init
+        // but for PipelineStep compatibility, we need to return by value
+        // The pipeline system will handle heap allocation
+        return .{
+            .allocator = allocator,
+            .exporter = SpanExporter{ .bridge = @import("exporter.zig").BridgeSpanExporter.init(&noop_exporter_instance) }, // Will be set by pipeline
+            .resource = Resource.empty,
+            .mutex = .{},
+            .condition = .{},
+            .is_shutdown = false,
+            .is_running = false,
+            .thread = null,
+            .export_interval_ms = config.export_interval_ms orelse 5000,
+            .max_queue_size = config.max_queue_size orelse 2048,
+            .span_queue = .{},
+        };
+    }
     allocator: std.mem.Allocator,
     exporter: SpanExporter,
     resource: Resource,
@@ -63,6 +145,15 @@ pub const BatchSpanProcessor = struct {
         return self;
     }
 
+    pub fn setExporter(self: *BatchSpanProcessor, exporter: ?SpanExporter) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (exporter) |exp| {
+            self.exporter = exp;
+        }
+    }
+
     /// Start the background export thread
     pub fn start(self: *BatchSpanProcessor) !void {
         self.mutex.lock();
@@ -101,6 +192,10 @@ pub const BatchSpanProcessor = struct {
 
         // Clean up resources
         self.exporter.deinit();
+        self.exporter.destroy();
+    }
+
+    pub fn destroy(self: *BatchSpanProcessor) void {
         self.allocator.destroy(self);
     }
 
@@ -124,15 +219,31 @@ pub const BatchSpanProcessor = struct {
         }
 
         // Clone span for queuing (original will be deinitialized by caller)
-        const cloned_span = span.clone(self.allocator) catch {
-            // If cloning fails, drop the span
+        const cloned_span = span.clone(self.allocator) catch |err| {
+            // Log error instead of silent drop
+            error_handler.reportError(.{
+                .component = .processor,
+                .operation = "span_clone",
+                .error_type = .resource_exhausted,
+                .message = "Failed to clone span for batching",
+                .context = span.name,
+                .source_error = err,
+            });
             return;
         };
 
         // Add cloned span to queue
-        self.span_queue.append(self.allocator, cloned_span) catch {
-            // If allocation fails, clean up the clone and drop the span
+        self.span_queue.append(self.allocator, cloned_span) catch |err| {
             cloned_span.deinitCloned();
+            // Log queue overflow
+            error_handler.reportError(.{
+                .component = .processor,
+                .operation = "queue_append",
+                .error_type = .resource_exhausted,
+                .message = "Span queue overflow, dropping span",
+                .context = span.name,
+                .source_error = err,
+            });
             return;
         };
     }
@@ -150,7 +261,7 @@ pub const BatchSpanProcessor = struct {
 
         // Flush the exporter
         const result = self.exporter.forceFlush(timeout_ms);
-        return if (result == .success) .success else .failure;
+        return exportResultToProcessResult(result);
     }
 
     /// Shutdown the processor
@@ -167,7 +278,7 @@ pub const BatchSpanProcessor = struct {
 
         // Shutdown the exporter
         const result = self.exporter.shutdown(timeout_ms);
-        return if (result == .success) .success else .failure;
+        return exportResultToProcessResult(result);
     }
 
     /// Export all queued spans (must be called with mutex held)
@@ -226,32 +337,17 @@ pub const BatchSpanProcessor = struct {
                 self.mutex.unlock();
                 break;
             }
-
+        } else {
             // Otherwise continue with export
             self.exportBatchLocked();
             self.mutex.unlock();
         }
     }
-};
 
-/// Create a batch span processor and start it
-pub fn createBatchSpanProcessor(
-    allocator: std.mem.Allocator,
-    exporter: SpanExporter,
-    resource: Resource,
-    export_interval_ms: ?u32,
-    max_queue_size: ?usize,
-) !*BatchSpanProcessor {
-    const processor = try BatchSpanProcessor.init(
-        allocator,
-        exporter,
-        resource,
-        export_interval_ms,
-        max_queue_size,
-    );
-    try processor.start();
-    return processor;
-}
+    pub fn spanProcessor(self: *BatchSpanProcessor) SpanProcessor {
+        return SpanProcessor{ .bridge = BridgeSpanProcessor.init(self) };
+    }
+};
 
 test "BatchSpanProcessor - basic initialization and cleanup" {
     const testing = std.testing;
@@ -279,7 +375,7 @@ test "BatchSpanProcessor - basic initialization and cleanup" {
             self.allocator.destroy(self);
         }
 
-        pub fn exportSpans(self: *@This(), spans: []const *RecordingSpan, resource: Resource) ProcessResult {
+        pub fn exportSpans(self: *@This(), spans: []const *RecordingSpan, resource: Resource) ExportResult {
             _ = resource;
             self.export_count += spans.len;
             for (spans) |span| {
@@ -288,20 +384,24 @@ test "BatchSpanProcessor - basic initialization and cleanup" {
             return .success;
         }
 
-        pub fn forceFlush(self: *@This(), timeout_ms: ?u64) ProcessResult {
+        pub fn forceFlush(self: *@This(), timeout_ms: ?u64) ExportResult {
             _ = timeout_ms;
             self.flush_count += 1;
             return .success;
         }
 
-        pub fn shutdown(self: *@This(), timeout_ms: ?u64) ProcessResult {
+        pub fn shutdown(self: *@This(), timeout_ms: ?u64) ExportResult {
             _ = timeout_ms;
             self.shutdown_count += 1;
             return .success;
         }
 
+        pub fn destroy(self: *@This()) void {
+            self.allocator.destroy(self);
+        }
+
         pub fn spanExporter(self: *@This()) SpanExporter {
-            return @import("exporter.zig").createSpanExporter(self);
+            return SpanExporter{ .bridge = @import("exporter.zig").BridgeSpanExporter.init(self) };
         }
     };
 
@@ -341,26 +441,31 @@ test "BatchSpanProcessor - span queuing and export" {
             _ = self;
         }
 
-        pub fn exportSpans(self: *@This(), spans: []const *RecordingSpan, resource: Resource) ProcessResult {
+        pub fn exportSpans(self: *@This(), spans: []const *RecordingSpan, resource: Resource) ExportResult {
             _ = resource;
-            self.export_count += spans.len;
+            _ = spans;
+            self.export_count += 1;
             return .success;
         }
 
-        pub fn forceFlush(self: *@This(), timeout_ms: ?u64) ProcessResult {
+        pub fn forceFlush(self: *@This(), timeout_ms: ?u64) ExportResult {
             _ = timeout_ms;
             self.flush_count += 1;
             return .success;
         }
 
-        pub fn shutdown(self: *@This(), timeout_ms: ?u64) ProcessResult {
+        pub fn shutdown(self: *@This(), timeout_ms: ?u64) ExportResult {
             _ = timeout_ms;
             self.shutdown_count += 1;
             return .success;
         }
 
+        pub fn destroy(self: *@This()) void {
+            self.allocator.destroy(self);
+        }
+
         pub fn spanExporter(self: *@This()) SpanExporter {
-            return @import("exporter.zig").createSpanExporter(self);
+            return SpanExporter{ .bridge = @import("exporter.zig").BridgeSpanExporter.init(self) };
         }
     };
 
@@ -437,7 +542,7 @@ test "BatchSpanProcessor - queue overflow drops newest" {
         }
 
         pub fn spanExporter(self: *@This()) SpanExporter {
-            return @import("exporter.zig").createSpanExporter(self);
+            return SpanExporter{ .bridge = @import("exporter.zig").BridgeSpanExporter.init(self) };
         }
     };
 
@@ -499,26 +604,30 @@ test "BatchSpanProcessor - shutdown behavior" {
             _ = self;
         }
 
-        pub fn exportSpans(self: *@This(), spans: []const *RecordingSpan, resource: Resource) ProcessResult {
+        pub fn exportSpans(self: *@This(), spans: []const *RecordingSpan, resource: Resource) ExportResult {
             _ = resource;
             self.export_count += spans.len;
             return .success;
         }
 
-        pub fn forceFlush(self: *@This(), timeout_ms: ?u64) ProcessResult {
+        pub fn forceFlush(self: *@This(), timeout_ms: ?u64) ExportResult {
             _ = self;
             _ = timeout_ms;
             return .success;
         }
 
-        pub fn shutdown(self: *@This(), timeout_ms: ?u64) ProcessResult {
+        pub fn shutdown(self: *@This(), timeout_ms: ?u64) ExportResult {
             _ = timeout_ms;
             self.shutdown_count += 1;
             return .success;
         }
 
+        pub fn destroy(self: *@This()) void {
+            _ = self;
+        }
+
         pub fn spanExporter(self: *@This()) SpanExporter {
-            return @import("exporter.zig").createSpanExporter(self);
+            return SpanExporter{ .bridge = @import("exporter.zig").BridgeSpanExporter.init(self) };
         }
     };
 

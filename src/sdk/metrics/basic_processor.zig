@@ -20,6 +20,9 @@ const MetricProcessor = @import("processor.zig").MetricProcessor;
 const BridgeMetricProcessor = @import("processor.zig").BridgeMetricProcessor;
 const BasicMeter = @import("basic_provider.zig").BasicMeter;
 
+// Import error handler for structured error reporting
+const error_handler = otel_api.common;
+
 /// Basic log processor implementation.
 ///
 /// Simple processor that exports metrics manually. Users must invoke `forceFlush`.
@@ -100,7 +103,18 @@ pub const BasicMetricProcessor = struct {
 
         // Export all collected metrics. Exporter must copy memory
         // that it needs beyond the duration of this call.
-        if (self.exporter) |*exporter| _ = exporter.exportMetrics(collected_metrics.items);
+        if (self.exporter) |*exporter| {
+            const result = exporter.exportMetrics(collected_metrics.items);
+            if (result != .success) {
+                error_handler.reportError(.{
+                    .component = .processor,
+                    .operation = "metric_export",
+                    .error_type = .network,
+                    .message = "Failed to export metrics",
+                    .context = null,
+                });
+            }
+        }
         // Arena cleans up all the memory.
     }
 

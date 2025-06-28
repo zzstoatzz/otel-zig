@@ -15,6 +15,9 @@ const LogExporter = @import("exporter.zig").LogExporter;
 const Resource = @import("../resource/resource.zig").Resource;
 const ProcessResult = @import("otel-api").common.ProcessResult;
 
+// Import error handler for structured error reporting
+const error_handler = otel_api.common;
+
 // Import the processor interface and bridge
 const processor_zig = @import("processor.zig");
 const LogProcessor = processor_zig.LogProcessor;
@@ -82,8 +85,19 @@ pub const BasicLogProcessor = struct {
         // Export single record immediately
         const records = [_]LogRecord{record};
 
-        if (self.exporter) |exporter|
-            _ = exporter.exportRecords(&records, resource);
+        if (self.exporter) |exporter| {
+            const result = exporter.exportRecords(&records, resource);
+            if (result != .success) {
+                const message_body = if (record.body) |body| body.string else "(no message)";
+                error_handler.reportError(.{
+                    .component = .processor,
+                    .operation = "log_export",
+                    .error_type = .network,
+                    .message = "Failed to export log record",
+                    .context = message_body,
+                });
+            }
+        }
     }
 
     pub fn forceFlush(self: *BasicLogProcessor, timeout_ms: ?u64) ProcessResult {

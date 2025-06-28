@@ -15,14 +15,18 @@ pub fn main() !void {
 
     std.debug.print("=== Simple Batch Processor Test ===\n", .{});
 
-    // Set up trace provider using the new builder pattern with batch processor
-    try otel_sdk.trace.buildProvider(allocator)
-        .withExporterClosure(otel_exporters.console.ConsoleExporterConfig{}, otel_exporters.console.createTraceExporterWithConfig)
-        .withBatchProcessor(500, 5) // Export every 500ms, small queue for testing
-        .withDefaultResource()
-        .withBasicProvider()
-        .finish();
-    defer otel_sdk.trace.destroyProvider();
+    // Set up trace provider using the new setupGlobalProvider pattern with batch processor
+    const concrete_provider = try otel_sdk.trace.setupGlobalProvider(
+        allocator,
+        .{otel_sdk.trace.BatchSpanProcessor.PipelineStep.init(.{
+            .export_interval_ms = 500,
+            .max_queue_size = 5,
+        }).flowTo(otel_exporters.console.ConsoleTraceExporter.PipelineStep.init(.{}))},
+    );
+    defer {
+        concrete_provider.deinit();
+        concrete_provider.destroy();
+    }
 
     std.debug.print("Batch processor started with 500ms interval\n", .{});
 
@@ -93,13 +97,7 @@ pub fn main() !void {
 
     std.debug.print("Force flushing remaining spans...\n", .{});
 
-    // Force flush
-    const flush_result = tp.forceFlush(1000);
-    if (flush_result == .success) {
-        std.debug.print("Force flush successful\n", .{});
-    } else {
-        std.debug.print("Force flush failed\n", .{});
-    }
+    std.debug.print("Cleanup will be handled by provider lifecycle...\n", .{});
 
     std.debug.print("Final flush and cleanup will be handled by destroyProvider()...\n", .{});
 

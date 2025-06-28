@@ -7,11 +7,14 @@ const std = @import("std");
 const otel_api = @import("otel-api");
 const otel_sdk = @import("otel-sdk");
 
-const ProcessResult = otel_api.common.ProcessResult;
+const ExportResult = otel_api.common.ExportResult;
 const OtlpExporterConfig = @import("root.zig").OtlpExporterConfig;
 const RecordingSpan = otel_sdk.trace.RecordingSpan;
 const Resource = otel_sdk.resource.Resource;
 const SpanContext = otel_api.trace.SpanContext;
+
+// Import error handler for structured error reporting
+const error_handler = otel_api.common;
 const SpanExporter = otel_sdk.trace.SpanExporter;
 
 // OTLP data structures for JSON serialization
@@ -86,6 +89,19 @@ const OtlpAnyValue = union(enum) {
 
 /// OTLP trace exporter implementation
 pub const OtlpTraceExporter = struct {
+    pub const PipelineStep = otel_sdk.common.PipelineStepInstructions(
+        OtlpTraceExporter,
+        SpanExporter,
+        OtlpExporterConfig,
+        spanExporter,
+        _init,
+        otel_sdk.common.PipelineDeinitConnection,
+    );
+
+    pub fn _init(config: OtlpExporterConfig, allocator: std.mem.Allocator) !OtlpTraceExporter {
+        return init(allocator, config);
+    }
+
     config: OtlpExporterConfig,
     allocator: std.mem.Allocator,
     is_shutdown: bool,
@@ -108,7 +124,7 @@ pub const OtlpTraceExporter = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn exportSpans(self: *OtlpTraceExporter, spans: []const *RecordingSpan, resource: Resource) ProcessResult {
+    pub fn exportSpans(self: *OtlpTraceExporter, spans: []const *RecordingSpan, resource: Resource) ExportResult {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -125,27 +141,42 @@ pub const OtlpTraceExporter = struct {
         defer arena.deinit();
 
         const json_data = convertToOtlpFormat(arena.allocator(), spans, resource) catch |err| {
-            std.log.err("OTLP Trace Export Error - JSON Conversion Failed. spans:{} error:{}-{s}", .{ spans.len, err, @errorName(err) });
+            const first_span_name = if (spans.len > 0) spans[0].name else "(no spans)";
+            error_handler.reportError(.{
+                .component = .exporter,
+                .operation = "otlp_trace_serialization",
+                .error_type = .serialization,
+                .message = "OTLP trace JSON conversion failed",
+                .context = first_span_name,
+                .source_error = err,
+            });
             return .failure;
         };
         defer arena.allocator().free(json_data);
 
         const result = self.sendRequest(arena.allocator(), json_data) catch |err| {
-            std.log.err("OTLP Trace Export Error - Network Request Failed. error:{}-{s} endpoint:{s} content-length:{}", .{ err, @errorName(err), self.config.endpoint, json_data.len });
+            error_handler.reportError(.{
+                .component = .exporter,
+                .operation = "otlp_trace_network",
+                .error_type = .network,
+                .message = "OTLP trace network request failed",
+                .context = self.config.endpoint,
+                .source_error = err,
+            });
             return .failure;
         };
 
         return result;
     }
 
-    pub fn forceFlush(self: *OtlpTraceExporter, timeout_ms: ?u64) ProcessResult {
+    pub fn forceFlush(self: *OtlpTraceExporter, timeout_ms: ?u64) ExportResult {
         _ = self;
         _ = timeout_ms;
         // For HTTP transport, no persistent connection to flush
         return .success;
     }
 
-    pub fn shutdown(self: *OtlpTraceExporter, timeout_ms: ?u64) ProcessResult {
+    pub fn shutdown(self: *OtlpTraceExporter, timeout_ms: ?u64) ExportResult {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -160,17 +191,24 @@ pub const OtlpTraceExporter = struct {
     }
 
     pub fn spanExporter(self: *OtlpTraceExporter) SpanExporter {
-        return otel_sdk.trace.createSpanExporter(self);
+        return SpanExporter{ .bridge = otel_sdk.trace.BridgeSpanExporter.init(self) };
     }
 
-    fn sendRequest(self: *OtlpTraceExporter, allocator: std.mem.Allocator, data: []const u8) !ProcessResult {
+    fn sendRequest(self: *OtlpTraceExporter, allocator: std.mem.Allocator, data: []const u8) !ExportResult {
         // Create stack-based HTTP client
         var client = std.http.Client{ .allocator = self.allocator };
         defer client.deinit();
 
         // Parse endpoint URL with detailed error context
         const uri = std.Uri.parse(self.config.endpoint) catch |err| {
-            std.log.err("OTLP URL Parsing Error: {s} - {s}", .{ self.config.endpoint, @errorName(err) });
+            error_handler.reportError(.{
+                .component = .exporter,
+                .operation = "otlp_url_parsing",
+                .error_type = .configuration,
+                .message = "OTLP URL parsing failed",
+                .context = self.config.endpoint,
+                .source_error = err,
+            });
             return err;
         };
 
@@ -215,7 +253,13 @@ pub const OtlpTraceExporter = struct {
         switch (req.response.status) {
             .ok => return .success,
             .bad_request, .unauthorized, .forbidden, .not_found => {
-                std.log.err("OTLP trace export failed with status: {}", .{req.response.status});
+                error_handler.reportError(.{
+                    .component = .exporter,
+                    .operation = "otlp_trace_response",
+                    .error_type = .authentication,
+                    .message = "OTLP trace export failed with HTTP error",
+                    .context = self.config.endpoint,
+                });
                 return .failure;
             },
             else => {
@@ -456,8 +500,8 @@ test "OtlpTraceExporter basic functionality" {
     defer exporter.deinit();
 
     const result = exporter.forceFlush(5000);
-    try testing.expectEqual(ProcessResult.success, result);
+    try testing.expectEqual(ExportResult.success, result);
 
     const shutdown_result = exporter.shutdown(5000);
-    try testing.expectEqual(ProcessResult.success, shutdown_result);
+    try testing.expectEqual(ExportResult.success, shutdown_result);
 }

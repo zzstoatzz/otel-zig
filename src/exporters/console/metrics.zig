@@ -13,6 +13,9 @@ const protobuf = @import("protobuf");
 const ExportResult = otel_api.common.ExportResult;
 const ConsoleExporterConfig = @import("root.zig").ConsoleExporterConfig;
 
+// Import error handler for structured error reporting
+const error_handler = otel_api.common;
+
 // Import protobuf definitions
 const metrics_v1 = @import("../otlp/proto/opentelemetry/proto/metrics/v1.pb.zig");
 const common_v1 = @import("../otlp/proto/opentelemetry/proto/common/v1.pb.zig");
@@ -579,13 +582,28 @@ pub const ConsoleMetricExporter = struct {
 
         // Convert SDK metrics to protobuf format and write as JSON
         const protobuf_data = self.convertToOtlpFormat(metrics) catch |err| {
-            std.log.err("Failed to convert metrics to protobuf format: {}", .{err});
+            const first_metric_name = if (metrics.len > 0) metrics[0].name else "(no metrics)";
+            error_handler.reportError(.{
+                .component = .exporter,
+                .operation = "console_metric_conversion",
+                .error_type = .serialization,
+                .message = "Failed to convert metrics to protobuf format",
+                .context = first_metric_name,
+                .source_error = err,
+            });
             return .failure;
         };
         defer protobuf_data.deinit();
 
         writeMetricsData(json_buffer.writer(), protobuf_data) catch |err| {
-            std.log.err("Failed to write metrics JSON: {}", .{err});
+            error_handler.reportError(.{
+                .component = .exporter,
+                .operation = "console_metric_write",
+                .error_type = .serialization,
+                .message = "Failed to write metrics JSON to console",
+                .context = null,
+                .source_error = err,
+            });
             return .failure;
         };
 

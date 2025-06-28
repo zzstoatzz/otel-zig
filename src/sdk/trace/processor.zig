@@ -12,8 +12,10 @@ const otel_api = @import("otel-api");
 const Context = otel_api.Context;
 const SpanLimits = otel_api.trace.SpanLimits;
 const ProcessResult = otel_api.common.ProcessResult;
+const ExportResult = otel_api.common.ExportResult;
 const RecordingSpan = @import("data.zig").RecordingSpan;
 const SpanExporter = @import("exporter.zig").SpanExporter;
+const BridgeSpanExporter = @import("exporter.zig").BridgeSpanExporter;
 const Resource = @import("../resource/resource.zig").Resource;
 
 /// SpanProcessor interface using tagged union for polymorphism
@@ -66,6 +68,15 @@ pub const SpanProcessor = union(enum) {
             .bridge => |processor| processor.deinitFn(processor.processor_ptr),
         }
     }
+
+    /// Destroy processor memory
+    pub fn destroy(self: *const SpanProcessor) void {
+        switch (self.*) {
+            .noop => {},
+            .simple => |processor| processor.destroy(),
+            .bridge => |processor| processor.destroyFn(processor.processor_ptr),
+        }
+    }
 };
 
 /// Simple span processor implementation.
@@ -92,6 +103,9 @@ pub const SimpleSpanProcessor = struct {
 
     pub fn deinit(self: *SimpleSpanProcessor) void {
         self.exporter.deinit();
+    }
+
+    pub fn destroy(self: *SimpleSpanProcessor) void {
         self.allocator.destroy(self);
     }
 
@@ -154,6 +168,7 @@ pub const BridgeSpanProcessor = struct {
     forceFlushFn: *const fn (processor_ptr: *anyopaque, timeout_ms: ?u64) ProcessResult,
     shutdownFn: *const fn (processor_ptr: *anyopaque, timeout_ms: ?u64) ProcessResult,
     deinitFn: *const fn (processor_ptr: *anyopaque) void,
+    destroyFn: *const fn (processor_ptr: *anyopaque) void,
 
     pub fn init(ptr: anytype) BridgeSpanProcessor {
         const T = @TypeOf(ptr);
@@ -180,6 +195,10 @@ pub const BridgeSpanProcessor = struct {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.deinit(self);
             }
+            pub fn destroy(pointer: *anyopaque) void {
+                const self: T = @ptrCast(@alignCast(pointer));
+                return ptr_info.pointer.child.destroy(self);
+            }
         };
 
         return .{
@@ -189,6 +208,7 @@ pub const BridgeSpanProcessor = struct {
             .forceFlushFn = VTable.forceFlush,
             .shutdownFn = VTable.shutdown,
             .deinitFn = VTable.deinit,
+            .destroyFn = VTable.destroy,
         };
     }
 };
@@ -204,39 +224,34 @@ test "SimpleSpanProcessor basic operations" {
         shutdown_called: bool = false,
 
         pub fn spanExporter(self: *@This()) SpanExporter {
-            return SpanExporter{
-                .exporter_ptr = self,
-                .exportSpansFn = exportSpans,
-                .forceFlushFn = flush,
-                .shutdownFn = shutdown,
-                .deinitFn = deinit,
-            };
+            return SpanExporter{ .bridge = BridgeSpanExporter.init(self) };
         }
 
-        fn exportSpans(exporter_ptr: *anyopaque, spans: []const *RecordingSpan, resource: Resource) ProcessResult {
+        pub fn exportSpans(self: *@This(), spans: []const *RecordingSpan, resource: Resource) ExportResult {
             _ = spans;
             _ = resource;
-            const self = @as(*@This(), @ptrCast(@alignCast(exporter_ptr)));
             self.export_called = true;
             return .success;
         }
 
-        fn flush(exporter_ptr: *anyopaque, timeout_ms: ?u64) ProcessResult {
+        pub fn forceFlush(self: *@This(), timeout_ms: ?u64) ExportResult {
             _ = timeout_ms;
-            const self = @as(*@This(), @ptrCast(@alignCast(exporter_ptr)));
             self.flush_called = true;
             return .success;
         }
 
-        fn shutdown(exporter_ptr: *anyopaque, timeout_ms: ?u64) ProcessResult {
+        pub fn shutdown(self: *@This(), timeout_ms: ?u64) ExportResult {
             _ = timeout_ms;
-            const self = @as(*@This(), @ptrCast(@alignCast(exporter_ptr)));
             self.shutdown_called = true;
             return .success;
         }
 
-        fn deinit(exporter_ptr: *anyopaque) void {
-            _ = exporter_ptr;
+        pub fn deinit(self: *@This()) void {
+            _ = self;
+        }
+
+        pub fn destroy(self: *@This()) void {
+            _ = self;
         }
     };
 
@@ -251,7 +266,10 @@ test "SimpleSpanProcessor basic operations" {
         mock_exporter.spanExporter(),
         resource,
     );
-    defer processor.deinit();
+    defer {
+        processor.deinit();
+        processor.destroy();
+    }
 
     var span_processor = processor.spanProcessor();
 

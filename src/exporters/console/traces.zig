@@ -9,12 +9,15 @@ const otel_api = @import("otel-api");
 const otel_sdk = @import("otel-sdk");
 const protobuf = @import("protobuf");
 
-const ProcessResult = otel_api.common.ProcessResult;
+const ExportResult = otel_api.common.ExportResult;
 const ConsoleExporterConfig = @import("root.zig").ConsoleExporterConfig;
 const SpanExporter = otel_sdk.trace.SpanExporter;
 const RecordingSpan = otel_sdk.trace.RecordingSpan;
 const Resource = otel_sdk.resource.Resource;
 const SpanContext = otel_api.trace.SpanContext;
+
+// Import error handler for structured error reporting
+const error_handler = otel_api.common;
 
 // Import protobuf definitions
 const trace_v1 = @import("../otlp/proto/opentelemetry/proto/trace/v1.pb.zig");
@@ -26,6 +29,20 @@ const JsonError = std.json.WriteStream(std.ArrayList(u8).Writer, .assumed_correc
 
 /// Console trace exporter implementation
 pub const ConsoleTraceExporter = struct {
+    pub const PipelineStep = otel_sdk.common.PipelineStepInstructions(
+        Self,
+        SpanExporter,
+        ConsoleExporterConfig,
+        spanExporter,
+        _init,
+        otel_sdk.common.PipelineDeinitConnection,
+    );
+    const Self = @This();
+
+    pub fn _init(ctx: ConsoleExporterConfig, allocator: std.mem.Allocator) !Self {
+        return init(allocator, ctx);
+    }
+
     allocator: std.mem.Allocator,
     config: ConsoleExporterConfig,
     writer: std.fs.File.Writer,
@@ -42,21 +59,37 @@ pub const ConsoleTraceExporter = struct {
     }
 
     pub fn deinit(self: *ConsoleTraceExporter) void {
+        _ = self;
+        // No cleanup needed for console output
+    }
+
+    pub fn destroy(self: *ConsoleTraceExporter) void {
         self.allocator.destroy(self);
     }
 
-    pub fn exportSpans(self: *ConsoleTraceExporter, spans: []const *RecordingSpan, resource: Resource) ProcessResult {
+    pub fn exportSpans(self: *ConsoleTraceExporter, spans: []const *RecordingSpan, resource: Resource) ExportResult {
         if (spans.len == 0) return .success;
 
         self.mutex.lock();
         defer self.mutex.unlock();
 
         // Convert spans to OTLP format and serialize to JSON
-        const result = self.exportSpansInternal(spans, resource) catch return .failure;
+        const result = self.exportSpansInternal(spans, resource) catch |err| {
+            const first_span_name = if (spans.len > 0) spans[0].name else "(no spans)";
+            error_handler.reportError(.{
+                .component = .exporter,
+                .operation = "console_trace_export",
+                .error_type = .serialization,
+                .message = "Failed to export spans to console",
+                .context = first_span_name,
+                .source_error = err,
+            });
+            return .failure;
+        };
         return result;
     }
 
-    fn exportSpansInternal(self: *ConsoleTraceExporter, spans: []const *RecordingSpan, resource: Resource) !ProcessResult {
+    fn exportSpansInternal(self: *ConsoleTraceExporter, spans: []const *RecordingSpan, resource: Resource) !ExportResult {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const arena_allocator = arena.allocator();
@@ -116,20 +149,20 @@ pub const ConsoleTraceExporter = struct {
         return .success;
     }
 
-    pub fn forceFlush(self: *ConsoleTraceExporter, timeout_ms: ?u64) ProcessResult {
+    pub fn forceFlush(self: *ConsoleTraceExporter, timeout_ms: ?u64) ExportResult {
         _ = self;
         _ = timeout_ms;
         return .success;
     }
 
-    pub fn shutdown(self: *ConsoleTraceExporter, timeout_ms: ?u64) ProcessResult {
+    pub fn shutdown(self: *ConsoleTraceExporter, timeout_ms: ?u64) ExportResult {
         _ = self;
         _ = timeout_ms;
         return .success;
     }
 
     pub fn spanExporter(self: *ConsoleTraceExporter) SpanExporter {
-        return otel_sdk.trace.createSpanExporter(self);
+        return SpanExporter{ .bridge = otel_sdk.trace.BridgeSpanExporter.init(self) };
     }
 };
 

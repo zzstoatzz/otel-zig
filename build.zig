@@ -197,12 +197,22 @@ pub fn build(b: *std.Build) void {
     });
     const run_integration_tests = b.addRunArtifact(integration_tests);
 
+    // Comprehensive error handling tests
+    const comprehensive_error_tests = b.addTest(.{
+        .root_source_file = b.path("src/test/error_handling_comprehensive.zig"),
+    });
+    comprehensive_error_tests.root_module.addImport("otel-api", otel_api_mod);
+    comprehensive_error_tests.root_module.addImport("otel-sdk", otel_sdk_mod);
+    comprehensive_error_tests.root_module.addImport("otel-exporters", otel_exporters_mod);
+    const run_comprehensive_error_tests = b.addRunArtifact(comprehensive_error_tests);
+
     // Test steps
     const test_step = b.step("test", "Run all unit tests");
     test_step.dependOn(&run_api_tests.step);
     test_step.dependOn(&run_sdk_tests.step);
     test_step.dependOn(&run_exporters_tests.step);
     test_step.dependOn(&run_integration_tests.step);
+    test_step.dependOn(&run_comprehensive_error_tests.step);
 
     const test_api_step = b.step("test-api", "Run API tests only");
     test_api_step.dependOn(&run_api_tests.step);
@@ -210,8 +220,11 @@ pub fn build(b: *std.Build) void {
     const test_sdk_step = b.step("test-sdk", "Run SDK tests only");
     test_sdk_step.dependOn(&run_sdk_tests.step);
 
-    const test_exporters_step = b.step("test-exporters", "Run exporters tests only");
+    const test_exporters_step = b.step("test-exporters", "Run exporter tests");
     test_exporters_step.dependOn(&run_exporters_tests.step);
+
+    const test_error_handling_step = b.step("test-error-handling", "Run comprehensive error handling tests");
+    test_error_handling_step.dependOn(&run_comprehensive_error_tests.step);
 
     // ========================================================================
     // Examples
@@ -390,6 +403,38 @@ pub fn build(b: *std.Build) void {
     const simple_batch_test_step = b.step("example-simple-batch-test", "Run simple batch test example");
     simple_batch_test_step.dependOn(&run_simple_batch_test.step);
 
+    // Error Handling Demo Example
+    const error_handling_demo_example = b.addExecutable(.{
+        .name = "error_handling_demo",
+        .root_source_file = b.path("examples/error_handling_demo.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    error_handling_demo_example.root_module.addImport("otel-api", otel_api_mod);
+    error_handling_demo_example.root_module.addImport("otel-sdk", otel_sdk_mod);
+    error_handling_demo_example.root_module.addImport("otel-exporters", otel_exporters_mod);
+    b.installArtifact(error_handling_demo_example);
+
+    const run_error_handling_demo = b.addRunArtifact(error_handling_demo_example);
+    const error_handling_demo_step = b.step("example-error-handling", "Run error handling demo example");
+    error_handling_demo_step.dependOn(&run_error_handling_demo.step);
+
+    // Validation Test Example
+    const validation_test_example = b.addExecutable(.{
+        .name = "validation_test",
+        .root_source_file = b.path("examples/validation_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    validation_test_example.root_module.addImport("otel-api", otel_api_mod);
+    validation_test_example.root_module.addImport("otel-sdk", otel_sdk_mod);
+    validation_test_example.root_module.addImport("otel-exporters", otel_exporters_mod);
+    b.installArtifact(validation_test_example);
+
+    const run_validation_test = b.addRunArtifact(validation_test_example);
+    const validation_test_step = b.step("example-validation-test", "Run validation test example");
+    validation_test_step.dependOn(&run_validation_test.step);
+
     // All examples step
     const examples_step = b.step("examples", "Run all examples");
     examples_step.dependOn(&run_dns_query.step);
@@ -403,4 +448,6 @@ pub fn build(b: *std.Build) void {
     examples_step.dependOn(&run_sampling_test.step);
     examples_step.dependOn(&run_batch_spans.step);
     examples_step.dependOn(&run_simple_batch_test.step);
+    examples_step.dependOn(&run_error_handling_demo.step);
+    examples_step.dependOn(&run_validation_test.step);
 }

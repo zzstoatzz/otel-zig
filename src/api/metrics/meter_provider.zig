@@ -64,6 +64,7 @@ pub const MeterProviderBridge = struct {
         return .{
             .provider_ptr = ptr,
             .getMeterWithScopeFn = VTable.getMeterWithScope,
+
             .deinitFn = VTable.deinit,
         };
     }

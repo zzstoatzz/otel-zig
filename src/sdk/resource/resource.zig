@@ -65,8 +65,8 @@ pub const Resource = struct {
 
         var builder = AttributeBuilder.init(arena.allocator());
 
-        builder = builder.addKeyValues(other.attributes);
         builder = builder.addKeyValues(self.attributes);
+        builder = builder.addKeyValues(other.attributes);
 
         const merged_attrs = try builder.finish(allocator);
 
@@ -141,9 +141,48 @@ pub const ResourceBuilder = union(enum) {
                 // if the attribute builder cannot provide attributes,
                 // surface the error, and let the `defer self.deinit()`
                 // takeover.
+                const raw_attributes = try builder.attributes.build();
+
+                // Deduplicate attributes before creating owned slice (last-wins strategy)
+                const deduplicated = blk2: {
+                    if (raw_attributes.len == 0) {
+                        break :blk2 try allocator.alloc(AttributeKeyValue, 0);
+                    }
+
+                    // Use HashMap to track the last occurrence index of each key
+                    var key_to_last_index = std.StringHashMap(usize).init(allocator);
+                    defer key_to_last_index.deinit();
+
+                    // Build map of key -> last occurrence index
+                    for (raw_attributes, 0..) |entry, i| {
+                        try key_to_last_index.put(entry.key, i);
+                    }
+
+                    // Collect unique entries in order of first appearance
+                    var result = std.ArrayList(AttributeKeyValue).init(allocator);
+                    defer result.deinit();
+
+                    var seen_keys = std.StringHashMap(void).init(allocator);
+                    defer seen_keys.deinit();
+
+                    for (raw_attributes) |entry| {
+                        const key = entry.key;
+
+                        // If this is the first time we see this key AND it's the last occurrence
+                        if (!seen_keys.contains(key)) {
+                            try seen_keys.put(key, {});
+                            const last_index = key_to_last_index.get(key).?;
+                            try result.append(raw_attributes[last_index]);
+                        }
+                    }
+
+                    break :blk2 try result.toOwnedSlice();
+                };
+                defer allocator.free(deduplicated);
+
                 const attributes = try AttributeKeyValue.initOwnedSlice(
                     allocator,
-                    try builder.attributes.build(),
+                    deduplicated,
                 );
                 errdefer AttributeKeyValue.deinitOwnedSlice(allocator, attributes);
 
@@ -420,4 +459,171 @@ test "Resource merge clones schema_url" {
         // The key test: this should not crash when we call deinitOwned
         // because the schema_url should be an owned copy
     }
+}
+
+test "ResourceBuilder duplicate key handling - last wins" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const resource = try ResourceBuilder.init(allocator)
+        .addKeyValue(.{ .key = "service.name", .value = .{ .string = "first-service" } })
+        .addKeyValue(.{ .key = "service.version", .value = .{ .string = "1.0.0" } })
+        .addKeyValue(.{ .key = "service.name", .value = .{ .string = "last-service" } }) // should win
+        .addKeyValue(.{ .key = "environment", .value = .{ .string = "prod" } })
+        .addKeyValue(.{ .key = "service.version", .value = .{ .string = "2.0.0" } }) // should win
+        .finish(allocator);
+    defer resource.deinitOwned(allocator);
+
+    try testing.expectEqual(@as(usize, 3), resource.attributes.len);
+
+    // Find each attribute and verify last-wins behavior
+    var found_service = false;
+    var found_version = false;
+    var found_environment = false;
+
+    for (resource.attributes) |kv| {
+        if (std.mem.eql(u8, kv.key, "service.name")) {
+            try testing.expectEqualStrings("last-service", kv.value.string);
+            found_service = true;
+        } else if (std.mem.eql(u8, kv.key, "service.version")) {
+            try testing.expectEqualStrings("2.0.0", kv.value.string);
+            found_version = true;
+        } else if (std.mem.eql(u8, kv.key, "environment")) {
+            try testing.expectEqualStrings("prod", kv.value.string);
+            found_environment = true;
+        }
+    }
+
+    try testing.expect(found_service);
+    try testing.expect(found_version);
+    try testing.expect(found_environment);
+}
+
+test "ResourceBuilder duplicate key handling - no duplicates unchanged" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const resource = try ResourceBuilder.init(allocator)
+        .addKeyValue(.{ .key = "service.name", .value = .{ .string = "my-service" } })
+        .addKeyValue(.{ .key = "service.version", .value = .{ .string = "1.0.0" } })
+        .addKeyValue(.{ .key = "environment", .value = .{ .string = "prod" } })
+        .finish(allocator);
+    defer resource.deinitOwned(allocator);
+
+    try testing.expectEqual(@as(usize, 3), resource.attributes.len);
+
+    // Should preserve original order and values
+    try testing.expectEqualStrings("service.name", resource.attributes[0].key);
+    try testing.expectEqualStrings("my-service", resource.attributes[0].value.string);
+    try testing.expectEqualStrings("service.version", resource.attributes[1].key);
+    try testing.expectEqualStrings("1.0.0", resource.attributes[1].value.string);
+    try testing.expectEqualStrings("environment", resource.attributes[2].key);
+    try testing.expectEqualStrings("prod", resource.attributes[2].value.string);
+}
+
+test "ResourceBuilder duplicate key handling - with merge operations" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // Create a base resource with some attributes
+    const base_attrs = [_]AttributeKeyValue{
+        .{ .key = "service.name", .value = .{ .string = "base-service" } },
+        .{ .key = "host.name", .value = .{ .string = "base-host" } },
+    };
+    const base_resource = try Resource.init(&base_attrs, null);
+
+    // Create a resource using builder that adds conflicting keys
+    const resource = try ResourceBuilder.init(allocator)
+        .addResource(base_resource)
+        .addKeyValue(.{ .key = "service.name", .value = .{ .string = "builder-service" } }) // should win over base
+        .addKeyValue(.{ .key = "environment", .value = .{ .string = "prod" } })
+        .addKeyValue(.{ .key = "service.name", .value = .{ .string = "final-service" } }) // should win over previous
+        .finish(allocator);
+    defer resource.deinitOwned(allocator);
+
+    try testing.expectEqual(@as(usize, 3), resource.attributes.len);
+
+    // Find each attribute and verify final resolution
+    var found_service = false;
+    var found_host = false;
+    var found_environment = false;
+
+    for (resource.attributes) |kv| {
+        if (std.mem.eql(u8, kv.key, "service.name")) {
+            try testing.expectEqualStrings("final-service", kv.value.string);
+            found_service = true;
+        } else if (std.mem.eql(u8, kv.key, "host.name")) {
+            try testing.expectEqualStrings("base-host", kv.value.string);
+            found_host = true;
+        } else if (std.mem.eql(u8, kv.key, "environment")) {
+            try testing.expectEqualStrings("prod", kv.value.string);
+            found_environment = true;
+        }
+    }
+
+    try testing.expect(found_service);
+    try testing.expect(found_host);
+    try testing.expect(found_environment);
+}
+
+test "ResourceBuilder duplicate key handling - with defaults" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // Test that withDefaults() properly handles duplicates with custom attributes
+    const resource = try ResourceBuilder.init(allocator)
+        .withDefaults()
+        .addKeyValue(.{ .key = "telemetry.sdk.name", .value = .{ .string = "custom-sdk" } }) // should override default
+        .addKeyValue(.{ .key = "service.name", .value = .{ .string = "my-service" } })
+        .addKeyValue(.{ .key = "telemetry.sdk.name", .value = .{ .string = "final-sdk" } }) // should win
+        .finish(allocator);
+    defer resource.deinitOwned(allocator);
+
+    // Should have defaults plus custom attributes, with duplicates resolved
+    try testing.expect(resource.attributes.len >= 3); // At least the 3 default SDK attributes
+
+    // Find the overridden SDK name
+    var found_custom_sdk = false;
+    var found_service = false;
+
+    for (resource.attributes) |kv| {
+        if (std.mem.eql(u8, kv.key, "telemetry.sdk.name")) {
+            try testing.expectEqualStrings("final-sdk", kv.value.string);
+            found_custom_sdk = true;
+        } else if (std.mem.eql(u8, kv.key, "service.name")) {
+            try testing.expectEqualStrings("my-service", kv.value.string);
+            found_service = true;
+        }
+    }
+
+    try testing.expect(found_custom_sdk);
+    try testing.expect(found_service);
+}
+
+test "ResourceBuilder duplicate key handling - order preservation" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // Test that order is preserved based on first appearance of each key
+    const resource = try ResourceBuilder.init(allocator)
+        .addKeyValue(.{ .key = "first", .value = .{ .string = "1" } }) // position 0
+        .addKeyValue(.{ .key = "second", .value = .{ .string = "2" } }) // position 1
+        .addKeyValue(.{ .key = "third", .value = .{ .string = "3" } }) // position 2
+        .addKeyValue(.{ .key = "second", .value = .{ .string = "2-new" } }) // duplicate, should not change order
+        .addKeyValue(.{ .key = "fourth", .value = .{ .string = "4" } }) // position 3
+        .addKeyValue(.{ .key = "first", .value = .{ .string = "1-new" } }) // duplicate, should not change order
+        .finish(allocator);
+    defer resource.deinitOwned(allocator);
+
+    try testing.expectEqual(@as(usize, 4), resource.attributes.len);
+
+    // Should maintain order based on first appearance
+    try testing.expectEqualStrings("first", resource.attributes[0].key);
+    try testing.expectEqualStrings("1-new", resource.attributes[0].value.string); // last value
+    try testing.expectEqualStrings("second", resource.attributes[1].key);
+    try testing.expectEqualStrings("2-new", resource.attributes[1].value.string); // last value
+    try testing.expectEqualStrings("third", resource.attributes[2].key);
+    try testing.expectEqualStrings("3", resource.attributes[2].value.string);
+    try testing.expectEqualStrings("fourth", resource.attributes[3].key);
+    try testing.expectEqualStrings("4", resource.attributes[3].value.string);
 }

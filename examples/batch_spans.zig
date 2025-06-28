@@ -16,14 +16,18 @@ pub fn main() !void {
 
     std.debug.print("=== Batch Span Processor Example ===\n", .{});
 
-    // Set up trace provider using the new builder pattern with batch processor
-    try otel_sdk.trace.buildProvider(allocator)
-        .withExporterClosure(otel_exporters.console.ConsoleExporterConfig{}, otel_exporters.console.createTraceExporterWithConfig)
-        .withBatchProcessor(2000, 100) // Export every 2 seconds, queue up to 100 spans
-        .withDefaultResource()
-        .withBasicProvider()
-        .finish();
-    defer otel_sdk.trace.destroyProvider();
+    // Set up trace provider using the new setupGlobalProvider pattern with batch processor
+    const concrete_provider = try otel_sdk.trace.setupGlobalProvider(
+        allocator,
+        .{otel_sdk.trace.BatchSpanProcessor.PipelineStep.init(.{
+            .export_interval_ms = 2000,
+            .max_queue_size = 100,
+        }).flowTo(otel_exporters.console.ConsoleTraceExporter.PipelineStep.init(.{}))},
+    );
+    defer {
+        concrete_provider.deinit();
+        concrete_provider.destroy();
+    }
 
     // Get the global tracer provider interface
     var tp = otel_api.getGlobalTracerProvider();
@@ -108,16 +112,6 @@ pub fn main() !void {
         span.deinit();
 
         std.debug.print("Created and ended span {d}\n", .{i});
-    }
-
-    std.debug.print("Forcing flush to export remaining spans...\n", .{});
-
-    // Force flush to export any remaining spans
-    const flush_result = tp.forceFlush(5000); // 5 second timeout
-    if (flush_result == .success) {
-        std.debug.print("Force flush completed successfully\n", .{});
-    } else {
-        std.debug.print("Force flush failed\n", .{});
     }
 
     std.debug.print("Final cleanup will be handled by destroyProvider()...\n", .{});

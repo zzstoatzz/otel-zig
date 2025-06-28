@@ -1,16 +1,17 @@
-//! OpenTelemetry SDK Standard Tracer Provider Implementation
+//! OpenTelemetry SDK Basic Tracer Provider Implementation
 //!
 //! This module provides the concrete implementation of the TracerProvider interface
-//! for the SDK. StandardTracerProvider manages tracers and their lifecycle.
+//! for the SDK. BasicTracerProvider manages tracers and their lifecycle.
 
 const std = @import("std");
 
 const otel_api = @import("otel-api");
+const ProcessResult = otel_api.common.ProcessResult;
 const TracerProvider = otel_api.trace.TracerProvider;
 const TracerProviderBridge = otel_api.trace.TracerProviderBridge;
 const Tracer = otel_api.trace.Tracer;
 const InstrumentationScope = otel_api.common.InstrumentationScope;
-const ProcessResult = otel_api.common.ProcessResult;
+
 const FlushResult = otel_api.common.FlushResult;
 const Sampler = otel_api.trace.Sampler;
 const SpanLimits = otel_api.trace.SpanLimits;
@@ -21,6 +22,8 @@ const Resource = @import("../resource/resource.zig").Resource;
 const samplers = @import("samplers/root.zig");
 const SpanProcessor = @import("processor.zig").SpanProcessor;
 const StandardTracer = @import("tracer.zig").StandardTracer;
+
+const PipelineBuilder = @import("../common/pipeline.zig").PipelineBuilder;
 
 /// Context for meter cache HashMap
 const TracerCacheContext = struct {
@@ -33,11 +36,12 @@ const TracerCacheContext = struct {
     }
 };
 
-/// Standard implementation of the TracerProvider interface
-pub const StandardTracerProvider = struct {
+/// Basic implementation of the TracerProvider interface
+pub const BasicTracerProvider = struct {
     // internal state fields
     allocator: std.mem.Allocator,
     cache: std.HashMapUnmanaged(InstrumentationScope, *StandardTracer, TracerCacheContext, 80),
+    processors: std.ArrayListUnmanaged(SpanProcessor),
     mutex: std.Thread.Mutex,
     is_shutdown: bool,
 
@@ -45,37 +49,31 @@ pub const StandardTracerProvider = struct {
     resource: Resource,
     id_generator: IdGenerator,
     sampler: Sampler,
-    default_processor: SpanProcessor,
     span_limits: SpanLimits,
 
-    /// Create a new standard tracer provider
+    /// Create a new basic tracer provider
     pub fn init(
         allocator: std.mem.Allocator,
         resource: Resource,
         id_generator: IdGenerator,
         sampler: Sampler,
-        processor: SpanProcessor,
         span_limits: ?SpanLimits,
-    ) !*StandardTracerProvider {
-        const self = try allocator.create(StandardTracerProvider);
-        errdefer allocator.destroy(self);
-
-        self.* = .{
+    ) BasicTracerProvider {
+        return .{
             .allocator = allocator,
             .cache = .empty,
+            .processors = .empty,
             .mutex = .{},
             .is_shutdown = false,
             .resource = resource,
             .id_generator = id_generator,
             .sampler = sampler,
-            .default_processor = processor,
-            .span_limits = span_limits orelse processor.spanLimits(),
+            .span_limits = span_limits orelse SpanLimits.default,
         };
-        return self;
     }
 
     /// Clean up provider resources
-    pub fn deinit(self: *StandardTracerProvider) void {
+    pub fn deinit(self: *BasicTracerProvider) void {
         // Given that we iterate over the cache, using the mutex here
         // Also, deinit shouldn't be that frequent.
         //
@@ -93,14 +91,36 @@ pub const StandardTracerProvider = struct {
                 self.allocator.destroy(kv.value_ptr.*);
             }
             self.cache.deinit(self.allocator);
+
+            // Clean up processors
+            for (self.processors.items) |processor| {
+                processor.deinit();
+                processor.destroy();
+            }
+            self.processors.deinit(self.allocator);
+
             self.resource.deinitOwned(self.allocator);
-            self.default_processor.deinit();
         }
+    }
+
+    pub fn destroy(self: *BasicTracerProvider) void {
         self.allocator.destroy(self);
     }
 
+    /// Register a processor with this provider.
+    ///
+    /// This method is not thread-safe and should only be called during initialization.
+    pub fn registerProcessor(self: *BasicTracerProvider, processor: SpanProcessor) !void {
+        try self.processors.append(self.allocator, processor);
+    }
+
+    /// Generate a pipelinebuilder for this provider.
+    pub fn pipelineBuilder(self: *BasicTracerProvider) PipelineBuilder(*BasicTracerProvider) {
+        return .init(self);
+    }
+
     // TracerProvider interface implementation
-    pub fn getTracerWithScope(self: *StandardTracerProvider, scope: InstrumentationScope) !Tracer {
+    pub fn getTracerWithScope(self: *BasicTracerProvider, scope: InstrumentationScope) !Tracer {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -134,7 +154,7 @@ pub const StandardTracerProvider = struct {
         return new_tracer.tracer();
     }
 
-    pub fn forceFlush(self: *StandardTracerProvider, timeout_ms: ?u64) otel_api.common.FlushResult {
+    pub fn forceFlush(self: *BasicTracerProvider, timeout_ms: ?u64) otel_api.common.FlushResult {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -142,16 +162,48 @@ pub const StandardTracerProvider = struct {
             return .failure;
         }
 
-        return if (self.default_processor.forceFlush(timeout_ms) == .success) .success else .failure;
+        for (self.processors.items) |*processor| {
+            const flush_result = processor.forceFlush(timeout_ms);
+            switch (flush_result) {
+                .success => {},
+                .failure => return .failure,
+                .timeout => return .failure,
+            }
+        }
+        return .success;
     }
 
-    /// Create a TracerProvider interface for this standard provider
-    pub fn tracerProvider(self: *StandardTracerProvider) TracerProvider {
+    /// Shutdown the provider with optional timeout
+    pub fn shutdown(self: *BasicTracerProvider, timeout_ms: ?u64) ProcessResult {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.is_shutdown) {
+            return .success; // Already shutdown
+        }
+
+        // Shutdown all processors
+        for (self.processors.items) |*processor| {
+            const shutdown_result = processor.shutdown(timeout_ms);
+            switch (shutdown_result) {
+                .success => {},
+                .failure => return .failure,
+                .timeout => return .timeout,
+            }
+        }
+
+        // Mark as shutdown
+        self.is_shutdown = true;
+        return .success;
+    }
+
+    /// Create a TracerProvider interface for this basic provider
+    pub fn tracerProvider(self: *BasicTracerProvider) TracerProvider {
         return TracerProvider{ .bridge = TracerProviderBridge.init(self) };
     }
 };
 
-test "StandardTracerProvider basic operations" {
+test "BasicTracerProvider basic operations" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
@@ -162,17 +214,21 @@ test "StandardTracerProvider basic operations" {
 
     const processor = SpanProcessor{ .noop = {} };
 
-    const provider = try StandardTracerProvider.init(
+    const provider_ptr = try allocator.create(BasicTracerProvider);
+    provider_ptr.* = BasicTracerProvider.init(
         allocator,
         resource,
         createDefaultIdGenerator(),
         samplers.always_on,
-        processor,
         null,
     );
-    defer provider.deinit();
+    try provider_ptr.registerProcessor(processor);
+    defer {
+        provider_ptr.deinit();
+        provider_ptr.destroy();
+    }
 
-    var tp = provider.tracerProvider();
+    var tp = provider_ptr.tracerProvider();
 
     // Get a tracer
     const tracer1 = try tp.getTracerWithScope(.{
@@ -193,11 +249,11 @@ test "StandardTracerProvider basic operations" {
     _ = tracer2;
 
     // Force flush
-    try testing.expectEqual(FlushResult.success, provider.forceFlush(null));
+    try testing.expectEqual(FlushResult.success, provider_ptr.forceFlush(null));
 }
 
 // TODO: Fix threading issue - temporarily disabled
-// test "StandardTracerProvider thread safety" {
+// test "BasicTracerProvider thread safety" {
 //     const testing = std.testing;
 //     const allocator = testing.allocator;
 
@@ -208,7 +264,7 @@ test "StandardTracerProvider basic operations" {
 
 //     const processor = SpanProcessor{ .noop = {} };
 
-//     const provider = try StandardTracerProvider.init(
+//     const provider = try BasicTracerProvider.init(
 //         allocator,
 //         resource,
 //         processor,

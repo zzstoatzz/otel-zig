@@ -10,6 +10,8 @@
 //! See: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/metrics/api.md#meter
 
 const std = @import("std");
+const isValidatingMode = @import("../common/error_handler.zig").isValidatingMode;
+const reportValidationError = @import("../common/error_handler.zig").reportValidationError;
 
 // Import from relative paths
 const InstrumentationScope = @import("../common/root.zig").InstrumentationScope;
@@ -28,6 +30,24 @@ pub const Meter = union(enum) {
     bridge: MeterBridge,
 
     /// Create a Counter instrument for i64 values
+    ///
+    /// This method creates a counter instrument with validation in debug builds.
+    /// Counters are monotonic instruments that only increase over time.
+    ///
+    /// ## Parameters
+    /// - `name`: Instrument name (validated for non-empty, valid characters)
+    /// - `description`: Optional description (validated for reasonable length)
+    /// - `unit`: Optional unit specification (validated for format)
+    ///
+    /// ## Validation (Debug Mode Only)
+    /// - **Name**: Must be non-empty and contain valid characters
+    /// - **Description**: Must be reasonable length if provided
+    /// - **Unit**: Must follow valid unit format if provided
+    /// - **Type**: Must be i64 or f64 (compile-time check)
+    ///
+    /// ## Performance
+    /// - **Release builds**: No validation overhead
+    /// - **Debug builds**: Minimal overhead for validation checks
     pub inline fn createCounter(
         self: *Meter,
         comptime T: type,
@@ -39,17 +59,32 @@ pub const Meter = union(enum) {
             i64, f64 => {},
             else => @compileError("Counters must be of type i64 or f64"),
         };
+
+        // Validate parameters in debug mode
+        const validated_name = validateInstrumentName(name);
+        const validated_description = validateInstrumentDescription(description);
+        const validated_unit = validateInstrumentUnit(unit);
+
         return switch (self.*) {
-            .noop => |_| Counter(T){ .noop = name },
+            .noop => |_| Counter(T){ .noop = validated_name },
             .bridge => |*bridge| switch (T) {
-                i64 => bridge.createCounterI64Fn(bridge.meter_ptr, name, description, unit),
-                f64 => bridge.createCounterF64Fn(bridge.meter_ptr, name, description, unit),
+                i64 => bridge.createCounterI64Fn(bridge.meter_ptr, validated_name, validated_description, validated_unit),
+                f64 => bridge.createCounterF64Fn(bridge.meter_ptr, validated_name, validated_description, validated_unit),
                 else => unreachable,
             },
         };
     }
 
     /// Create an UpDownCounter instrument for i64 values
+    ///
+    /// This method creates an up-down counter instrument with validation in debug builds.
+    /// UpDownCounters can increase and decrease, tracking values that go up and down.
+    ///
+    /// ## Validation (Debug Mode Only)
+    /// - **Name**: Must be non-empty and contain valid characters
+    /// - **Description**: Must be reasonable length if provided
+    /// - **Unit**: Must follow valid unit format if provided
+    /// - **Type**: Must be i64 or f64 (compile-time check)
     pub inline fn createUpDownCounter(
         self: *Meter,
         comptime T: type,
@@ -62,17 +97,31 @@ pub const Meter = union(enum) {
             else => @compileError("UpDownCounters must be of type i64 or f64"),
         };
 
+        // Validate parameters in debug mode
+        const validated_name = validateInstrumentName(name);
+        const validated_description = validateInstrumentDescription(description);
+        const validated_unit = validateInstrumentUnit(unit);
+
         return switch (self.*) {
-            .noop => |_| UpDownCounter(T){ .noop = name },
+            .noop => |_| UpDownCounter(T){ .noop = validated_name },
             .bridge => |*bridge| switch (T) {
-                i64 => bridge.createUpDownCounterI64Fn(bridge.meter_ptr, name, description, unit),
-                f64 => bridge.createUpDownCounterF64Fn(bridge.meter_ptr, name, description, unit),
+                i64 => bridge.createUpDownCounterI64Fn(bridge.meter_ptr, validated_name, validated_description, validated_unit),
+                f64 => bridge.createUpDownCounterF64Fn(bridge.meter_ptr, validated_name, validated_description, validated_unit),
                 else => unreachable,
             },
         };
     }
 
     /// Create a Gauge instrument for i64 values
+    ///
+    /// This method creates a gauge instrument with validation in debug builds.
+    /// Gauges represent values that can be set to any value at any time.
+    ///
+    /// ## Validation (Debug Mode Only)
+    /// - **Name**: Must be non-empty and contain valid characters
+    /// - **Description**: Must be reasonable length if provided
+    /// - **Unit**: Must follow valid unit format if provided
+    /// - **Type**: Must be i64 or f64 (compile-time check)
     pub inline fn createGauge(
         self: *Meter,
         comptime T: type,
@@ -85,17 +134,31 @@ pub const Meter = union(enum) {
             else => @compileError("Gauges must be of type i64 or f64"),
         };
 
+        // Validate parameters in debug mode
+        const validated_name = validateInstrumentName(name);
+        const validated_description = validateInstrumentDescription(description);
+        const validated_unit = validateInstrumentUnit(unit);
+
         return switch (self.*) {
-            .noop => |_| Gauge(T){ .noop = name },
+            .noop => |_| Gauge(T){ .noop = validated_name },
             .bridge => |*bridge| switch (T) {
-                i64 => bridge.createGaugeI64Fn(bridge.meter_ptr, name, description, unit),
-                f64 => bridge.createGaugeF64Fn(bridge.meter_ptr, name, description, unit),
+                i64 => bridge.createGaugeI64Fn(bridge.meter_ptr, validated_name, validated_description, validated_unit),
+                f64 => bridge.createGaugeF64Fn(bridge.meter_ptr, validated_name, validated_description, validated_unit),
                 else => unreachable,
             },
         };
     }
 
     /// Create a Histogram instrument
+    ///
+    /// This method creates a histogram instrument with validation in debug builds.
+    /// Histograms record distributions of values and are useful for measuring latencies.
+    ///
+    /// ## Validation (Debug Mode Only)
+    /// - **Name**: Must be non-empty and contain valid characters
+    /// - **Description**: Must be reasonable length if provided
+    /// - **Unit**: Must follow valid unit format if provided
+    /// - **Type**: Must be i64 or f64 (compile-time check)
     pub inline fn createHistogram(
         self: *Meter,
         comptime T: type,
@@ -108,24 +171,74 @@ pub const Meter = union(enum) {
             else => @compileError("Histograms must be of type i64 or f64"),
         };
 
+        // Validate parameters in debug mode
+        const validated_name = validateInstrumentName(name);
+        const validated_description = validateInstrumentDescription(description);
+        const validated_unit = validateInstrumentUnit(unit);
+
         return switch (self.*) {
-            .noop => |_| Histogram(T){ .noop = name },
+            .noop => |_| Histogram(T){ .noop = validated_name },
             .bridge => |*bridge| switch (T) {
-                i64 => bridge.createHistogramI64Fn(bridge.meter_ptr, name, description, unit),
-                f64 => bridge.createHistogramF64Fn(bridge.meter_ptr, name, description, unit),
+                i64 => bridge.createHistogramI64Fn(bridge.meter_ptr, validated_name, validated_description, validated_unit),
+                f64 => bridge.createHistogramF64Fn(bridge.meter_ptr, validated_name, validated_description, validated_unit),
                 else => unreachable,
             },
         };
     }
+};
 
-    /// Clean up meter resources
-    pub fn deinit(self: *Meter) void {
-        switch (self.*) {
-            .noop => |_| {},
-            .sdk => |*bridge| bridge.deinitFn(bridge.meter_ptr),
+/// Validate instrument name according to OpenTelemetry requirements
+fn validateInstrumentName(name: []const u8) []const u8 {
+    if (!isValidatingMode()) return name;
+
+    if (name.len == 0) {
+        reportValidationError(.meter, "createInstrument", "Empty instrument name provided", null);
+        return name; // Continue with empty name but report it
+    }
+
+    // Check for valid characters (letters, digits, underscore, dot, hyphen)
+    for (name) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '_' and c != '.' and c != '-') {
+            reportValidationError(.meter, "createInstrument", "Invalid character in instrument name", "names should contain only letters, digits, underscore, dot, or hyphen");
+            break; // Report once per name
         }
     }
-};
+
+    return name;
+}
+
+/// Validate instrument description for reasonable length
+fn validateInstrumentDescription(description: ?[]const u8) ?[]const u8 {
+    if (!isValidatingMode()) return description;
+
+    if (description) |desc| {
+        if (desc.len == 0) {
+            reportValidationError(.meter, "createInstrument", "Empty description provided", "consider omitting description if not needed");
+        } else if (desc.len > 1024) {
+            reportValidationError(.meter, "createInstrument", "Description too long", "descriptions should be concise (< 1024 characters)");
+        }
+    }
+
+    return description;
+}
+
+/// Validate instrument unit format
+fn validateInstrumentUnit(unit: ?[]const u8) ?[]const u8 {
+    if (!isValidatingMode()) return unit;
+
+    if (unit) |u| {
+        if (u.len == 0) {
+            reportValidationError(.meter, "createInstrument", "Empty unit provided", "consider omitting unit if not applicable");
+        } else if (u.len > 63) {
+            // Per OpenTelemetry spec, units should be short
+            reportValidationError(.meter, "createInstrument", "Unit string too long", "units should be short identifiers (< 63 characters)");
+        }
+        // Additional unit format validation could be added here
+        // (e.g., checking against known units, format patterns)
+    }
+
+    return unit;
+}
 
 /// Bridge structure that holds SDK meter pointer and vtable
 pub const MeterBridge = struct {
@@ -138,7 +251,6 @@ pub const MeterBridge = struct {
     createGaugeF64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!Gauge(f64),
     createHistogramI64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!Histogram(i64),
     createHistogramF64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!Histogram(f64),
-    deinitFn: *const fn (meter_ptr: *anyopaque) void,
 
     pub fn init(ptr: anytype) MeterBridge {
         const T = @TypeOf(ptr);
@@ -177,10 +289,6 @@ pub const MeterBridge = struct {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.createHistogramI64(self, name, description, unit);
             }
-            pub fn deinit(pointer: *anyopaque) void {
-                const self: T = @ptrCast(@alignCast(pointer));
-                return ptr_info.pointer.child.deinit(self);
-            }
         };
 
         return .{
@@ -193,7 +301,6 @@ pub const MeterBridge = struct {
             .createGaugeF64Fn = VTable.createGaugeF64,
             .createHistogramI64Fn = VTable.createHistogramI64,
             .createHistogramF64Fn = VTable.createHistogramF64,
-            .deinitFn = VTable.deinit,
         };
     }
 };

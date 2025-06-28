@@ -51,6 +51,7 @@ pub const LoggerProviderBridge = struct {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.getLoggerWithScope(self, scope);
             }
+
             pub fn deinit(pointer: *anyopaque) void {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.deinit(self);

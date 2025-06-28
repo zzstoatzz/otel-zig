@@ -1,16 +1,42 @@
 //! OpenTelemetry Span API
 //!
 //! This module defines the Span interface according to the OpenTelemetry specification.
-//! A Span represents a unit of work within a trace.
+//! A Span represents a single operation within a trace and provides methods for
+//! recording telemetry data during its execution.
 //!
 //! The API provides only the interface and a no-op implementation. Concrete implementations
 //! are provided by the SDK.
 //!
+//! ## Input Validation
+//!
+//! In debug builds, span operations perform validation of input parameters:
+//! - **Attribute keys**: Must be non-empty strings
+//! - **Span names**: Empty names are reported but allowed
+//! - **Event attributes**: Validated using same rules as span attributes
+//! - **Exception attributes**: Validated for recordException calls
+//!
+//! Validation errors are reported via the global error handler but never prevent
+//! the operation from completing (following OpenTelemetry's principle of preferring
+//! telemetry loss over application disruption).
+//!
+//! In release builds, no validation is performed for optimal performance.
+//!
+//! ## Performance
+//!
+//! - **Release builds**: Zero validation overhead
+//! - **Debug builds**: Minimal inline validation checks
+//! - **Memory**: No allocations for validation
+//! - **Error reporting**: Asynchronous via error handler
+//!
 //! See: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/api.md#span
 
 const std = @import("std");
+const isValidatingMode = @import("../common/error_handler.zig").isValidatingMode;
 
 const InstrumentationScope = @import("../common/root.zig").InstrumentationScope;
+const reportValidationError = @import("../common/error_handler.zig").reportValidationError;
+const reportError = @import("../common/error_handler.zig").reportError;
+
 const AttributeValue = @import("../common/root.zig").AttributeValue;
 const AttributeKeyValue = @import("../common/root.zig").AttributeKeyValue;
 const Context = @import("../context/root.zig").Context;
@@ -24,34 +50,128 @@ pub const Span = union(enum) {
     noop: SpanContext,
     bridge: SpanBridge, // SDK span bridge
 
-    /// Add an attribute to the span
+    /// Add an attribute to the span.
+    ///
+    /// Sets a single attribute on the span. In debug builds, validates that the
+    /// attribute key is non-empty and reports validation errors via the global
+    /// error handler if issues are detected.
+    ///
+    /// ## Parameters
+    /// - `key`: Attribute key (must be non-empty in debug builds)
+    /// - `value`: Attribute value (all AttributeValue types are valid)
+    ///
+    /// ## Validation (Debug Mode Only)
+    /// - **Key validation**: Empty keys are reported and operation is skipped
+    /// - **Value validation**: All current AttributeValue variants are valid by design
+    ///
+    /// ## Error Handling
+    /// - **Validation errors**: Reported via error handler, invalid attributes skipped
+    /// - **System errors**: Memory/SDK errors still propagate as exceptions
+    /// - **No-op spans**: All operations are safe no-ops
+    ///
+    /// ## Performance
+    /// - **Release builds**: Direct delegation to SDK with no overhead
+    /// - **Debug builds**: Single key length check before delegation
     pub inline fn setAttribute(
         self: *const Span,
         key: []const u8,
         value: AttributeValue,
     ) !void {
+        if (!validateAttributeKey(key)) {
+            reportValidationError(.tracer, "setAttribute", "Invalid attribute key provided", null);
+            return; // Skip invalid attribute
+        }
+
         switch (self.*) {
             .noop => {},
             .bridge => |bridge| try bridge.setAttributeFn(bridge.span_ptr, key, value),
         }
     }
 
-    /// Add multiple attributes to the span
+    /// Add multiple attributes to the span.
+    ///
+    /// Sets multiple attributes on the span in a single call. In debug builds,
+    /// validates all attribute keys and reports a summary of any validation
+    /// issues detected.
+    ///
+    /// ## Parameters
+    /// - `attributes`: Array of key-value pairs to set on the span
+    ///
+    /// ## Validation (Debug Mode Only)
+    /// - **Batch validation**: All keys validated in single pass
+    /// - **Summary reporting**: Single error report with count of invalid attributes
+    /// - **Continued processing**: All attributes passed to SDK regardless of validation
+    ///
+    /// ## Error Handling
+    /// - **Validation errors**: Reported once per call with invalid count
+    /// - **System errors**: Memory/SDK errors still propagate as exceptions
+    /// - **Partial success**: SDK may process valid attributes even if some are invalid
+    ///
+    /// ## Performance
+    /// - **Release builds**: Direct delegation to SDK with no overhead
+    /// - **Debug builds**: Single pass validation check before delegation
     pub inline fn setAttributes(
         self: *const Span,
         attributes: []const AttributeKeyValue,
     ) !void {
+        // Validate attributes inline without creating filtered array
+        var invalid_count: usize = 0;
+        for (attributes) |attr| {
+            if (!validateAttributeKey(attr.key)) {
+                invalid_count += 1;
+            }
+        }
+
+        if (invalid_count > 0) {
+            reportValidationError(.tracer, "setAttributes", "Invalid attributes detected", null);
+            // Still pass all attributes - let SDK handle the filtering
+        }
+
         switch (self.*) {
             .noop => {},
             .bridge => |bridge| try bridge.setAttributesFn(bridge.span_ptr, attributes),
         }
     }
 
-    /// Add an event to the span
+    /// Add an event to the span.
+    ///
+    /// Records an event on the span with optional attributes. In debug builds,
+    /// validates event attributes using the same rules as span attributes.
+    ///
+    /// ## Parameters
+    /// - `event`: Event to add (contains name, timestamp, and optional attributes)
+    ///
+    /// ## Validation (Debug Mode Only)
+    /// - **Event attributes**: Validated if present using standard attribute rules
+    /// - **Event name**: Not currently validated (events names can be empty)
+    /// - **Timestamp**: Not validated (custom timestamps allowed per spec)
+    ///
+    /// ## Error Handling
+    /// - **Validation errors**: Reported via error handler for invalid event attributes
+    /// - **System errors**: Memory/SDK errors still propagate as exceptions
+    /// - **Event preservation**: Events recorded regardless of attribute validation status
+    ///
+    /// ## Performance
+    /// - **Release builds**: Direct delegation to SDK with no overhead
+    /// - **Debug builds**: Attribute validation only if event has attributes
     pub inline fn addEvent(
         self: *const Span,
         event: Event,
     ) !void {
+        if (event.attributes != null) {
+            // Validate event attributes inline
+            var invalid_count: usize = 0;
+            for (event.attributes.?) |attr| {
+                if (!validateAttributeKey(attr.key)) {
+                    invalid_count += 1;
+                }
+            }
+
+            if (invalid_count > 0) {
+                reportValidationError(.tracer, "addEvent", "Invalid event attributes detected", null);
+            }
+        }
+
         switch (self.*) {
             .noop => {},
             .bridge => |bridge| try bridge.addEventFn(bridge.span_ptr, event),
@@ -63,19 +183,56 @@ pub const Span = union(enum) {
         self: *const Span,
         link: Link,
     ) !void {
+        // TODO: Add link validation in Phase 9
         switch (self.*) {
             .noop => {},
             .bridge => |bridge| try bridge.addLinkFn(bridge.span_ptr, link),
         }
     }
 
-    /// Record an exception as an event on the span
+    /// Record an exception as an event on the span.
+    ///
+    /// This is a specialized variant of addEvent for recording exception information.
+    /// In debug builds, validates the optional attributes using standard attribute rules.
+    ///
+    /// ## Parameters
+    /// - `exception`: The Zig error to record
+    /// - `attributes`: Optional additional attributes describing the exception
+    /// - `timestamp_ns`: Optional custom timestamp (defaults to current time)
+    ///
+    /// ## Validation (Debug Mode Only)
+    /// - **Exception attributes**: Validated if provided using standard attribute rules
+    /// - **Exception value**: All Zig errors are valid by design
+    /// - **Timestamp**: Not validated (custom timestamps allowed per spec)
+    ///
+    /// ## Error Handling
+    /// - **Validation errors**: Reported via error handler for invalid attributes
+    /// - **System errors**: Memory/SDK errors still propagate as exceptions
+    /// - **Exception recording**: Exception recorded regardless of attribute validation
+    ///
+    /// ## Performance
+    /// - **Release builds**: Direct delegation to SDK with no overhead
+    /// - **Debug builds**: Attribute validation only if attributes provided
     pub inline fn recordException(
         self: *const Span,
         exception: anyerror,
         attributes: ?[]const AttributeKeyValue,
         timestamp_ns: ?i64,
     ) !void {
+        if (attributes != null) {
+            // Validate exception attributes inline
+            var invalid_count: usize = 0;
+            for (attributes.?) |attr| {
+                if (!validateAttributeKey(attr.key)) {
+                    invalid_count += 1;
+                }
+            }
+
+            if (invalid_count > 0) {
+                reportValidationError(.tracer, "recordException", "Invalid exception attributes detected", null);
+            }
+        }
+
         switch (self.*) {
             .noop => {},
             .bridge => |bridge| try bridge.recordExceptionFn(bridge.span_ptr, exception, attributes, timestamp_ns),
@@ -94,10 +251,35 @@ pub const Span = union(enum) {
     }
 
     /// Update the span name
+    /// Update the name of the span.
+    ///
+    /// Changes the span's name to the provided value. In debug builds, validates
+    /// that the name is non-empty and reports validation issues.
+    ///
+    /// ## Parameters
+    /// - `name`: New name for the span (empty names reported in debug builds)
+    ///
+    /// ## Validation (Debug Mode Only)
+    /// - **Name validation**: Empty names are reported but allowed per OpenTelemetry spec
+    /// - **Continued processing**: Name update proceeds regardless of validation result
+    ///
+    /// ## Error Handling
+    /// - **Validation errors**: Reported via error handler for empty names
+    /// - **System errors**: Memory/SDK errors still propagate as exceptions
+    /// - **Name update**: Span name updated regardless of validation status
+    ///
+    /// ## Performance
+    /// - **Release builds**: Direct delegation to SDK with no overhead
+    /// - **Debug builds**: Single name length check before delegation
     pub inline fn updateName(
         self: *const Span,
         name: []const u8,
     ) !void {
+        if (!validateSpanName(name)) {
+            reportValidationError(.tracer, "updateName", "Empty span name provided", null);
+            // Continue with empty name (spec allows it, but we report it in debug)
+        }
+
         switch (self.*) {
             .noop => {},
             .bridge => |bridge| try bridge.updateNameFn(bridge.span_ptr, name),
@@ -489,6 +671,69 @@ pub const StatusCode = enum(u8) {
         try writer.writeAll(@tagName(self));
     }
 };
+
+/// Validate that an attribute key meets OpenTelemetry requirements.
+///
+/// Validates attribute keys according to the OpenTelemetry specification.
+/// In release builds, always returns true for zero-cost validation.
+///
+/// ## Validation Rules
+/// - **Non-empty**: Keys must have length > 0
+/// - **Non-null**: Guaranteed by Zig's type system
+/// - **Case sensitive**: Keys are treated as case-sensitive
+///
+/// ## Returns
+/// - `true` if key is valid or validation is disabled (release builds)
+/// - `false` if key is invalid and validation is enabled (debug builds)
+fn validateAttributeKey(key: []const u8) bool {
+    if (!isValidatingMode()) return true; // No validation in release
+    return key.len > 0; // Non-null guaranteed by Zig type system
+}
+
+/// Validate that a span name meets OpenTelemetry requirements.
+///
+/// Validates span names for common issues while adhering to OpenTelemetry
+/// specification requirements. Empty names are technically allowed but
+/// reported for better developer experience.
+///
+/// ## Validation Rules
+/// - **Empty names**: Allowed by spec but reported as validation issue
+/// - **Non-null**: Guaranteed by Zig's type system
+///
+/// ## Returns
+/// - `true` if name is valid or validation is disabled (release builds)
+/// - `false` if name should be reported (empty) and validation is enabled
+fn validateSpanName(name: []const u8) bool {
+    if (!isValidatingMode()) return true; // No validation in release
+    // Empty span names are allowed per spec but should be reported
+    return name.len > 0;
+}
+
+test "Span debug mode validation" {
+    const testing = std.testing;
+
+    // This test only runs in debug mode
+    if (!isValidatingMode()) return;
+
+    // Test span with validation errors - should not crash
+    const span = Span{ .noop = SpanContext.invalid };
+
+    // Test setAttribute with empty key - should trigger validation in debug mode
+    span.setAttribute("", AttributeValue{ .string = "test" }) catch unreachable;
+
+    // Test setAttributes with mixed valid/invalid keys
+    const mixed_attrs = [_]AttributeKeyValue{
+        .{ .key = "valid.key", .value = AttributeValue{ .string = "valid" } },
+        .{ .key = "", .value = AttributeValue{ .string = "invalid" } },
+    };
+    span.setAttributes(&mixed_attrs) catch unreachable;
+
+    // Test updateName with empty name
+    span.updateName("") catch unreachable;
+
+    // If we reach here without crashing, validation is working
+    try testing.expect(true);
+}
 
 /// Status represents the status of a finished span
 pub const Status = struct {

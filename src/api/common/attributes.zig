@@ -5,6 +5,10 @@
 //! The caller is responsible for ensuring the lifetime of all referenced data.
 
 const std = @import("std");
+const ErrorInfo = @import("error_handler.zig").ErrorInfo;
+const reportValidationError = @import("error_handler.zig").reportValidationError;
+const reportError = @import("error_handler.zig").reportError;
+const isValidatingMode = @import("error_handler.zig").isValidatingMode;
 
 /// Non-owning attribute value type.
 /// All memory referenced by this type must be managed by the caller.
@@ -457,17 +461,132 @@ test "KeyValue fromTuples convenience function" {
 
 /// High-level attribute builder with functional style and automatic memory management.
 ///
+/// The AttributeBuilder provides a fluent interface for constructing attribute collections
+/// with built-in validation and error handling. It maintains either a valid state with
+/// accumulated attributes or an invalid state with detailed error information.
+///
+/// ## Usage Pattern
+///
+/// ```zig
+/// var builder = AttributeBuilder.init(temp_allocator);
+/// builder = builder.add("service.name", .{ .string = "my-service" })
+///                  .add("service.version", .{ .string = "1.0.0" });
+/// const attrs = try builder.finish(target_allocator);
+/// defer AttributeKeyValue.deinitOwnedSlice(target_allocator, attrs);
+/// ```
+///
+/// ## Error Handling
+///
+/// - **Valid state**: Normal operation with successful attribute accumulation
+/// - **Invalid state**: Contains ErrorInfo with validation or allocation failure details
+/// - **Graceful degradation**: Invalid builders return empty arrays from finish()
+/// - **Debug reporting**: Errors reported via global error handler in debug builds only
+///
+/// ## Memory Management
+///
+/// - **Temporary allocator**: Used during building for intermediate storage
+/// - **Target allocator**: Used for final owned result from finish()
+/// - **No filtering**: Validation reports errors but doesn't allocate filtered arrays
+/// - **Automatic cleanup**: Builder manages its own temporary memory via deinit()
+///
+/// ## Validation (Debug Mode Only)
+///
+/// - **Key validation**: Empty keys detected and reported as validation errors
+/// - **Value validation**: All AttributeValue variants are valid by design
+/// - **Error capture**: Validation failures stored as ErrorInfo with full context
+/// - **Continued operation**: Validation errors don't prevent building process
+///
 /// The builder never takes ownership of any values added to it.
+/// Validate that an attribute key meets OpenTelemetry requirements.
+///
+/// Performs validation according to OpenTelemetry specification in debug builds only.
+/// In release builds, always returns true for zero-cost validation.
+///
+/// ## Validation Rules
+/// - **Non-empty**: Keys must have length > 0 (per OpenTelemetry spec)
+/// - **Non-null**: Guaranteed by Zig's type system ([]const u8 cannot be null)
+/// - **Case sensitivity**: Keys are case-sensitive and preserved exactly
+///
+/// ## Performance
+/// - **Release builds**: Compile-time optimized away (returns true)
+/// - **Debug builds**: Single length check (O(1) operation)
+/// - **Memory**: No allocations or copies
+///
+/// ## Returns
+/// - `true` if key is valid or validation is disabled (release builds)
+/// - `false` if key is invalid and validation is enabled (debug builds)
+fn validateAttributeKey(key: []const u8) bool {
+    if (!isValidatingMode()) return true; // No validation in release
+    return key.len > 0; // Non-null guaranteed by Zig type system
+}
+
+/// Validate that an attribute value meets OpenTelemetry requirements.
+///
+/// Currently all AttributeValue variants are valid by design, so this function
+/// always returns true. It exists for consistency and future extensibility.
+///
+/// ## Current Design
+/// - **Type safety**: AttributeValue union prevents invalid values at compile time
+/// - **Homogeneous arrays**: Array variants enforce type consistency automatically
+/// - **Non-null values**: Union design prevents null values
+///
+/// ## Future Extensibility
+/// This function provides a hook for future validation requirements such as:
+/// - Value length limits
+/// - Array size restrictions
+/// - Content validation rules
+///
+/// ## Performance
+/// - **All builds**: Always returns true (optimized away by compiler)
+/// - **Memory**: No allocations or processing
+///
+/// ## Returns
+/// Always returns `true` (all current AttributeValue types are valid)
+fn validateAttributeValue(value: AttributeValue) bool {
+    // All AttributeValue variants are non-null by union design
+    // Arrays are homogeneous by AttributeValue definition
+    _ = value;
+    return true; // Current design prevents invalid values
+}
+
+/// Validate attributes and report errors in debug mode, but always return original slice
+fn validateAttributes(attributes: []const AttributeKeyValue) []const AttributeKeyValue {
+    if (!isValidatingMode()) return attributes; // No validation in release
+
+    // Count invalid attributes
+    var invalid_count: usize = 0;
+
+    for (attributes) |attr| {
+        if (!validateAttributeKey(attr.key) or !validateAttributeValue(attr.value)) {
+            invalid_count += 1;
+        }
+    }
+
+    // Report errors if any invalid attributes found
+    if (invalid_count > 0) {
+        reportValidationError(.tracer, "attribute_validation", "Invalid attributes detected due to empty keys", null);
+    }
+
+    // Always return original slice - no memory allocation
+    return attributes;
+}
+
 pub const AttributeBuilder = union(enum) {
     valid: struct {
         allocator: std.mem.Allocator,
         entries: []AttributeKeyValue,
     },
-    invalid: anyerror,
+    invalid: ErrorInfo,
 
     /// Create a new AttributeBuilder
     pub fn init(allocator: std.mem.Allocator) AttributeBuilder {
-        const entries = allocator.alloc(AttributeKeyValue, 0) catch |e| return .{ .invalid = e };
+        const entries = allocator.alloc(AttributeKeyValue, 0) catch |e| return .{ .invalid = ErrorInfo{
+            .component = .tracer,
+            .operation = "AttributeBuilder.init",
+            .error_type = .resource_exhausted,
+            .message = "Failed to allocate initial attribute storage",
+            .source_error = e,
+        } };
         return AttributeBuilder{ .valid = .{
             .allocator = allocator,
             .entries = entries,
@@ -529,13 +648,57 @@ pub const AttributeBuilder = union(enum) {
         return self.addKeyValue(.{ .key = key, .value = .{ .string_array = values } });
     }
 
-    /// Add a AttributeAttributeKeyValue pair
+    /// Add an AttributeKeyValue pair to the builder.
+    ///
+    /// This is the core building method that accumulates attribute key-value pairs.
+    /// In debug builds, performs validation and may transition the builder to an
+    /// invalid state if validation fails or memory allocation fails.
+    ///
+    /// ## Parameters
+    /// - `new_kv`: The key-value pair to add
+    ///
+    /// ## Validation (Debug Mode Only)
+    /// - **Key validation**: Checks that key is non-empty string
+    /// - **Error capture**: Validation failures stored as ErrorInfo with context
+    /// - **State transition**: Invalid input causes transition to invalid state
+    ///
+    /// ## Error Handling
+    /// - **Validation errors**: Builder becomes invalid with ErrorInfo details
+    /// - **Allocation errors**: Builder becomes invalid with resource exhausted error
+    /// - **Invalid propagation**: Already-invalid builders remain invalid
+    /// - **Memory safety**: Automatic cleanup of partial state on failures
+    ///
+    /// ## Performance
+    /// - **Release builds**: Direct memory operations with no validation overhead
+    /// - **Debug builds**: Single key length check before normal processing
+    /// - **Memory growth**: Reallocates backing array to accommodate new entry
+    ///
+    /// ## Returns
+    /// New AttributeBuilder in either valid state (with new attribute) or invalid
+    /// state (with error information)
     pub fn addKeyValue(self: AttributeBuilder, new_kv: AttributeKeyValue) AttributeBuilder {
         defer self.deinit();
         return switch (self) {
             .valid => |builder| blk: {
+                // Validation
+                if (!validateAttributeKey(new_kv.key)) {
+                    break :blk AttributeBuilder{ .invalid = ErrorInfo{
+                        .component = .tracer,
+                        .operation = "AttributeBuilder.addKeyValue",
+                        .error_type = .validation,
+                        .message = "Invalid attribute key provided",
+                        .context = "key must be non-empty",
+                    } };
+                }
+
                 const new_len = builder.entries.len + 1;
-                var entries = builder.allocator.alloc(AttributeKeyValue, new_len) catch |e| return AttributeBuilder{ .invalid = e };
+                var entries = builder.allocator.alloc(AttributeKeyValue, new_len) catch |e| return AttributeBuilder{ .invalid = ErrorInfo{
+                    .component = .tracer,
+                    .operation = "AttributeBuilder.addKeyValue",
+                    .error_type = .resource_exhausted,
+                    .message = "Failed to allocate memory for attributes",
+                    .source_error = e,
+                } };
                 errdefer builder.allocator.free(entries);
                 @memcpy(entries[0..builder.entries.len], builder.entries);
                 entries[builder.entries.len] = new_kv;
@@ -570,11 +733,39 @@ pub const AttributeBuilder = union(enum) {
     pub fn build(self: AttributeBuilder) ![]const AttributeKeyValue {
         return switch (self) {
             .valid => |builder| builder.entries,
-            .invalid => |e| e,
+            .invalid => |error_info| error_info.source_error orelse error.InvalidAttributeBuilder,
         };
     }
 
     /// Get the deep copy slice of `AttributeKeyValue` and destroy this builder.
+    ///
+    /// Creates a final owned copy of all attributes with deduplication applied.
+    /// Invalid builders report their errors (in debug mode) and return empty arrays.
+    ///
+    /// ## Parameters
+    /// - `target_allocator`: Allocator for the final owned attribute array
+    ///
+    /// ## Processing Steps
+    /// 1. **Validation**: Applies attribute validation in debug builds
+    /// 2. **Deduplication**: Last-wins strategy for duplicate keys
+    /// 3. **Deep copy**: Creates owned copies of all keys and values
+    /// 4. **Cleanup**: Automatically calls deinit() on the builder
+    ///
+    /// ## Error Handling
+    /// - **Invalid builders**: Report ErrorInfo via global error handler (debug only)
+    /// - **Safe defaults**: Invalid builders return empty owned arrays
+    /// - **Allocation failures**: Propagated as standard Zig errors
+    /// - **Partial success**: Not applicable - either succeeds completely or fails
+    ///
+    /// ## Memory Management
+    /// - **Target allocator**: Used for final owned result
+    /// - **Automatic cleanup**: Builder's temporary memory freed regardless of outcome
+    /// - **Caller responsibility**: Returned slice must be freed with deinitOwnedSlice
+    ///
+    /// ## Performance
+    /// - **Deduplication**: O(n) algorithm using HashMap for efficiency
+    /// - **Deep copying**: One-time cost for owned result
+    /// - **Debug validation**: Minimal overhead for error reporting only
     ///
     /// Returned slice must be released with `AttributeKeyValue.deinitOwnedSlice` to
     /// release the keys and the values.
@@ -582,10 +773,58 @@ pub const AttributeBuilder = union(enum) {
         defer self.deinit();
         return switch (self) {
             .valid => |builder| blk: {
-                const kvs = try AttributeKeyValue.initOwnedSlice(target_allocator, builder.entries);
+                // Validate entries and report errors
+                const validated_entries = validateAttributes(builder.entries);
+
+                // Deduplicate entries before creating owned slice (last-wins strategy)
+                const deduplicated = blk2: {
+                    if (validated_entries.len == 0) {
+                        break :blk2 try target_allocator.alloc(AttributeKeyValue, 0);
+                    }
+
+                    // Use HashMap to track the last occurrence index of each key
+                    var key_to_last_index = std.StringHashMap(usize).init(target_allocator);
+                    defer key_to_last_index.deinit();
+
+                    // Build map of key -> last occurrence index
+                    for (validated_entries, 0..) |entry, i| {
+                        try key_to_last_index.put(entry.key, i);
+                    }
+
+                    // Collect unique entries in order of first appearance
+                    var result = std.ArrayList(AttributeKeyValue).init(target_allocator);
+                    defer result.deinit();
+
+                    var seen_keys = std.StringHashMap(void).init(target_allocator);
+                    defer seen_keys.deinit();
+
+                    for (validated_entries) |entry| {
+                        const key = entry.key;
+
+                        // If this is the first time we see this key AND it's the last occurrence
+                        if (!seen_keys.contains(key)) {
+                            try seen_keys.put(key, {});
+                            const last_index = key_to_last_index.get(key).?;
+                            try result.append(validated_entries[last_index]);
+                        }
+                    }
+
+                    break :blk2 try result.toOwnedSlice();
+                };
+
+                defer target_allocator.free(deduplicated);
+
+                const kvs = try AttributeKeyValue.initOwnedSlice(target_allocator, deduplicated);
                 break :blk kvs;
             },
-            .invalid => |e| e,
+            .invalid => |error_info| {
+                // Report error in debug mode only
+                if (isValidatingMode()) {
+                    reportError(error_info);
+                }
+                // Return empty array as safe default using target allocator
+                return try target_allocator.alloc(AttributeKeyValue, 0);
+            },
         };
     }
 };
@@ -654,20 +893,20 @@ test "AttributeBuilder resource merging scenario" {
     const attrs = try builder.finish(allocator);
     defer AttributeKeyValue.deinitOwnedSlice(allocator, attrs);
 
-    try testing.expectEqual(@as(usize, 4), attrs.len);
+    try testing.expectEqual(@as(usize, 3), attrs.len);
 
-    // service.name should be "new-service" (first occurrence wins in lookup)
+    // service.name should be "old-service" (last-wins deduplication)
     var service_name: ?AttributeValue = null;
     var host_name: ?AttributeValue = null;
     for (attrs) |attr| {
         if (std.mem.eql(u8, attr.key, "service.name")) {
-            if (service_name == null) service_name = attr.value; // First occurrence
+            service_name = attr.value; // Should be the last value added
         } else if (std.mem.eql(u8, attr.key, "host.name")) {
             host_name = attr.value;
         }
     }
 
-    try testing.expectEqualStrings("new-service", service_name.?.string);
+    try testing.expectEqualStrings("old-service", service_name.?.string);
     try testing.expectEqualStrings("host1", host_name.?.string);
 }
 
@@ -822,6 +1061,149 @@ test "AttributeBuilder empty and edge cases" {
     try testing.expectEqual(@as(usize, 1), single_attr.len);
     try testing.expectEqualStrings("single.key", single_attr[0].key);
     try testing.expectEqualStrings("single.value", single_attr[0].value.string);
+}
+
+test "AttributeBuilder duplicate key handling - last wins" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const attrs = try AttributeBuilder.init(allocator)
+        .add("service.name", .{ .string = "first-value" })
+        .add("version", .{ .string = "1.0.0" })
+        .add("service.name", .{ .string = "last-value" }) // should win
+        .add("environment", .{ .string = "prod" })
+        .add("version", .{ .string = "2.0.0" }) // should win
+        .finish(allocator);
+    defer AttributeKeyValue.deinitOwnedSlice(allocator, attrs);
+
+    try testing.expectEqual(@as(usize, 3), attrs.len);
+
+    // Find each attribute and verify last-wins behavior
+    var found_service = false;
+    var found_version = false;
+    var found_environment = false;
+
+    for (attrs) |kv| {
+        if (std.mem.eql(u8, kv.key, "service.name")) {
+            try testing.expectEqualStrings("last-value", kv.value.string);
+            found_service = true;
+        } else if (std.mem.eql(u8, kv.key, "version")) {
+            try testing.expectEqualStrings("2.0.0", kv.value.string);
+            found_version = true;
+        } else if (std.mem.eql(u8, kv.key, "environment")) {
+            try testing.expectEqualStrings("prod", kv.value.string);
+            found_environment = true;
+        }
+    }
+
+    try testing.expect(found_service);
+    try testing.expect(found_version);
+    try testing.expect(found_environment);
+}
+
+test "AttributeBuilder duplicate key handling - no duplicates unchanged" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const attrs = try AttributeBuilder.init(allocator)
+        .add("service.name", .{ .string = "my-service" })
+        .add("version", .{ .string = "1.0.0" })
+        .add("environment", .{ .string = "prod" })
+        .finish(allocator);
+    defer AttributeKeyValue.deinitOwnedSlice(allocator, attrs);
+
+    try testing.expectEqual(@as(usize, 3), attrs.len);
+
+    // Should preserve original order and values
+    try testing.expectEqualStrings("service.name", attrs[0].key);
+    try testing.expectEqualStrings("my-service", attrs[0].value.string);
+    try testing.expectEqualStrings("version", attrs[1].key);
+    try testing.expectEqualStrings("1.0.0", attrs[1].value.string);
+    try testing.expectEqualStrings("environment", attrs[2].key);
+    try testing.expectEqualStrings("prod", attrs[2].value.string);
+}
+
+test "AttributeBuilder duplicate key handling - all same key" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const attrs = try AttributeBuilder.init(allocator)
+        .add("service.name", .{ .string = "first" })
+        .add("service.name", .{ .string = "second" })
+        .add("service.name", .{ .string = "third" })
+        .add("service.name", .{ .string = "final" })
+        .finish(allocator);
+    defer AttributeKeyValue.deinitOwnedSlice(allocator, attrs);
+
+    try testing.expectEqual(@as(usize, 1), attrs.len);
+    try testing.expectEqualStrings("service.name", attrs[0].key);
+    try testing.expectEqualStrings("final", attrs[0].value.string);
+}
+
+test "AttributeBuilder duplicate key handling - different value types" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const attrs = try AttributeBuilder.init(allocator)
+        .add("config", .{ .string = "original" })
+        .add("count", .{ .int = 5 })
+        .add("config", .{ .int = 42 }) // different type, should win
+        .add("flag", .{ .bool = false })
+        .add("count", .{ .string = "ten" }) // different type, should win
+        .finish(allocator);
+    defer AttributeKeyValue.deinitOwnedSlice(allocator, attrs);
+
+    try testing.expectEqual(@as(usize, 3), attrs.len);
+
+    // Find each attribute and verify last-wins with type changes
+    var found_config = false;
+    var found_count = false;
+    var found_flag = false;
+
+    for (attrs) |kv| {
+        if (std.mem.eql(u8, kv.key, "config")) {
+            try testing.expectEqual(@as(i64, 42), kv.value.int);
+            found_config = true;
+        } else if (std.mem.eql(u8, kv.key, "count")) {
+            try testing.expectEqualStrings("ten", kv.value.string);
+            found_count = true;
+        } else if (std.mem.eql(u8, kv.key, "flag")) {
+            try testing.expectEqual(false, kv.value.bool);
+            found_flag = true;
+        }
+    }
+
+    try testing.expect(found_config);
+    try testing.expect(found_count);
+    try testing.expect(found_flag);
+}
+
+test "AttributeBuilder duplicate key handling - order preservation" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // Test that order is preserved based on first appearance of each key
+    const attrs = try AttributeBuilder.init(allocator)
+        .add("first", .{ .string = "1" }) // position 0
+        .add("second", .{ .string = "2" }) // position 1
+        .add("third", .{ .string = "3" }) // position 2
+        .add("second", .{ .string = "2-new" }) // duplicate, should not change order
+        .add("fourth", .{ .string = "4" }) // position 3
+        .add("first", .{ .string = "1-new" }) // duplicate, should not change order
+        .finish(allocator);
+    defer AttributeKeyValue.deinitOwnedSlice(allocator, attrs);
+
+    try testing.expectEqual(@as(usize, 4), attrs.len);
+
+    // Should maintain order based on first appearance
+    try testing.expectEqualStrings("first", attrs[0].key);
+    try testing.expectEqualStrings("1-new", attrs[0].value.string); // last value
+    try testing.expectEqualStrings("second", attrs[1].key);
+    try testing.expectEqualStrings("2-new", attrs[1].value.string); // last value
+    try testing.expectEqualStrings("third", attrs[2].key);
+    try testing.expectEqualStrings("3", attrs[2].value.string);
+    try testing.expectEqualStrings("fourth", attrs[3].key);
+    try testing.expectEqualStrings("4", attrs[3].value.string);
 }
 
 test "AttributeValue hash/equality contract" {
@@ -1022,4 +1404,44 @@ test "Hash consistency" {
 
     try testing.expectEqual(kv_hash1, kv_hash2);
     try testing.expectEqual(kv_hash2, kv_hash3);
+}
+
+test "AttributeBuilder debug mode validation" {
+    const testing = std.testing;
+
+    // This test only runs in debug mode
+    if (!isValidatingMode()) return;
+
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    // Test invalid key (empty string) causes builder to become invalid
+    const builder = AttributeBuilder.init(allocator)
+        .addKeyValue(.{ .key = "", .value = .{ .string = "test" } });
+
+    // Builder should be invalid due to empty key
+    switch (builder) {
+        .valid => try testing.expect(false), // Should not be valid
+        .invalid => |error_info| {
+            try testing.expectEqual(error_info.component, .tracer);
+            try testing.expectEqual(error_info.error_type, .validation);
+            try testing.expectEqualStrings("AttributeBuilder.addKeyValue", error_info.operation);
+            try testing.expectEqualStrings("Invalid attribute key provided", error_info.message);
+        },
+    }
+
+    // Test that valid keys still work
+    const valid_builder = AttributeBuilder.init(allocator)
+        .addKeyValue(.{ .key = "valid.key", .value = .{ .string = "test" } });
+
+    switch (valid_builder) {
+        .valid => {
+            const attrs = try valid_builder.finish(allocator);
+            defer AttributeKeyValue.deinitOwnedSlice(allocator, attrs);
+            try testing.expectEqual(@as(usize, 1), attrs.len);
+            try testing.expectEqualStrings("valid.key", attrs[0].key);
+        },
+        .invalid => try testing.expect(false), // Should be valid
+    }
 }

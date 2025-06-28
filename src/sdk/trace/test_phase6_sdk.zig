@@ -6,11 +6,11 @@ const otel_api = @import("otel-api");
 
 const RecordingSpan = @import("data.zig").RecordingSpan;
 const StandardTracer = @import("tracer.zig").StandardTracer;
-const StandardTracerProvider = @import("tracer_provider.zig").StandardTracerProvider;
+const BasicTracerProvider = @import("basic_provider.zig").BasicTracerProvider;
 const SpanProcessor = @import("processor.zig").SpanProcessor;
 const SimpleSpanProcessor = @import("processor.zig").SimpleSpanProcessor;
 const SpanExporter = @import("exporter.zig").SpanExporter;
-const createSpanExporter = @import("exporter.zig").createSpanExporter;
+const BridgeSpanExporter = @import("exporter.zig").BridgeSpanExporter;
 const Resource = @import("../resource/resource.zig").Resource;
 const createDefaultIdGenerator = @import("id_generator.zig").createDefaultIdGenerator;
 const samplers = @import("samplers/root.zig");
@@ -344,7 +344,7 @@ test "RecordingSpan - record exception" {
     try testing.expectEqualStrings("exception", recording.events.?.items[0].name);
 }
 
-test "StandardTracerProvider - basic operations" {
+test "BasicTracerProvider - basic operations" {
     const allocator = testing.allocator;
 
     const resource = Resource{
@@ -354,17 +354,21 @@ test "StandardTracerProvider - basic operations" {
 
     const processor = SpanProcessor{ .noop = {} };
 
-    const provider = try StandardTracerProvider.init(
+    const provider_ptr = try allocator.create(BasicTracerProvider);
+    provider_ptr.* = BasicTracerProvider.init(
         allocator,
         resource,
         createDefaultIdGenerator(),
         samplers.always_on,
-        processor,
         null,
     );
-    defer provider.deinit();
+    try provider_ptr.registerProcessor(processor);
+    defer {
+        provider_ptr.deinit();
+        provider_ptr.destroy();
+    }
 
-    var tp = provider.tracerProvider();
+    var tp = provider_ptr.tracerProvider();
 
     // Get tracer
     var tracer = try tp.getTracerWithScope(.{
@@ -396,7 +400,7 @@ test "StandardTracerProvider - basic operations" {
     span.end(null);
 }
 
-test "StandardTracerProvider - tracer caching" {
+test "BasicTracerProvider - tracer caching" {
     const allocator = testing.allocator;
 
     const resource = Resource{
@@ -406,17 +410,21 @@ test "StandardTracerProvider - tracer caching" {
 
     const processor = SpanProcessor{ .noop = {} };
 
-    const provider = try StandardTracerProvider.init(
+    const provider_ptr = try allocator.create(BasicTracerProvider);
+    provider_ptr.* = BasicTracerProvider.init(
         allocator,
         resource,
         createDefaultIdGenerator(),
         samplers.always_on,
-        processor,
         null,
     );
-    defer provider.deinit();
+    try provider_ptr.registerProcessor(processor);
+    defer {
+        provider_ptr.deinit();
+        provider_ptr.destroy();
+    }
 
-    var tp = provider.tracerProvider();
+    var tp = provider_ptr.tracerProvider();
 
     // Get same tracer multiple times
     const tracer1 = try tp.getTracerWithScope(.{
@@ -443,9 +451,9 @@ test "StandardTracerProvider - tracer caching" {
     _ = tracer3;
 
     // Verify cache count
-    provider.mutex.lock();
-    defer provider.mutex.unlock();
-    try testing.expectEqual(@as(usize, 2), provider.cache.count());
+    provider_ptr.mutex.lock();
+    defer provider_ptr.mutex.unlock();
+    try testing.expectEqual(@as(usize, 2), provider_ptr.cache.count());
 }
 
 test "RecordingSpan - span limits enforcement" {
@@ -532,19 +540,19 @@ test "SimpleSpanProcessor - export flow" {
     const MockExporter = struct {
         spans_exported: usize = 0,
 
-        pub fn exportSpans(self: *@This(), spans: []const *RecordingSpan, resource: Resource) otel_api.common.ProcessResult {
+        pub fn exportSpans(self: *@This(), spans: []const *RecordingSpan, resource: Resource) otel_api.common.ExportResult {
             _ = resource;
             self.spans_exported += spans.len;
             return .success;
         }
 
-        pub fn forceFlush(self: *@This(), timeout_ms: ?u64) otel_api.common.ProcessResult {
+        pub fn forceFlush(self: *@This(), timeout_ms: ?u64) otel_api.common.ExportResult {
             _ = self;
             _ = timeout_ms;
             return .success;
         }
 
-        pub fn shutdown(self: *@This(), timeout_ms: ?u64) otel_api.common.ProcessResult {
+        pub fn shutdown(self: *@This(), timeout_ms: ?u64) otel_api.common.ExportResult {
             _ = self;
             _ = timeout_ms;
             return .success;
@@ -553,10 +561,14 @@ test "SimpleSpanProcessor - export flow" {
         pub fn deinit(self: *@This()) void {
             _ = self;
         }
+
+        pub fn destroy(self: *@This()) void {
+            _ = self;
+        }
     };
 
     var mock = MockExporter{};
-    const exporter = createSpanExporter(&mock);
+    const exporter = SpanExporter{ .bridge = BridgeSpanExporter.init(&mock) };
 
     const resource = Resource{
         .attributes = &.{},
@@ -564,7 +576,10 @@ test "SimpleSpanProcessor - export flow" {
     };
 
     const processor = try SimpleSpanProcessor.init(allocator, exporter, resource);
-    defer processor.deinit();
+    defer {
+        processor.deinit();
+        processor.destroy();
+    }
 
     // Create a span and trigger export
     const span_context = SpanContext{
@@ -630,7 +645,7 @@ test "Integration - full trace flow" {
             self.captured_spans.deinit();
         }
 
-        pub fn exportSpans(self: *@This(), spans: []const *RecordingSpan, resource: Resource) otel_api.common.ProcessResult {
+        pub fn exportSpans(self: *@This(), spans: []const *RecordingSpan, resource: Resource) otel_api.common.ExportResult {
             _ = resource;
             for (spans) |span| {
                 const name_copy = self.allocator.dupe(u8, span.name) catch return .failure;
@@ -645,40 +660,48 @@ test "Integration - full trace flow" {
             return .success;
         }
 
-        pub fn forceFlush(self: *@This(), timeout_ms: ?u64) otel_api.common.ProcessResult {
+        pub fn forceFlush(self: *@This(), timeout_ms: ?u64) otel_api.common.ExportResult {
             _ = self;
             _ = timeout_ms;
             return .success;
         }
 
-        pub fn shutdown(self: *@This(), timeout_ms: ?u64) otel_api.common.ProcessResult {
+        pub fn shutdown(self: *@This(), timeout_ms: ?u64) otel_api.common.ExportResult {
             _ = self;
             _ = timeout_ms;
             return .success;
+        }
+
+        pub fn destroy(self: *@This()) void {
+            _ = self;
         }
     };
 
     var capture = CaptureExporter.init(allocator);
 
-    const exporter = createSpanExporter(&capture);
+    const exporter = SpanExporter{ .bridge = BridgeSpanExporter.init(&capture) };
 
     // Create tracing pipeline using local helper
     const simple_processor = try SimpleSpanProcessor.init(allocator, exporter, Resource{
         .attributes = &.{},
         .schema_url = null,
     });
-    const provider_impl = try StandardTracerProvider.init(
+    const provider_ptr = try allocator.create(BasicTracerProvider);
+    provider_ptr.* = BasicTracerProvider.init(
         allocator,
         .empty,
         createDefaultIdGenerator(),
         samplers.always_on,
-        simple_processor.spanProcessor(),
         null,
     );
-    var provider = provider_impl.tracerProvider();
-    defer provider.deinit();
+    try provider_ptr.registerProcessor(simple_processor.spanProcessor());
+    defer {
+        provider_ptr.deinit();
+        provider_ptr.destroy();
+    }
 
     // Get tracer and create spans
+    var provider = provider_ptr.tracerProvider();
     var tracer = try provider.getTracerWithScope(.{
         .name = "test-component",
         .version = null,

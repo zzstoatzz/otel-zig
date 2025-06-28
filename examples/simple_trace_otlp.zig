@@ -13,14 +13,16 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Set up trace provider using the new builder pattern
-    try otel_sdk.trace.buildProvider(allocator)
-        .withExporterClosure(otel_exporters.otlp.OtlpExporterConfig{}, otel_exporters.otlp.createTraceExporterWithConfig)
-        .withBasicProcessor()
-        .withDefaultResource()
-        .withBasicProvider()
-        .finish();
-    defer otel_sdk.trace.destroyProvider();
+    // Set up trace provider using the new setupGlobalProvider pattern
+    const concrete_provider = try otel_sdk.trace.setupGlobalProvider(
+        allocator,
+        .{otel_sdk.trace.BasicSpanProcessor.PipelineStep.init({})
+            .flowTo(otel_exporters.otlp.OtlpTraceExporter.PipelineStep.init(.{}))},
+    );
+    defer {
+        concrete_provider.deinit();
+        concrete_provider.destroy();
+    }
 
     // Get the global tracer provider interface
     var tp = otel_api.getGlobalTracerProvider();
@@ -105,7 +107,4 @@ pub fn main() !void {
     parent_span.end(null);
 
     std.debug.print("\nSpans exported via OTLP to http://localhost:4318/v1/traces\n", .{});
-
-    // Force flush to ensure all spans are exported
-    _ = tp.forceFlush(null);
 }

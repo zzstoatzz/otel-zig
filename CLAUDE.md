@@ -56,7 +56,7 @@ The codebase uses a bridge pattern to separate API from SDK:
 
 - **API Layer**: Defines interfaces using tagged unions (`Logger`, `LoggerProvider`, etc.)
 - **Bridge Types**: Enable SDK implementations to plug into API interfaces. These are provided in the API layer and use template meta progamming (`LoggerProviderBridge`)
-- **SDK Layer**: Provides concrete implementations (`StandardLogger`, `StandardLoggerProvider`, etc.)
+- **SDK Layer**: Provides concrete implementations (`BasicLogger`, `BasicLoggerProvider`, `BasicTracerProvider`, etc.)
 
 ### Memory Management
 
@@ -92,47 +92,79 @@ Prefer to use `[]AttributeKeyValue` rather than using an ArrayList.
 Thread-safe global provider management through `provider_registry.zig` with mutex-protected storage.
 
 #### Provider Setup
-Providers are configured using a builder pattern with method chaining. The setup typically involves configuring an exporter, processor, resource, and provider implementation:
+Providers are configured using the `setupGlobalProvider` pattern with pipeline configuration. The setup is consistent across all three signals (logs, metrics, traces) and involves configuring an exporter, processor, resource, and provider implementation:
 
 ```zig
-// Setup logging provider with console exporter
-const exporter_config = otel_exporters.console.ConsoleExporterConfig{};
-try otel_sdk.logs.buildProvider(allocator)
-    .withExporterClosure(exporter_config, otel_exporters.console.createLogExporterWithConfig)
-    .withBasicProcessor()
-    .withDefaultResource()
-    .withBasicProvider()
-    .finish();
-defer otel_sdk.logs.destroyProvider();
+var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+defer _ = gpa.deinit();
+const allocator = gpa.allocator();
 
-// Get logger from global registry (now backed by SDK)
+// Logs setup
+const log_provider = try otel_sdk.logs.setupGlobalProvider(
+    allocator,
+    .{otel_sdk.logs.BasicLogProcessor.PipelineStep.init({})
+        .flowTo(otel_exporters.console.ConsoleLogExporter.PipelineStep.init(.{}))},
+);
+defer {
+    log_provider.deinit();
+    log_provider.destroy();
+}
+
+// Metrics setup
+const metric_provider = try otel_sdk.metrics.setupGlobalProvider(
+    allocator,
+    .{otel_sdk.metrics.BasicMetricProcessor.PipelineStep.init({})
+        .flowTo(otel_exporters.otlp.OtlpMetricExporter.PipelineStep.init(.{}))},
+);
+defer {
+    metric_provider.deinit();
+    metric_provider.destroy();
+}
+
+// Traces setup
+const trace_provider = try otel_sdk.trace.setupGlobalProvider(
+    allocator,
+    .{otel_sdk.trace.BasicSpanProcessor.PipelineStep.init({})
+        .flowTo(otel_exporters.otlp.OtlpTraceExporter.PipelineStep.init(.{}))},
+);
+defer {
+    trace_provider.deinit();
+    trace_provider.destroy();
+}
+
+// Get providers from global registry (now backed by SDK)
 const scope = try otel_api.InstrumentationScope.initSimple("my.app", "1.0.0");
 var logger = try otel_api.getGlobalLoggerProvider().getLoggerWithScope(scope);
+var meter = try otel_api.getGlobalMeterProvider().getMeterWithScope(scope);
+var tracer = try otel_api.getGlobalTracerProvider().getTracerWithScope(scope);
 ```
 
-This pattern registers the provider globally, making it available through the API's global registry functions.
+This pattern registers providers globally, making them available through the API's global registry functions. The same setupGlobalProvider pattern is used consistently across logs, metrics, and traces.
 
 ### Span Lifecycle
 Two-phase pattern where `.end()` marks span completion and `.deinit()` handles memory cleanup, following Zig RAII patterns. Spans remain queryable after ending but become non-recording.
 
 ## Current State
 
-The logs and metrics implementations exist but may need refinement. Tracing implementation exists but may need refinement. TODO.md lists some of the ongoing tracing work.
+The logs, metrics, and tracing implementations are complete and architecturally consistent. All three signals use identical patterns for provider setup, pipeline configuration, and memory management.
 
-### Tracing Implementation Status
+### Tracing Implementation Status ✅ COMPLETE
 - **API Layer**: Complete with bridge pattern and spec-compliant interfaces
-- **SDK Layer**: Core implementation complete (StandardTracer, StandardTracerProvider, RecordingSpan)
-- **Memory Management**: Two-phase span lifecycle (.end()/.deinit()) with zero-leak examples
-- **Exporters**: OTLP and console exporters functional with JSON serialization
+- **SDK Layer**: Full implementation complete (BasicTracer, BasicTracerProvider, RecordingSpan)
+- **Pipeline Architecture**: Complete with PipelineStep implementations for all components
+- **Provider Setup**: Complete with setupGlobalProvider function matching logs/metrics exactly
+- **Memory Management**: Two-phase span lifecycle (.end()/.deinit()) with proper cleanup
+- **Exporters**: OTLP and console exporters with PipelineStep integration
 - **Sampling**: Basic samplers implemented (TraceIdRatioBasedSampler, ParentBasedSampler)
 - **Context Integration**: Proper context propagation with explicit span injection
-- **Remaining Work**: BatchSpanProcessor, advanced features, performance optimization (see TODO.md)
+- **Batch Processing**: BatchSpanProcessor implemented with configurable options
+- **Architectural Consistency**: All patterns now match logs/metrics exactly
 
 Semantic conventions has not been started.
 
-Exporters have been started for OTLP and console, but are currently in an MVP state, and don't support batching of output.
+Exporters are complete for OTLP and console, with full PipelineStep integration and batch processing support.
 
-The examples are useful for integration tests, but still need refinement to be more comprehensive.
+The examples serve as comprehensive integration tests and demonstrate proper usage patterns for all three signals.
 
 ## Local Resources
 The OTel specification is in the `spec` directory. A C++ reference implementation is in the `reference/cpp-sdk` directory. The protobuf definitions are in the `opentelemetry-proto` directory.

@@ -14,10 +14,10 @@ const default_meter_provider: metrics.MeterProvider = .{ .noop = {} };
 
 // Global provider storage with thread safety
 var global_logger_provider: std.atomic.Value(?*logs.LoggerProvider) = std.atomic.Value(?*logs.LoggerProvider).init(null);
-var global_tracer_provider: ?*trace.TracerProvider = null;
+var global_tracer_provider: std.atomic.Value(?*trace.TracerProvider) = std.atomic.Value(?*trace.TracerProvider).init(null);
 var global_meter_provider: std.atomic.Value(?*metrics.MeterProvider) = std.atomic.Value(?*metrics.MeterProvider).init(null);
 var logger_mutex = std.Thread.Mutex{};
-var mutex = std.Thread.Mutex{};
+var tracer_mutex = std.Thread.Mutex{};
 var meter_mutex = std.Thread.Mutex{};
 
 /// Get the global logger provider. Fatal if a provider is not setup.
@@ -56,22 +56,36 @@ pub fn setGlobalLoggerProvider(provider: ?logs.LoggerProvider) !void {
 
 /// Get the global tracer provider. Fatal if a provider is not setup.
 pub fn getGlobalTracerProvider() *const trace.TracerProvider {
-    mutex.lock();
-    defer mutex.unlock();
-
-    return if (global_tracer_provider) |provider| provider else &default_tracer_provider;
+    const provider = global_tracer_provider.load(.acquire);
+    return if (provider) |p| p else &default_tracer_provider;
 }
 
-/// Set the global tracer provider, returns the old provider.
-///
-/// Callers responsiblitiy to manage the lifecycle of the returned, old provider.
-pub fn setGlobalTracerProvider(provider: ?*trace.TracerProvider) ?*trace.TracerProvider {
-    mutex.lock();
-    defer mutex.unlock();
+/// Set the global tracer provider by value, managing interface wrapper memory internally.
+/// Uses page allocator to manage the interface wrapper memory.
+/// Returns error if allocation fails.
+pub fn setGlobalTracerProvider(provider: ?trace.TracerProvider) !void {
+    tracer_mutex.lock();
+    defer tracer_mutex.unlock();
 
-    const old_provider = global_tracer_provider;
-    global_tracer_provider = provider;
-    return old_provider;
+    // Get old value atomically
+    const old_provider = global_tracer_provider.load(.acquire);
+
+    if (provider) |new_provider| {
+        // Allocate new interface wrapper using page allocator
+        const provider_ptr = try std.heap.page_allocator.create(trace.TracerProvider);
+        provider_ptr.* = new_provider;
+
+        // Store new provider atomically first
+        global_tracer_provider.store(provider_ptr, .release);
+    } else {
+        // Setting to null
+        global_tracer_provider.store(null, .release);
+    }
+
+    // Clean up old provider if exists
+    if (old_provider) |old| {
+        std.heap.page_allocator.destroy(old);
+    }
 }
 
 /// Get the global meter provider
@@ -112,5 +126,6 @@ pub fn setGlobalMeterProvider(provider: ?metrics.MeterProvider) !void {
 /// This will automatically free any allocated interface wrappers.
 pub fn unsetAllProviders() void {
     setGlobalLoggerProvider(null) catch {};
+    setGlobalTracerProvider(null) catch {};
     setGlobalMeterProvider(null) catch {};
 }

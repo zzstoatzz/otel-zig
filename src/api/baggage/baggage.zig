@@ -164,7 +164,44 @@ pub const BaggageBuilder = union(enum) {
         defer self.deinit();
         return switch (self) {
             .valid => |builder| blk: {
-                const kvs = try BaggageKeyValue.initOwnedSlice(target_allocator, builder.entries);
+                // Deduplicate entries before creating owned slice (last-wins strategy)
+                const deduplicated = blk2: {
+                    if (builder.entries.len == 0) {
+                        break :blk2 try target_allocator.alloc(BaggageKeyValue, 0);
+                    }
+
+                    // Use HashMap to track the last occurrence index of each key
+                    var key_to_last_index = std.StringHashMap(usize).init(target_allocator);
+                    defer key_to_last_index.deinit();
+
+                    // Build map of key -> last occurrence index
+                    for (builder.entries, 0..) |entry, i| {
+                        try key_to_last_index.put(entry.key, i);
+                    }
+
+                    // Collect unique entries in order of first appearance
+                    var result = std.ArrayList(BaggageKeyValue).init(target_allocator);
+                    defer result.deinit();
+
+                    var seen_keys = std.StringHashMap(void).init(target_allocator);
+                    defer seen_keys.deinit();
+
+                    for (builder.entries) |entry| {
+                        const key = entry.key;
+
+                        // If this is the first time we see this key AND it's the last occurrence
+                        if (!seen_keys.contains(key)) {
+                            try seen_keys.put(key, {});
+                            const last_index = key_to_last_index.get(key).?;
+                            try result.append(builder.entries[last_index]);
+                        }
+                    }
+
+                    break :blk2 try result.toOwnedSlice();
+                };
+                defer target_allocator.free(deduplicated);
+
+                const kvs = try BaggageKeyValue.initOwnedSlice(target_allocator, deduplicated);
                 break :blk kvs;
             },
             .invalid => |e| e,
@@ -200,17 +237,15 @@ test "BaggageBuilder functional chaining" {
     const entries = try BaggageBuilder.init(allocator)
         .add("key1", "value1")
         .addWithMetadata("key2", "value2", "metadata")
-        .add("key1", "duplicate_value") // duplicate key appended
+        .add("key1", "duplicate_value") // duplicate key, should use last-wins
         .finish(allocator);
     defer BaggageKeyValue.deinitOwnedSlice(allocator, entries);
 
-    try testing.expectEqual(@as(usize, 3), entries.len);
+    try testing.expectEqual(@as(usize, 2), entries.len);
     try testing.expectEqualStrings("key1", entries[0].key);
-    try testing.expectEqualStrings("value1", entries[0].value);
+    try testing.expectEqualStrings("duplicate_value", entries[0].value); // last-wins value
     try testing.expectEqualStrings("key2", entries[1].key);
     try testing.expectEqualStrings("value2", entries[1].value);
-    try testing.expectEqualStrings("key1", entries[2].key);
-    try testing.expectEqualStrings("duplicate_value", entries[2].value);
 }
 
 test "BaggageBuilder with pre-constructed entries" {
@@ -231,6 +266,145 @@ test "BaggageBuilder with pre-constructed entries" {
     try testing.expectEqualStrings("test.value", entries[0].value);
     try testing.expectEqualStrings("another.key", entries[1].key);
     try testing.expectEqualStrings("another.value", entries[1].value);
+}
+
+test "BaggageBuilder duplicate key handling - last wins" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const entries = try BaggageBuilder.init(allocator)
+        .add("user.id", "first-value")
+        .add("session.id", "sess-123")
+        .add("user.id", "last-value") // should win
+        .add("trace.id", "trace-456")
+        .add("session.id", "sess-789") // should win
+        .finish(allocator);
+    defer BaggageKeyValue.deinitOwnedSlice(allocator, entries);
+
+    try testing.expectEqual(@as(usize, 3), entries.len);
+
+    // Find each entry and verify last-wins behavior
+    var found_user = false;
+    var found_session = false;
+    var found_trace = false;
+
+    for (entries) |kv| {
+        if (std.mem.eql(u8, kv.key, "user.id")) {
+            try testing.expectEqualStrings("last-value", kv.value);
+            found_user = true;
+        } else if (std.mem.eql(u8, kv.key, "session.id")) {
+            try testing.expectEqualStrings("sess-789", kv.value);
+            found_session = true;
+        } else if (std.mem.eql(u8, kv.key, "trace.id")) {
+            try testing.expectEqualStrings("trace-456", kv.value);
+            found_trace = true;
+        }
+    }
+
+    try testing.expect(found_user);
+    try testing.expect(found_session);
+    try testing.expect(found_trace);
+}
+
+test "BaggageBuilder duplicate key handling - no duplicates unchanged" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const entries = try BaggageBuilder.init(allocator)
+        .add("user.id", "12345")
+        .add("session.id", "sess-123")
+        .add("trace.id", "trace-456")
+        .finish(allocator);
+    defer BaggageKeyValue.deinitOwnedSlice(allocator, entries);
+
+    try testing.expectEqual(@as(usize, 3), entries.len);
+
+    // Should preserve original order and values
+    try testing.expectEqualStrings("user.id", entries[0].key);
+    try testing.expectEqualStrings("12345", entries[0].value);
+    try testing.expectEqualStrings("session.id", entries[1].key);
+    try testing.expectEqualStrings("sess-123", entries[1].value);
+    try testing.expectEqualStrings("trace.id", entries[2].key);
+    try testing.expectEqualStrings("trace-456", entries[2].value);
+}
+
+test "BaggageBuilder duplicate key handling - all same key" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const entries = try BaggageBuilder.init(allocator)
+        .add("user.id", "first")
+        .add("user.id", "second")
+        .add("user.id", "third")
+        .add("user.id", "final")
+        .finish(allocator);
+    defer BaggageKeyValue.deinitOwnedSlice(allocator, entries);
+
+    try testing.expectEqual(@as(usize, 1), entries.len);
+    try testing.expectEqualStrings("user.id", entries[0].key);
+    try testing.expectEqualStrings("final", entries[0].value);
+}
+
+test "BaggageBuilder duplicate key handling - with metadata" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const entries = try BaggageBuilder.init(allocator)
+        .addWithMetadata("user.id", "first-value", "original-metadata")
+        .add("session.id", "sess-123")
+        .addWithMetadata("user.id", "last-value", "new-metadata") // should win including metadata
+        .finish(allocator);
+    defer BaggageKeyValue.deinitOwnedSlice(allocator, entries);
+
+    try testing.expectEqual(@as(usize, 2), entries.len);
+
+    // Find user.id and verify it has the last value and metadata
+    var found_user = false;
+    var found_session = false;
+
+    for (entries) |kv| {
+        if (std.mem.eql(u8, kv.key, "user.id")) {
+            try testing.expectEqualStrings("last-value", kv.value);
+            try testing.expect(kv.metadata != null);
+            try testing.expectEqualStrings("new-metadata", kv.metadata.?);
+            found_user = true;
+        } else if (std.mem.eql(u8, kv.key, "session.id")) {
+            try testing.expectEqualStrings("sess-123", kv.value);
+            try testing.expect(kv.metadata == null);
+            found_session = true;
+        }
+    }
+
+    try testing.expect(found_user);
+    try testing.expect(found_session);
+}
+
+test "BaggageBuilder duplicate key handling - order preservation" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // Test that order is preserved based on first appearance of each key
+    const entries = try BaggageBuilder.init(allocator)
+        .add("first", "1") // position 0
+        .add("second", "2") // position 1
+        .add("third", "3") // position 2
+        .add("second", "2-new") // duplicate, should not change order
+        .add("fourth", "4") // position 3
+        .add("first", "1-new") // duplicate, should not change order
+        .finish(allocator);
+    defer BaggageKeyValue.deinitOwnedSlice(allocator, entries);
+
+    try testing.expectEqual(@as(usize, 4), entries.len);
+
+    // Should maintain order based on first appearance
+    try testing.expectEqualStrings("first", entries[0].key);
+    try testing.expectEqualStrings("1-new", entries[0].value); // last value
+    try testing.expectEqualStrings("second", entries[1].key);
+    try testing.expectEqualStrings("2-new", entries[1].value); // last value
+    try testing.expectEqualStrings("third", entries[2].key);
+    try testing.expectEqualStrings("3", entries[2].value);
+    try testing.expectEqualStrings("fourth", entries[3].key);
+    try testing.expectEqualStrings("4", entries[3].value);
 }
 
 test "BaggageKeyValue basic operations" {

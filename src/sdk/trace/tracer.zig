@@ -26,27 +26,25 @@ const trace_context = otel_api.trace.trace_context;
 const SpanProcessor = @import("processor.zig").SpanProcessor;
 const SpanLimits = otel_api.trace.SpanLimits;
 
-/// Forward declaration of StandardTracerProvider
-const StandardTracerProvider = @import("tracer_provider.zig").StandardTracerProvider;
+/// Forward declaration of BasicTracerProvider
+const BasicTracerProvider = @import("basic_provider.zig").BasicTracerProvider;
 
 /// Standard implementation of the Tracer interface
 pub const StandardTracer = struct {
     /// Allocator for span creation
     allocator: std.mem.Allocator,
     scope: InstrumentationScope,
-    handler: SpanProcessor,
-    provider: *StandardTracerProvider, // Is this necessary?
+    provider: *BasicTracerProvider, // Is this necessary?
 
     /// Create a new standard tracer
     pub fn init(
         allocator: std.mem.Allocator,
         instrumentation_scope: InstrumentationScope,
-        provider: *StandardTracerProvider,
+        provider: *BasicTracerProvider,
     ) StandardTracer {
         return .{
             .allocator = allocator,
             .scope = instrumentation_scope,
-            .handler = provider.default_processor,
             .provider = provider,
         };
     }
@@ -161,7 +159,9 @@ pub const StandardTracer = struct {
 
     /// Callback for span processor notification
     fn spanProcessorOnEnd(processor: *anyopaque, span: *RecordingSpan) void {
-        const provider = @as(*StandardTracerProvider, @ptrCast(@alignCast(processor)));
-        provider.default_processor.onEnd(span);
+        const provider = @as(*BasicTracerProvider, @ptrCast(@alignCast(processor)));
+        for (provider.processors.items) |*proc| {
+            proc.onEnd(span);
+        }
     }
 };

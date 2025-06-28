@@ -13,6 +13,9 @@ const Severity = otel_api.logs.Severity;
 const ExportResult = otel_api.common.ExportResult;
 const ConsoleExporterConfig = @import("root.zig").ConsoleExporterConfig;
 const Resource = otel_sdk.resource.Resource;
+
+// Import error handler for structured error reporting
+const error_handler = otel_api.common;
 const ResourceBuilder = otel_sdk.resource.ResourceBuilder;
 
 /// Configuration for stream-based log exporters
@@ -75,7 +78,18 @@ pub fn StreamLogExporter(comptime WriterType: type) type {
             defer self.mutex.unlock();
 
             for (records) |record| {
-                self.writeRecord(record, resource) catch return .failure;
+                self.writeRecord(record, resource) catch |err| {
+                    const message_body = if (record.body) |body| body.string else "(no message)";
+                    error_handler.reportError(.{
+                        .component = .exporter,
+                        .operation = "console_write",
+                        .error_type = .serialization,
+                        .message = "Failed to write log record to console",
+                        .context = message_body,
+                        .source_error = err,
+                    });
+                    return .failure;
+                };
             }
 
             return .success;

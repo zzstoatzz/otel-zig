@@ -148,7 +148,7 @@ pub const BasicMeterProvider = struct {
         return .success;
     }
 
-    pub fn shutdown(self: *BasicMeterProvider, timeout_ms: ?u64) void {
+    pub fn shutdown(self: *BasicMeterProvider, timeout_ms: ?u64) otel_api.common.ProcessResult {
         // The mutex block is distinct because the mutex must be released before
         // forceFlush can be called.
         {
@@ -161,7 +161,12 @@ pub const BasicMeterProvider = struct {
                 kv.value_ptr.*.shutdown();
             }
         }
-        _ = self.forceFlush(timeout_ms);
+        const flush_result = self.forceFlush(timeout_ms);
+        return switch (flush_result) {
+            .success => .success,
+            .failure => .failure,
+            .timeout => .timeout,
+        };
     }
 
     /// Attach a processor to this provider.

@@ -10,6 +10,9 @@ const MetricDataPoint = otel_sdk.metrics.MetricDataPoint;
 const MetricType = otel_sdk.metrics.MetricType;
 const MetricExporter = otel_sdk.metrics.MetricExporter;
 
+// Import error handler for structured error reporting
+const error_handler = otel_api.common;
+
 // Import protobuf definitions
 const metrics_v1 = @import("proto/opentelemetry/proto/metrics/v1.pb.zig");
 const common_v1 = @import("proto/opentelemetry/proto/common/v1.pb.zig");
@@ -59,13 +62,28 @@ pub const OtlpMetricExporter = struct {
         }
 
         const metrics_data = convertToOtlpFormat(self.allocator, metrics) catch |err| {
-            std.log.err("Failed to convert metrics to OTLP format: {}", .{err});
+            const first_metric_name = if (metrics.len > 0) metrics[0].name else "(no metrics)";
+            error_handler.reportError(.{
+                .component = .exporter,
+                .operation = "otlp_metric_serialization",
+                .error_type = .serialization,
+                .message = "OTLP metrics conversion failed",
+                .context = first_metric_name,
+                .source_error = err,
+            });
             return .failure;
         };
         defer metrics_data.deinit();
 
         self.sendRequest(metrics_data) catch |err| {
-            std.log.err("Failed to send metrics: {}", .{err});
+            error_handler.reportError(.{
+                .component = .exporter,
+                .operation = "otlp_metric_network",
+                .error_type = .network,
+                .message = "OTLP metrics network request failed",
+                .context = self.config.endpoint,
+                .source_error = err,
+            });
             return .failure;
         };
 
@@ -105,7 +123,14 @@ pub const OtlpMetricExporter = struct {
 
         // Parse endpoint URL with detailed error context
         const base_uri = std.Uri.parse(self.config.endpoint) catch |err| {
-            std.log.err("OTLP URL Parsing Error: {s} - {s}", .{ self.config.endpoint, @errorName(err) });
+            error_handler.reportError(.{
+                .component = .exporter,
+                .operation = "otlp_metric_url_parsing",
+                .error_type = .configuration,
+                .message = "OTLP metrics URL parsing failed",
+                .context = self.config.endpoint,
+                .source_error = err,
+            });
             return err;
         };
 
@@ -137,7 +162,13 @@ pub const OtlpMetricExporter = struct {
         try req.wait();
 
         if (req.response.status != .ok) {
-            std.log.err("OTLP export failed with status: {}", .{req.response.status});
+            error_handler.reportError(.{
+                .component = .exporter,
+                .operation = "otlp_metric_response",
+                .error_type = .authentication,
+                .message = "OTLP metrics export failed with HTTP error",
+                .context = self.config.endpoint,
+            });
             return error.ExportFailed;
         }
     }

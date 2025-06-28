@@ -135,7 +135,7 @@ pub const BasicLoggerProvider = struct {
         return .success;
     }
 
-    pub fn shutdown(self: *BasicLoggerProvider, timeout_ms: ?u64) void {
+    pub fn shutdown(self: *BasicLoggerProvider, timeout_ms: ?u64) otel_api.common.ProcessResult {
         // The mutex block is distinct because the mutex must be released before
         // forceFlush can be called.
         {
@@ -148,7 +148,12 @@ pub const BasicLoggerProvider = struct {
                 kv.value_ptr.*.shutdown();
             }
         }
-        _ = self.forceFlush(timeout_ms);
+        const flush_result = self.forceFlush(timeout_ms);
+        return switch (flush_result) {
+            .success => .success,
+            .failure => .failure,
+            .timeout => .timeout,
+        };
     }
 
     /// Attach a processor to this provider.
@@ -469,7 +474,7 @@ test "BasicLogger shutdown behavior" {
     try testing.expectEqual(@as(usize, 1), mock_exporter.recordCount());
 
     // Shutdown provider
-    provider.shutdown(null);
+    _ = provider.shutdown(null);
 
     // Try to emit log after shutdown - should be ignored
     logger.emitLogRecord(ctx, .info, .{ .string = "After shutdown" }, null, null, null, null, "INFO", null, null, null);

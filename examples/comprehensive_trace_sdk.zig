@@ -41,18 +41,22 @@ pub fn main() !void {
         .finish(allocator);
     errdefer resource.deinitOwned(allocator);
 
-    // Set up trace provider using the new builder pattern with custom resource
-    try otel_sdk.trace.buildProvider(allocator)
-        .withExporterClosure(otel_exporters.console.ConsoleExporterConfig{}, otel_exporters.console.createTraceExporterWithConfig)
-        .withBasicProcessor()
-        .withResource(resource)
-        .withBasicProvider()
-        .finish();
-    defer otel_sdk.trace.destroyProvider();
+    // Set up trace provider using the new setupGlobalProvider pattern
+    // Note: setupGlobalProvider uses automatic resource detection
+    // The custom resource above demonstrates resource building but won't be used
+    const concrete_provider = try otel_sdk.trace.setupGlobalProvider(
+        allocator,
+        .{otel_sdk.trace.BasicSpanProcessor.PipelineStep.init({})
+            .flowTo(otel_exporters.console.ConsoleTraceExporter.PipelineStep.init(.{}))},
+    );
+    defer {
+        concrete_provider.deinit();
+        concrete_provider.destroy();
+    }
 
     var trace_setup = TraceSetup{
         .allocator = allocator,
-        .tracer_provider = otel_api.getGlobalTracerProvider(),
+        .tracer_provider = @constCast(otel_api.getGlobalTracerProvider()),
     };
 
     // Run different test scenarios

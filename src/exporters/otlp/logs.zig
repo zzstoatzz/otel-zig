@@ -13,6 +13,9 @@ const OtlpExporterConfig = @import("root.zig").OtlpExporterConfig;
 const Resource = otel_sdk.resource.Resource;
 const ResourceBuilder = otel_sdk.resource.ResourceBuilder;
 
+// Import error handler for structured error reporting
+const error_handler = otel_api.common;
+
 /// OTLP JSON structures for serialization
 const OtlpResourceLogs = struct {
     resourceLogs: []const OtlpResourceLog,
@@ -107,13 +110,27 @@ pub const OtlpLogExporter = struct {
         defer arena.deinit();
 
         const json_data = convertToOtlpFormat(arena.allocator(), records, resource) catch |err| {
-            std.log.err("OTLP Export Error - JSON Conversion Failed. records:{} error:{}-{s}", .{ records.len, err, @errorName(err) });
+            error_handler.reportError(.{
+                .component = .exporter,
+                .operation = "otlp_serialization",
+                .error_type = .serialization,
+                .message = "OTLP JSON conversion failed",
+                .context = "log records",
+                .source_error = err,
+            });
             return .failure;
         };
         defer arena.allocator().free(json_data);
 
         const result = self.sendRequest(arena.allocator(), json_data) catch |err| {
-            std.log.err("OTLP Export Error - Network Request Failed. error:{}-{s} endpoint:{s} content-length:{}", .{ err, @errorName(err), self.config.endpoint, json_data.len });
+            error_handler.reportError(.{
+                .component = .exporter,
+                .operation = "otlp_network",
+                .error_type = .network,
+                .message = "OTLP network request failed",
+                .context = self.config.endpoint,
+                .source_error = err,
+            });
             return .failure;
         };
 
