@@ -26,8 +26,6 @@ pub const SeverityError = severity_zig.SeverityError;
 pub const fromNumber = severity_zig.fromNumber;
 pub const fromText = severity_zig.fromText;
 
-
-
 // Logger types
 const logger_zig = @import("logger.zig");
 pub const Logger = logger_zig.Logger;

@@ -149,8 +149,9 @@ pub const StandardTracer = struct {
         }
     }
 
-    pub fn getInstrumentationScope(self: *StandardTracer) InstrumentationScope {
-        return self.scope;
+    pub fn enabled(self: *StandardTracer) bool {
+        _ = self;
+        return true;
     }
 
     pub fn deinit(self: *StandardTracer) void {

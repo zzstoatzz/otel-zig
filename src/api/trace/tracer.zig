@@ -38,17 +38,11 @@ const Span = @import("span.zig").Span;
 const SpanContext = @import("span_context.zig").SpanContext;
 const SpanStartOptions = @import("span.zig").SpanStartOptions;
 
-/// Result type for span creation operations
-pub const SpanResult = struct {
-    span: Span,
-    context: Context,
-};
-
 /// Tracer interface using tagged union for compile-time polymorphism.
 /// In the API layer, only the noop implementation is provided.
 /// SDK implementations will extend this with concrete tracers.
 pub const Tracer = union(enum) {
-    noop: InstrumentationScope,
+    noop: void,
     bridge: TracerBridge, // SDK tracer bridge
 
     /// Start a new span with the given name and options.
@@ -109,11 +103,19 @@ pub const Tracer = union(enum) {
         };
     }
 
-    /// Get the instrumentation scope for this tracer
-    pub inline fn getInstrumentationScope(self: *const Tracer) InstrumentationScope {
+    /// Check if this tracer is enabled.
+    ///
+    /// This API helps users avoid performing computationally expensive operations when
+    /// creating spans if the tracer is disabled. The returned value can change over time,
+    /// so this should be called each time before creating a span.
+    ///
+    /// ## Returns
+    /// - `true` if the tracer is enabled for span creation
+    /// - `false` if the tracer is disabled (no-op tracer always returns false)
+    pub fn enabled(self: *Tracer) bool {
         return switch (self.*) {
-            .noop => |scope| scope,
-            .bridge => |bridge| bridge.getInstrumentationScopeFn(bridge.tracer_ptr),
+            .noop => false,
+            .bridge => |bridge| bridge.enabledFn(bridge.tracer_ptr),
         };
     }
 };
@@ -127,7 +129,7 @@ pub const TracerBridge = struct {
         options: SpanStartOptions,
         ctx: Context,
     ) anyerror!Span,
-    getInstrumentationScopeFn: *const fn (tracer_ptr: *anyopaque) InstrumentationScope,
+    enabledFn: *const fn (tracer_ptr: *anyopaque) bool,
 
     pub fn init(ptr: anytype) TracerBridge {
         const T = @TypeOf(ptr);
@@ -143,16 +145,16 @@ pub const TracerBridge = struct {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.startSpan(self, name, options, ctx);
             }
-            pub fn getInstrumentationScope(pointer: *anyopaque) InstrumentationScope {
+            pub fn enabled(pointer: *anyopaque) bool {
                 const self: T = @ptrCast(@alignCast(pointer));
-                return ptr_info.pointer.child.getInstrumentationScope(self);
+                return ptr_info.pointer.child.enabled(self);
             }
         };
 
         return .{
             .tracer_ptr = ptr,
             .startSpanFn = VTable.startSpan,
-            .getInstrumentationScopeFn = VTable.getInstrumentationScope,
+            .enabledFn = VTable.enabled,
         };
     }
 };
@@ -256,4 +258,35 @@ test "validateAttributes has no memory leak and reports errors" {
     try testing.expectEqualStrings("another.valid", result[2].key);
 
     // Note: Validation errors are reported via error handler (can be seen in test output)
+}
+
+test "Tracer enabled method" {
+    const testing = std.testing;
+
+    // Test noop tracer returns false for enabled
+    var noop_tracer = Tracer{ .noop = {} };
+
+    try testing.expect(!noop_tracer.enabled());
+}
+
+test "Tracer enabled method practical usage" {
+    const testing = std.testing;
+
+    // Simulate practical usage where expensive operations are avoided when tracer is disabled
+    var tracer = Tracer{ .noop = {} };
+
+    var expensive_operation_called = false;
+
+    // This pattern demonstrates how users should use the enabled method
+    if (tracer.enabled()) {
+        // Expensive operation would only run if tracer is enabled
+        expensive_operation_called = true;
+    }
+
+    // Verify that expensive operation was not called for noop tracer
+    try testing.expect(!expensive_operation_called);
+
+    // Test that the method can be called multiple times (spec requirement)
+    try testing.expect(!tracer.enabled());
+    try testing.expect(!tracer.enabled());
 }

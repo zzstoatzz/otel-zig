@@ -190,6 +190,18 @@ pub const Span = union(enum) {
         }
     }
 
+    /// Add multiple links to other spans at once
+    /// This is an optional API as mentioned in the OpenTelemetry specification
+    pub inline fn addLinks(
+        self: *const Span,
+        links: []const Link,
+    ) !void {
+        switch (self.*) {
+            .noop => {},
+            .bridge => |bridge| try bridge.addLinksFn(bridge.span_ptr, links),
+        }
+    }
+
     /// Record an exception as an event on the span.
     ///
     /// This is a specialized variant of addEvent for recording exception information.
@@ -329,6 +341,7 @@ pub const SpanBridge = struct {
     setAttributesFn: *const fn (span_ptr: *anyopaque, attributes: []const AttributeKeyValue) anyerror!void,
     addEventFn: *const fn (span_ptr: *anyopaque, event: Event) anyerror!void,
     addLinkFn: *const fn (span_ptr: *anyopaque, link: Link) anyerror!void,
+    addLinksFn: *const fn (span_ptr: *anyopaque, links: []const Link) anyerror!void,
     recordExceptionFn: *const fn (span_ptr: *anyopaque, exception: anyerror, attributes: ?[]const AttributeKeyValue, timestamp_ns: ?i64) anyerror!void,
     setStatusFn: *const fn (span_ptr: *anyopaque, status: Status) anyerror!void,
     updateNameFn: *const fn (span_ptr: *anyopaque, name: []const u8) anyerror!void,
@@ -357,6 +370,10 @@ pub const SpanBridge = struct {
             pub fn addLink(pointer: *anyopaque, link: Link) anyerror!void {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.addLink(self, link);
+            }
+            pub fn addLinks(pointer: *anyopaque, links: []const Link) anyerror!void {
+                const self: T = @ptrCast(@alignCast(pointer));
+                return ptr_info.pointer.child.addLinks(self, links);
             }
             pub fn recordException(pointer: *anyopaque, exception: anyerror, attributes: ?[]const AttributeKeyValue, timestamp_ns: ?i64) anyerror!void {
                 const self: T = @ptrCast(@alignCast(pointer));
@@ -394,6 +411,7 @@ pub const SpanBridge = struct {
             .setAttributesFn = VTable.setAttributes,
             .addEventFn = VTable.addEvent,
             .addLinkFn = VTable.addLink,
+            .addLinksFn = VTable.addLinks,
             .recordExceptionFn = VTable.recordException,
             .setStatusFn = VTable.setStatus,
             .updateNameFn = VTable.updateName,

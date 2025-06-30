@@ -126,7 +126,7 @@ pub const BasicTracerProvider = struct {
 
         if (self.is_shutdown) {
             // Return noop tracer if shutdown
-            return Tracer{ .noop = scope };
+            return Tracer{ .noop = {} };
         }
 
         // Check if tracer already exists

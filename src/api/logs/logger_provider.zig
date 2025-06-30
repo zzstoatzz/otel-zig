@@ -26,21 +26,12 @@ pub const LoggerProvider = union(enum) {
             .bridge => |*bridge| bridge.getLoggerWithScopeFn(bridge.provider_ptr, scope),
         };
     }
-
-    /// Clean up provider resources
-    pub fn deinit(self: *const LoggerProvider) void {
-        switch (self.*) {
-            .noop => |_| {},
-            .bridge => |*bridge| bridge.deinitFn(bridge.provider_ptr),
-        }
-    }
 };
 
 /// Bridge structure that holds SDK provider pointer and vtable
 pub const LoggerProviderBridge = struct {
     provider_ptr: *anyopaque,
     getLoggerWithScopeFn: *const fn (provider_ptr: *anyopaque, scope: InstrumentationScope) anyerror!Logger,
-    deinitFn: *const fn (provider_ptr: *anyopaque) void,
 
     pub fn init(ptr: anytype) LoggerProviderBridge {
         const T = @TypeOf(ptr);
@@ -51,17 +42,11 @@ pub const LoggerProviderBridge = struct {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.getLoggerWithScope(self, scope);
             }
-
-            pub fn deinit(pointer: *anyopaque) void {
-                const self: T = @ptrCast(@alignCast(pointer));
-                return ptr_info.pointer.child.deinit(self);
-            }
         };
 
         return .{
             .provider_ptr = ptr,
             .getLoggerWithScopeFn = VTable.getLoggerWithScope,
-            .deinitFn = VTable.deinit,
         };
     }
 };

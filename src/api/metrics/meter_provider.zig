@@ -28,22 +28,12 @@ pub const MeterProvider = union(enum) {
             .bridge => |*bridge| bridge.getMeterWithScopeFn(bridge.provider_ptr, scope),
         };
     }
-
-    /// Clean up provider resources
-    pub fn deinit(self: *const MeterProvider) void {
-        switch (self.*) {
-            .noop => {},
-            .bridge => |*bridge| bridge.deinitFn(bridge.provider_ptr),
-        }
-    }
 };
 
 /// Bridge structure that holds SDK provider pointer and vtable
 pub const MeterProviderBridge = struct {
     provider_ptr: *anyopaque,
     getMeterWithScopeFn: *const fn (provider_ptr: *anyopaque, scope: InstrumentationScope) anyerror!Meter,
-
-    deinitFn: *const fn (provider_ptr: *anyopaque) void,
 
     pub fn init(ptr: anytype) MeterProviderBridge {
         const T = @TypeOf(ptr);
@@ -54,18 +44,11 @@ pub const MeterProviderBridge = struct {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.getMeterWithScope(self, scope);
             }
-
-            pub fn deinit(pointer: *anyopaque) void {
-                const self: T = @ptrCast(@alignCast(pointer));
-                return ptr_info.pointer.child.deinit(self);
-            }
         };
 
         return .{
             .provider_ptr = ptr,
             .getMeterWithScopeFn = VTable.getMeterWithScope,
-
-            .deinitFn = VTable.deinit,
         };
     }
 };

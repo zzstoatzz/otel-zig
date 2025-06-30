@@ -396,16 +396,33 @@ pub const RecordingSpan = struct {
     }
 
     /// Validate that a link has a valid span context
+    /// Per spec: "Implementations SHOULD record links containing SpanContext with empty
+    /// TraceId or SpanId (all zeros) as long as either the attribute set or TraceState is non-empty."
     fn isValidLink(link: Link) bool {
-        // Check for valid trace_id (not all zeros)
         const zero_trace = std.mem.zeroes([16]u8);
-        if (std.mem.eql(u8, &link.span_context.trace_id.bytes, &zero_trace)) {
-            return false;
+        const zero_span = std.mem.zeroes([8]u8);
+
+        const has_zero_trace_id = std.mem.eql(u8, &link.span_context.trace_id.bytes, &zero_trace);
+        const has_zero_span_id = std.mem.eql(u8, &link.span_context.span_id.bytes, &zero_span);
+
+        // If both IDs are valid (non-zero), link is valid
+        if (!has_zero_trace_id and !has_zero_span_id) {
+            return true;
         }
 
-        // Check for valid span_id (not all zeros)
-        const zero_span = std.mem.zeroes([8]u8);
-        if (std.mem.eql(u8, &link.span_context.span_id.bytes, &zero_span)) {
+        // If one or both IDs are zero, check if we have attributes or trace_state
+        if (has_zero_trace_id or has_zero_span_id) {
+            // Link is valid if it has attributes
+            if (link.attributes != null and link.attributes.?.len > 0) {
+                return true;
+            }
+
+            // Link is valid if span context has trace_state
+            if (link.span_context.trace_state != null) {
+                return true;
+            }
+
+            // No attributes or trace_state, so zero IDs make this invalid
             return false;
         }
 
@@ -474,6 +491,20 @@ pub const RecordingSpan = struct {
 
         try self.ensureLinks();
         try self.links.?.append(link);
+    }
+
+    fn addLinks(self: *RecordingSpan, links: []const Link) !void {
+        if (!self.is_recording) return;
+
+        // Validate all links first before adding any
+        for (links) |link| {
+            if (!isValidLink(link)) {
+                return OpenTelemetryError.InvalidLink;
+            }
+        }
+
+        try self.ensureLinks();
+        try self.links.?.appendSlice(links);
     }
 
     fn setStatus(self: *RecordingSpan, status: Status) !void {
@@ -619,6 +650,7 @@ const RecordingSpanBridge = struct {
             .setAttributesFn = setAttributes,
             .addEventFn = addEvent,
             .addLinkFn = addLink,
+            .addLinksFn = addLinks,
             .recordExceptionFn = recordException,
             .setStatusFn = setStatus,
             .updateNameFn = updateName,
@@ -655,6 +687,11 @@ const RecordingSpanBridge = struct {
     fn addLink(span_ptr: *anyopaque, link: Link) anyerror!void {
         const self = @as(*RecordingSpan, @ptrCast(@alignCast(span_ptr)));
         return self.addLink(link);
+    }
+
+    fn addLinks(span_ptr: *anyopaque, links: []const Link) anyerror!void {
+        const self = @as(*RecordingSpan, @ptrCast(@alignCast(span_ptr)));
+        return self.addLinks(links);
     }
 
     fn setStatus(span_ptr: *anyopaque, status: Status) anyerror!void {

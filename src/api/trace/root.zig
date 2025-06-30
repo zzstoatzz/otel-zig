@@ -51,7 +51,7 @@ pub const trace_context = @import("context_utils.zig");
 
 // Core interfaces (Phase 4 - Implemented)
 pub const Tracer = @import("tracer.zig").Tracer;
-pub const SpanResult = @import("tracer.zig").SpanResult;
+
 pub const TracerBridge = @import("tracer.zig").TracerBridge;
 pub const TracerProvider = @import("tracer_provider.zig").TracerProvider;
 pub const TracerProviderBridge = @import("tracer_provider.zig").TracerProviderBridge;

@@ -325,7 +325,7 @@ test "validation integration with real API calls" {
     defer cleanupTestCapture();
 
     // Test tracer validation without full SDK setup
-    var tracer = otel_api.trace.Tracer{ .noop = undefined };
+    var tracer = otel_api.trace.Tracer{ .noop = {} };
     const ctx = otel_api.Context.init(allocator);
     defer ctx.deinit();
 

@@ -21,17 +21,9 @@ pub const TracerProvider = union(enum) {
     /// Get or create a tracer with instrumentation scope (OpenTelemetry API specification compliant)
     pub inline fn getTracerWithScope(self: *const TracerProvider, scope: InstrumentationScope) !Tracer {
         return switch (self.*) {
-            .noop => |_| Tracer{ .noop = scope },
+            .noop => |_| Tracer{ .noop = {} },
             .bridge => |*bridge| bridge.getTracerWithScopeFn(bridge.provider_ptr, scope),
         };
-    }
-
-    /// Clean up provider resources
-    pub fn deinit(self: *const TracerProvider) void {
-        switch (self.*) {
-            .noop => |_| {},
-            .bridge => |*bridge| bridge.deinitFn(bridge.provider_ptr),
-        }
     }
 };
 
@@ -39,7 +31,6 @@ pub const TracerProvider = union(enum) {
 pub const TracerProviderBridge = struct {
     provider_ptr: *anyopaque,
     getTracerWithScopeFn: *const fn (provider_ptr: *anyopaque, scope: InstrumentationScope) anyerror!Tracer,
-    deinitFn: *const fn (provider_ptr: *anyopaque) void,
 
     pub fn init(ptr: anytype) TracerProviderBridge {
         const T = @TypeOf(ptr);
@@ -50,16 +41,11 @@ pub const TracerProviderBridge = struct {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.getTracerWithScope(self, scope);
             }
-            pub fn deinit(pointer: *anyopaque) void {
-                const self: T = @ptrCast(@alignCast(pointer));
-                return ptr_info.pointer.child.deinit(self);
-            }
         };
 
         return .{
             .provider_ptr = ptr,
             .getTracerWithScopeFn = VTable.getTracerWithScope,
-            .deinitFn = VTable.deinit,
         };
     }
 };
