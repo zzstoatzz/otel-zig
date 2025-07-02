@@ -59,6 +59,26 @@ pub const LogProcessor = union(enum) {
             .bridge => |processor| processor.destroyFn(processor.processor_ptr),
         }
     }
+
+    /// Check if this processor would process a log record with given parameters
+    pub fn enabled(
+        self: *const LogProcessor,
+        ctx: Context,
+        scope: otel_api.common.InstrumentationScope,
+        severity: ?otel_api.logs.Severity,
+        event_name: ?[]const u8,
+    ) bool {
+        return switch (self.*) {
+            .noop => false, // noop processor never processes anything
+            .bridge => |processor| processor.enabledFn(
+                processor.processor_ptr,
+                ctx,
+                scope,
+                severity,
+                event_name,
+            ),
+        };
+    }
 };
 
 /// Interface for bridging to a more complex processor.
@@ -69,6 +89,13 @@ pub const BridgeLogProcessor = struct {
     shutdownFn: *const fn (processor_ptr: *anyopaque, timeout_ms: ?u64) ProcessResult,
     deinitFn: *const fn (processor_ptr: *anyopaque) void,
     destroyFn: *const fn (processor_ptr: *anyopaque) void,
+    enabledFn: *const fn (
+        processor_ptr: *anyopaque,
+        ctx: Context,
+        scope: otel_api.common.InstrumentationScope,
+        severity: ?otel_api.logs.Severity,
+        event_name: ?[]const u8,
+    ) bool,
 
     pub fn init(ptr: anytype) BridgeLogProcessor {
         const T = @TypeOf(ptr);
@@ -95,6 +122,21 @@ pub const BridgeLogProcessor = struct {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.destroy(self);
             }
+            pub fn enabled(
+                pointer: *anyopaque,
+                ctx: Context,
+                scope: otel_api.common.InstrumentationScope,
+                severity: ?otel_api.logs.Severity,
+                event_name: ?[]const u8,
+            ) bool {
+                const self: T = @ptrCast(@alignCast(pointer));
+
+                if (@hasDecl(ptr_info.pointer.child, "enabled")) {
+                    return ptr_info.pointer.child.enabled(self, ctx, scope, severity, event_name);
+                } else {
+                    return true;
+                }
+            }
         };
 
         return .{
@@ -104,6 +146,7 @@ pub const BridgeLogProcessor = struct {
             .shutdownFn = VTable.shutdown,
             .deinitFn = VTable.deinit,
             .destroyFn = VTable.destroy,
+            .enabledFn = VTable.enabled,
         };
     }
 };

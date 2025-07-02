@@ -76,8 +76,8 @@ pub const OtlpLogExporter = struct {
     is_shutdown: bool,
     mutex: std.Thread.Mutex,
 
-    pub fn _init(config: OtlpExporterConfig, allocator: std.mem.Allocator) !OtlpLogExporter {
-        return init(allocator, config);
+    pub fn _init(self: *OtlpLogExporter, config: OtlpExporterConfig, allocator: std.mem.Allocator) !void {
+        self.* = init(allocator, config);
     }
 
     pub fn init(allocator: std.mem.Allocator, config: OtlpExporterConfig) OtlpLogExporter {

@@ -35,8 +35,8 @@ pub const BasicMetricProcessor = struct {
         _initFn,
         setExporter,
     );
-    pub fn _initFn(_: void, allocator: std.mem.Allocator) !BasicMetricProcessor {
-        return init(allocator, null);
+    pub fn _initFn(self: *BasicMetricProcessor, _: void, allocator: std.mem.Allocator) !void {
+        self.* = init(allocator, null);
     }
 
     allocator: std.mem.Allocator,

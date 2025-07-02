@@ -44,8 +44,8 @@ pub const BasicSpanProcessor = struct {
         _initFn,
         setExporter,
     );
-    pub fn _initFn(_: void, allocator: std.mem.Allocator) !BasicSpanProcessor {
-        return init(allocator, null);
+    pub fn _initFn(self: *BasicSpanProcessor, _: void, allocator: std.mem.Allocator) !void {
+        self.* = init(allocator, null);
     }
 
     allocator: std.mem.Allocator,

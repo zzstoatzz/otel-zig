@@ -872,6 +872,11 @@ fn StandardCounter(comptime T: type) type {
             defer self.mutex.unlock();
             return self.aggregation.getStartTime();
         }
+
+        pub fn enabled(self: *@This()) bool {
+            _ = self;
+            return true;
+        }
     };
 }
 
@@ -966,6 +971,11 @@ fn StandardUpDownCounter(comptime T: type) type {
             defer self.mutex.unlock();
             return self.aggregation.getStartTime();
         }
+
+        pub fn enabled(self: *@This()) bool {
+            _ = self;
+            return true;
+        }
     };
 }
 
@@ -1053,6 +1063,11 @@ fn StandardGauge(comptime T: type) type {
             self.mutex.lock();
             defer self.mutex.unlock();
             self.aggregation.reset();
+        }
+
+        pub fn enabled(self: *@This()) bool {
+            _ = self;
+            return true;
         }
     };
 }
@@ -1180,6 +1195,11 @@ fn StandardHistogram(comptime T: type) type {
             self.mutex.lock();
             defer self.mutex.unlock();
             self.aggregation.reset();
+        }
+
+        pub fn enabled(self: *@This()) bool {
+            _ = self;
+            return true;
         }
     };
 }

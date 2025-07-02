@@ -21,11 +21,7 @@ pub fn PipelineBuilder(comptime ProviderT: type) type {
                 .provider => |provider| {
                     const LinkType = @TypeOf(link);
 
-                    const processor_raw = provider.allocator.create(LinkType.ConcreteType) catch |e| return .{ .invalid = e };
-                    processor_raw.* = link.make(provider.allocator) catch |e| {
-                        provider.allocator.destroy(processor_raw);
-                        return .{ .invalid = e };
-                    };
+                    const processor_raw = link.make(provider.allocator) catch |e| return .{ .invalid = e };
                     const processor_interface = LinkType.convertFn(processor_raw);
 
                     provider.registerProcessor(processor_interface) catch |e| {
@@ -55,8 +51,8 @@ pub fn PipelineBuilder(comptime ProviderT: type) type {
 /// InterfaceT is is the SDK interface the type implements (what the user of the pipeline will interact with)
 /// ContextT is the type passed as context for the initFunc closure.
 /// convertFunc must have the signature `fn(*ConcreteT) InterfaceT`
-/// initFunc must have the signature `fn (ContextT, allocator) !ConcreteT`
-/// connectFunc must have the signature `fn (HeadT.ConcreteType, TailT.InterfaceType) !void`
+/// initFunc must have the signature `fn (*ConcreteT, ContextT, allocator) !void`
+/// connectFunc must have the signature `fn (*ConcreteT, TailT.InterfaceType) !void`
 pub fn PipelineStepInstructions(
     comptime ConcreteT: type,
     comptime InterfaceT: type,
@@ -80,10 +76,16 @@ pub fn PipelineStepInstructions(
             return .{ .context = ctx };
         }
 
-        pub fn make(self: Self, allocator: std.mem.Allocator) !ConcreteType {
-            const head = try initFn(self.context, allocator);
-            errdefer if (@hasDecl(ConcreteType, "deinit")) head.deinit() else {};
-            return head;
+        pub fn make(self: Self, allocator: std.mem.Allocator) !*ConcreteType {
+            const head_ptr = try allocator.create(ConcreteType);
+            errdefer allocator.destroy(head_ptr);
+            try initFn(head_ptr, self.context, allocator);
+            errdefer if (@hasDecl(ConcreteType, "deinit")) head_ptr.deinit() else {};
+            return head_ptr;
+        }
+
+        pub fn make_internal(self: Self, ptr: *ConcreteType, allocator: std.mem.Allocator) !void {
+            try initFn(ptr, self.context, allocator);
         }
 
         pub fn flowTo(self: Self, next_step: anytype) PipelineStepLink(Self, @TypeOf(next_step), Self.connectFn) {
@@ -105,6 +107,10 @@ pub fn PipelineStepLink(comptime HeadT: type, comptime TailT: type, comptime con
         head_step: Head,
         tail_step: Tail,
 
+        pub fn make_internal(self: Self, ptr: *Head.ConcreteType, allocator: std.mem.Allocator) !void {
+            try self.head_step.make_internal(ptr, allocator);
+        }
+
         pub fn init(head_step: Head, tail_step: Tail) Self {
             return .{
                 .head_step = head_step,
@@ -112,16 +118,18 @@ pub fn PipelineStepLink(comptime HeadT: type, comptime TailT: type, comptime con
             };
         }
 
-        pub fn make(self: Self, allocator: std.mem.Allocator) !Head.ConcreteType {
+        pub fn make(self: Self, allocator: std.mem.Allocator) !*Head.ConcreteType {
             const tail_raw = try allocator.create(Tail.ConcreteType);
             errdefer allocator.destroy(tail_raw);
-            tail_raw.* = try self.tail_step.make(allocator);
+            try self.tail_step.make_internal(tail_raw, allocator);
             errdefer if (@hasDecl(Tail.ConcreteType, "deinit")) tail_raw.deinit() else {};
             const tail_interface = Tail.convertFn(tail_raw);
 
-            var head_raw = try self.head_step.make(allocator);
-            errdefer if (@hasDecl(Tail.ConcreteType, "deinit")) tail_raw.deinit() else {};
-            try connectFunc(&head_raw, tail_interface);
+            const head_raw = try allocator.create(Head.ConcreteType);
+            errdefer allocator.destroy(head_raw);
+            try self.head_step.make_internal(head_raw, allocator);
+            errdefer if (@hasDecl(Head.ConcreteType, "deinit")) head_raw.deinit() else {};
+            try connectFunc(head_raw, tail_interface);
 
             return head_raw;
         }

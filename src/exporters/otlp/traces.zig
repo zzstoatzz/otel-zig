@@ -98,8 +98,8 @@ pub const OtlpTraceExporter = struct {
         otel_sdk.common.PipelineDeinitConnection,
     );
 
-    pub fn _init(config: OtlpExporterConfig, allocator: std.mem.Allocator) !OtlpTraceExporter {
-        return init(allocator, config);
+    pub fn _init(self: *OtlpTraceExporter, config: OtlpExporterConfig, allocator: std.mem.Allocator) !void {
+        self.* = init(allocator, config);
     }
 
     config: OtlpExporterConfig,

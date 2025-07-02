@@ -112,7 +112,99 @@ Every logger/meter/tracer has an associated `InstrumentationScope` that identifi
 - `AttributeKeyValue`: Key-value pairs for metadata
 - `AttributeBuilder`: Functional-style builder for attribute collections
 
-Prefer to use `[]AttributeKeyValue` rather than using an ArrayList.
+```zig
+// AttributeValue variants - note the field names:
+const attr_value = AttributeValue{
+    .bool = true,           // Boolean values
+    .int = 42,              // NOT .int_value - common mistake
+    .float = 3.14,          // IEEE 754 double
+    .string = "hello",      // Non-owning slice
+    .bool_array = &[_]bool{true, false},
+    .int_array = &[_]i64{1, 2, 3},
+    .float_array = &[_]f64{1.1, 2.2},
+    .string_array = &[_][]const u8{"a", "b"},
+};
+
+// Creating attributes for spans/logs/metrics:
+const attributes = &[_]AttributeKeyValue{
+    .{ .key = "service.name", .value = .{ .string = "my-service" } },
+    .{ .key = "http.status_code", .value = .{ .int = 200 } },
+    .{ .key = "request.timeout", .value = .{ .float = 30.0 } },
+    .{ .key = "feature.enabled", .value = .{ .bool = true } },
+};
+```
+
+**Memory Management**: AttributeValue is non-owning by default. Use `initOwned()` methods when you need to clone string data.
+
+**AttributeBuilder Usage**: For building owned `[]AttributeKeyValue` collections, use `AttributeBuilder`:
+
+```zig
+// AttributeBuilder creates owned attribute collections
+const owned_attrs = try otel_api.common.AttributeBuilder.init(allocator_for_temp_objects)
+    .add("service.name", .{ .string = "my-service" })
+    .addInt("http.status_code", 200)
+    .addFloat("request.timeout", 30.0)
+    .addBool("feature.enabled", true)
+    .finish(allocator_for_owned_slice_attribute_key_value);
+defer otel_api.common.AttributeKeyValue.deinitOwnedSlice(allocator_for_owned_slice_attribute_key_value, owned_attrs);
+```
+
+**Key Benefits**:
+- **Functional style**: Method chaining for clean code
+- **Type-safe helpers**: `addString()`, `addInt()`, `addFloat()`, `addBool()` methods
+- **Deduplication**: Last-wins strategy for duplicate keys
+- **Owned memory**: Creates deep copies of all keys and string values
+- **Error recovery**: Invalid builders return empty arrays in release mode
+
+Prefer to use `[]AttributeKeyValue` rather than using an ArrayList. Use `AttributeBuilder` when you need owned attribute collections. Prefer the stack based array for un-owned or temporary collections.
+
+### Pipeline System
+The SDK uses a pipeline architecture for connecting processors and exporters with proper memory ownership.
+
+```zig
+// Pipeline Template Structure:
+pub const PipelineStep = PipelineStepInstructions(
+    ConcreteType,         // Your implementation (e.g., MyExporter, can often be `@This()`)
+    InterfaceType,        // Union interface (e.g., SpanExporter)
+    ConfigType,           // Configuration struct (use void if none)
+    convertFunction,      // Converts concrete to interface
+    initFunction,         // Initializes the concrete type
+    connectFunction,      // Handles connection/cleanup
+);
+```
+
+**Memory Ownership Chain**: Provider → Processor → Exporter
+- Provider owns processors, **must** call `processor.deinit()` and `processor.destroy()` in its `deinit()`
+- Processor owns exporter, **must** call `exporter.deinit()` and `exporter.destroy()` in its `deinit()`
+- Each component cleans up what it was connected to via `.flowTo()`
+
+**Custom Exporter Pattern**:
+```zig
+const MyExporter = struct {
+    pub const PipelineStep = PipelineStepInstructions(
+        MyExporter, SpanExporter, MyConfig,
+        spanExporter, _init, PipelineDeinitConnection
+    );
+
+    pub fn _init(self: *MyExporter, config: MyConfig, allocator: Allocator) !void {
+        self.* = init(allocator, config);
+    }
+
+    pub fn spanExporter(self: *MyExporter) SpanExporter {
+        return SpanExporter{ .bridge = BridgeSpanExporter.init(self) };
+    }
+
+    // Standard exporter methods required:
+    pub fn exportSpans(...) ExportResult { ... }
+    pub fn forceFlush(...) ExportResult { ... }
+    pub fn shutdown(...) ExportResult { ... }
+    pub fn deinit(self: *MyExporter) void { ... }
+    pub fn destroy(self: *MyExporter) void { self.allocator.destroy(self); }
+};
+
+// Usage:
+.{ProcessorStep.init(config).flowTo(MyExporter.PipelineStep.init(my_config))}
+```
 
 ### Global Provider Registry
 Thread-safe global provider management through `provider_registry.zig` with mutex-protected storage.

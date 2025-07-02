@@ -452,6 +452,22 @@ pub fn build(b: *std.Build) void {
     const span_links_demo_step = b.step("example-span-links-demo", "Run span links demo example");
     span_links_demo_step.dependOn(&run_span_links_demo.step);
 
+    // Force Flush Test Example
+    const force_flush_test_example = b.addExecutable(.{
+        .name = "test_force_flush",
+        .root_source_file = b.path("examples/test_force_flush.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    force_flush_test_example.root_module.addImport("otel-api", otel_api_mod);
+    force_flush_test_example.root_module.addImport("otel-sdk", otel_sdk_mod);
+    force_flush_test_example.root_module.addImport("otel-exporters", otel_exporters_mod);
+    b.installArtifact(force_flush_test_example);
+
+    const run_force_flush_test = b.addRunArtifact(force_flush_test_example);
+    const force_flush_test_step = b.step("example-force-flush-test", "Run force flush test example");
+    force_flush_test_step.dependOn(&run_force_flush_test.step);
+
     // All examples step
     const examples_step = b.step("examples", "Run all examples");
     examples_step.dependOn(&run_dns_query.step);
@@ -469,6 +485,7 @@ pub fn build(b: *std.Build) void {
     examples_step.dependOn(&run_span_links_demo.step);
     examples_step.dependOn(&run_error_handling_demo.step);
     examples_step.dependOn(&run_validation_test.step);
+    examples_step.dependOn(&run_force_flush_test.step);
 
     // Debug Hang Test
     const debug_hang_exe = b.addExecutable(.{

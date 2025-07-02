@@ -220,6 +220,11 @@ This document tracks the remaining work for the OpenTelemetry Zig implementation
 - Baggage API Specification: "Each name in Baggage MUST be associated with exactly one value."
 </text>
 
+### 9.2 - Pipeline architecture improvements
+
+[X] **Pipeline Architecture Enhancement**: Modify the pipeline system to use stable pointers instead of move semantics
+[X] **Enhanced forceFlush**: Consider adding immediate collection back with proper synchronization
+[ ] **Background Thread Management**: Explore more sophisticated thread lifecycle management patterns
 
 ### Phase 10 - Documentation & Polish
 - [ ] Comprehensive trace API documentation
@@ -249,7 +254,7 @@ This document tracks the remaining work for the OpenTelemetry Zig implementation
 
   ### Phase 9.2 - Enhanced Input Validation
 
-  #### **9.2.1 Link Validation** 
+  #### **9.2.1 Link Validation**
   - [ ] **Add**: Link validation in `startSpan` for `SpanStartOptions.links`
     - Validate `Link.span_context` is valid (non-zero trace_id/span_id)
     - Validate `Link.attributes` using same pattern as other attribute validation

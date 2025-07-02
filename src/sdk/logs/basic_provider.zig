@@ -267,14 +267,29 @@ const BasicLogger = struct {
     }
 
     pub inline fn enabled(self: *const BasicLogger, ctx: Context, severity: Severity) bool {
-        _ = ctx;
-
         if (self.is_shutdown.load(.unordered)) {
             return false;
         }
 
         // Compare severity levels for filtering
-        return @intFromEnum(severity) >= @intFromEnum(self.min_severity);
+        if (@intFromEnum(severity) < @intFromEnum(self.min_severity)) {
+            return false;
+        }
+
+        // Check if there are any processors (spec requirement)
+        if (self.provider.processors.items.len == 0) {
+            return false;
+        }
+
+        // Check processors per spec: only return false if ALL processors return false
+        for (self.provider.processors.items) |processor| {
+            if (processor.enabled(ctx, self.scope, severity, null)) {
+                return true; // At least one processor wants this record
+            }
+        }
+
+        // All processors returned false
+        return false;
     }
 
     pub inline fn enabledWithEvent(
@@ -283,8 +298,29 @@ const BasicLogger = struct {
         severity: Severity,
         event_name: []const u8,
     ) bool {
-        _ = event_name;
-        return self.enabled(ctx, severity);
+        if (self.is_shutdown.load(.unordered)) {
+            return false;
+        }
+
+        // Compare severity levels for filtering
+        if (@intFromEnum(severity) < @intFromEnum(self.min_severity)) {
+            return false;
+        }
+
+        // Check if there are any processors (spec requirement)
+        if (self.provider.processors.items.len == 0) {
+            return false;
+        }
+
+        // Check processors per spec: only return false if ALL processors return false
+        for (self.provider.processors.items) |processor| {
+            if (processor.enabled(ctx, self.scope, severity, event_name)) {
+                return true; // At least one processor wants this record
+            }
+        }
+
+        // All processors returned false
+        return false;
     }
 
     pub inline fn logger(self: *BasicLogger) Logger {
@@ -449,17 +485,65 @@ test "BasicLogger severity filtering" {
     var provider = BasicLoggerProvider.init(allocator, resource);
     defer provider.deinit();
 
+    // Add a processor so enabled() can return true per spec
+    const mock_exporter = try allocator.create(MockLogExporter);
+    mock_exporter.* = MockLogExporter.init(allocator);
+
+    const processor = try allocator.create(BasicLogProcessor);
+    processor.* = BasicLogProcessor.init(allocator, mock_exporter.logExporter());
+
+    try provider.registerProcessor(processor.logProcessor());
+
     const scope = try InstrumentationScope.initSimple("test.logger", "1.0.0");
     var logger = try provider.getLoggerWithScope(scope);
     const ctx = Context.init(allocator);
 
-    // Test enabled() method - current implementation has min_severity = .invalid
-    // so all severities should be enabled
+    // Test enabled() method - with processor registered, all severities should be enabled
+    // since min_severity = .invalid allows all severities through
     try testing.expect(logger.enabled(ctx, .@"error"));
     try testing.expect(logger.enabled(ctx, .warn));
     try testing.expect(logger.enabled(ctx, .info));
     try testing.expect(logger.enabled(ctx, .debug));
     try testing.expect(logger.enabled(ctx, .trace));
+}
+
+test "BasicLogger processor enabled() integration" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const resource = try ResourceBuilder.init(allocator)
+        .withDefaults()
+        .finish(allocator);
+
+    var provider = BasicLoggerProvider.init(allocator, resource);
+    defer provider.deinit();
+
+    const scope = try InstrumentationScope.initSimple("test.logger", "1.0.0");
+    var logger = try provider.getLoggerWithScope(scope);
+    const ctx = Context.init(allocator);
+
+    // Test 1: No processors - should return false per spec
+    try testing.expect(!logger.enabled(ctx, .info));
+    try testing.expect(!logger.enabledWithEvent(ctx, .info, "test.event"));
+
+    // Test 2: Add processor without enabled() method - should return true (default behavior)
+    const mock_exporter = try allocator.create(MockLogExporter);
+    mock_exporter.* = MockLogExporter.init(allocator);
+
+    const basic_processor = try allocator.create(BasicLogProcessor);
+    basic_processor.* = BasicLogProcessor.init(allocator, mock_exporter.logExporter());
+
+    try provider.registerProcessor(basic_processor.logProcessor());
+
+    // Now enabled() should return true since BasicLogProcessor doesn't implement enabled()
+    // and gets the default "true" behavior
+    try testing.expect(logger.enabled(ctx, .info));
+    try testing.expect(logger.enabledWithEvent(ctx, .info, "test.event"));
+
+    // Test 3: Verify severity filtering still works
+    // Since min_severity = .invalid (0), all severities should be enabled
+    try testing.expect(logger.enabled(ctx, .@"error"));
+    try testing.expect(logger.enabled(ctx, .trace)); // All severities >= .invalid (0)
 }
 
 test "BasicLogger shutdown behavior" {

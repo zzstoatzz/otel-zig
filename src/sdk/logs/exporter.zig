@@ -123,8 +123,8 @@ pub const MockLogExporter = struct {
     );
     const Self = @This();
 
-    pub fn _init(_: void, allocator: std.mem.Allocator) !Self {
-        return init(allocator);
+    pub fn _init(self: *Self, _: void, allocator: std.mem.Allocator) !void {
+        self.* = init(allocator);
     }
 
     allocator: std.mem.Allocator,

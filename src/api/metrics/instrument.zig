@@ -47,6 +47,14 @@ pub fn Counter(comptime T: type) type {
         pub inline fn addSimple(self: *@This(), ctx: Context, value: T) void {
             self.add(ctx, value, &[_]AttributeKeyValue{});
         }
+
+        /// Check if this instrument is enabled for recording measurements
+        pub inline fn enabled(self: *const @This()) bool {
+            return switch (self.*) {
+                .noop => false,
+                .bridge => |bridge| bridge.enabledFn(bridge.instrument_ptr),
+            };
+        }
     };
 }
 
@@ -82,6 +90,14 @@ pub fn UpDownCounter(comptime T: type) type {
         /// Convenience method to add without attributes
         pub inline fn addSimple(self: *@This(), ctx: Context, value: T) void {
             self.add(ctx, value, &[_]AttributeKeyValue{});
+        }
+
+        /// Check if this instrument is enabled for recording measurements
+        pub inline fn enabled(self: *const @This()) bool {
+            return switch (self.*) {
+                .noop => false,
+                .bridge => |bridge| bridge.enabledFn(bridge.instrument_ptr),
+            };
         }
     };
 }
@@ -119,6 +135,14 @@ pub fn Gauge(comptime T: type) type {
         pub inline fn recordSimple(self: *@This(), ctx: Context, value: T) void {
             self.record(ctx, value, &[_]AttributeKeyValue{});
         }
+
+        /// Check if this instrument is enabled for recording measurements
+        pub inline fn enabled(self: *const @This()) bool {
+            return switch (self.*) {
+                .noop => false,
+                .bridge => |bridge| bridge.enabledFn(bridge.instrument_ptr),
+            };
+        }
     };
 }
 
@@ -155,6 +179,14 @@ pub fn Histogram(comptime T: type) type {
         pub inline fn recordSimple(self: *@This(), ctx: Context, value: T) void {
             self.record(ctx, value, &[_]AttributeKeyValue{});
         }
+
+        /// Check if this instrument is enabled for recording measurements
+        pub inline fn enabled(self: *const @This()) bool {
+            return switch (self.*) {
+                .noop => false,
+                .bridge => |bridge| bridge.enabledFn(bridge.instrument_ptr),
+            };
+        }
     };
 }
 
@@ -167,6 +199,7 @@ pub const InstrumentBridge = struct {
     addF64Fn: *const fn (instrument_ptr: *anyopaque, ctx: Context, value: f64, attributes: []const AttributeKeyValue) void,
     recordI64Fn: *const fn (instrument_ptr: *anyopaque, ctx: Context, value: i64, attributes: []const AttributeKeyValue) void,
     recordF64Fn: *const fn (instrument_ptr: *anyopaque, ctx: Context, value: f64, attributes: []const AttributeKeyValue) void,
+    enabledFn: *const fn (instrument_ptr: *anyopaque) bool,
 
     pub fn init(ptr: anytype) InstrumentBridge {
         const T = @TypeOf(ptr);
@@ -193,6 +226,10 @@ pub const InstrumentBridge = struct {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.recordF64(self, ctx, value, attributes);
             }
+            pub fn enabled(pointer: *anyopaque) bool {
+                const self: T = @ptrCast(@alignCast(pointer));
+                return ptr_info.pointer.child.enabled(self);
+            }
         };
 
         return .{
@@ -202,6 +239,37 @@ pub const InstrumentBridge = struct {
             .addF64Fn = VTable.addF64,
             .recordI64Fn = VTable.recordI64,
             .recordF64Fn = VTable.recordF64,
+            .enabledFn = VTable.enabled,
         };
     }
 };
+
+test "instrument enabled method" {
+    const testing = std.testing;
+
+    // Test noop Counter returns false
+    var noop_counter = Counter(i64){ .noop = "test" };
+    try testing.expect(!noop_counter.enabled());
+
+    // Test noop UpDownCounter returns false
+    var noop_updown = UpDownCounter(i64){ .noop = "test" };
+    try testing.expect(!noop_updown.enabled());
+
+    // Test noop Gauge returns false
+    var noop_gauge = Gauge(i64){ .noop = "test" };
+    try testing.expect(!noop_gauge.enabled());
+
+    // Test noop Histogram returns false
+    var noop_histogram = Histogram(i64){ .noop = "test" };
+    try testing.expect(!noop_histogram.enabled());
+}
+
+test "instrument enabled method can be called multiple times" {
+    const testing = std.testing;
+
+    // Test that method can be called multiple times (spec requirement)
+    var noop_counter = Counter(i64){ .noop = "test" };
+    try testing.expect(!noop_counter.enabled());
+    try testing.expect(!noop_counter.enabled());
+    try testing.expect(!noop_counter.enabled());
+}

@@ -46,9 +46,9 @@ pub fn StreamLogExporter(comptime WriterType: type) type {
         );
         const Self = @This();
 
-        pub fn _init(config: StreamLogExporterConfig, allocator: std.mem.Allocator) !Self {
+        pub fn _init(self: *Self, config: StreamLogExporterConfig, allocator: std.mem.Allocator) !void {
             const file = std.io.getStdOut();
-            return init(allocator, config, file.writer());
+            self.* = init(allocator, config, file.writer());
         }
 
         allocator: std.mem.Allocator,

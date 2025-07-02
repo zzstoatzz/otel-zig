@@ -545,8 +545,8 @@ pub const ConsoleMetricExporter = struct {
     );
     const Self = @This();
 
-    pub fn _init(ctx: ConsoleExporterConfig, allocator: std.mem.Allocator) !Self {
-        return init(allocator, ctx);
+    pub fn _init(self: *Self, ctx: ConsoleExporterConfig, allocator: std.mem.Allocator) !void {
+        self.* = init(allocator, ctx);
     }
 
     config: ConsoleExporterConfig,

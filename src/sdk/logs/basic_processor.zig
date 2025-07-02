@@ -35,8 +35,8 @@ pub const BasicLogProcessor = struct {
         _initFn,
         setExporter,
     );
-    pub fn _initFn(_: void, allocator: std.mem.Allocator) !BasicLogProcessor {
-        return init(allocator, null);
+    pub fn _initFn(self: *BasicLogProcessor, _: void, allocator: std.mem.Allocator) !void {
+        self.* = init(allocator, null);
     }
 
     allocator: std.mem.Allocator,

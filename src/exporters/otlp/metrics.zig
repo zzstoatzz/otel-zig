@@ -29,8 +29,8 @@ pub const OtlpMetricExporter = struct {
     );
     const Self = @This();
 
-    pub fn _init(ctx: OtlpExporterConfig, allocator: std.mem.Allocator) !Self {
-        return init(allocator, ctx);
+    pub fn _init(self: *Self, ctx: OtlpExporterConfig, allocator: std.mem.Allocator) !void {
+        self.* = init(allocator, ctx);
     }
 
     config: OtlpExporterConfig,
