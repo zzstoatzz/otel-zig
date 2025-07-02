@@ -56,6 +56,12 @@ pub const TracerBridge = @import("tracer.zig").TracerBridge;
 pub const TracerProvider = @import("tracer_provider.zig").TracerProvider;
 pub const TracerProviderBridge = @import("tracer_provider.zig").TracerProviderBridge;
 
+// Validation functions for SDK use
+pub const validateAttributeKey = span.validateAttributeKey;
+pub const validateSpanName = span.validateSpanName;
+pub const validateAttributeValue = @import("tracer.zig").validateAttributeValue;
+pub const validateAttributes = @import("tracer.zig").validateAttributes;
+
 // Tests
 test "trace api module compilation" {
     std.testing.refAllDecls(@This());

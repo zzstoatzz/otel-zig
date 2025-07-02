@@ -60,16 +60,11 @@ pub const Meter = union(enum) {
             else => @compileError("Counters must be of type i64 or f64"),
         };
 
-        // Validate parameters in debug mode
-        const validated_name = validateInstrumentName(name);
-        const validated_description = validateInstrumentDescription(description);
-        const validated_unit = validateInstrumentUnit(unit);
-
         return switch (self.*) {
-            .noop => |_| Counter(T){ .noop = validated_name },
+            .noop => |_| Counter(T){ .noop = name },
             .bridge => |*bridge| switch (T) {
-                i64 => bridge.createCounterI64Fn(bridge.meter_ptr, validated_name, validated_description, validated_unit),
-                f64 => bridge.createCounterF64Fn(bridge.meter_ptr, validated_name, validated_description, validated_unit),
+                i64 => bridge.createCounterI64Fn(bridge.meter_ptr, name, description, unit),
+                f64 => bridge.createCounterF64Fn(bridge.meter_ptr, name, description, unit),
                 else => unreachable,
             },
         };
@@ -97,16 +92,11 @@ pub const Meter = union(enum) {
             else => @compileError("UpDownCounters must be of type i64 or f64"),
         };
 
-        // Validate parameters in debug mode
-        const validated_name = validateInstrumentName(name);
-        const validated_description = validateInstrumentDescription(description);
-        const validated_unit = validateInstrumentUnit(unit);
-
         return switch (self.*) {
-            .noop => |_| UpDownCounter(T){ .noop = validated_name },
+            .noop => |_| UpDownCounter(T){ .noop = name },
             .bridge => |*bridge| switch (T) {
-                i64 => bridge.createUpDownCounterI64Fn(bridge.meter_ptr, validated_name, validated_description, validated_unit),
-                f64 => bridge.createUpDownCounterF64Fn(bridge.meter_ptr, validated_name, validated_description, validated_unit),
+                i64 => bridge.createUpDownCounterI64Fn(bridge.meter_ptr, name, description, unit),
+                f64 => bridge.createUpDownCounterF64Fn(bridge.meter_ptr, name, description, unit),
                 else => unreachable,
             },
         };
@@ -134,16 +124,11 @@ pub const Meter = union(enum) {
             else => @compileError("Gauges must be of type i64 or f64"),
         };
 
-        // Validate parameters in debug mode
-        const validated_name = validateInstrumentName(name);
-        const validated_description = validateInstrumentDescription(description);
-        const validated_unit = validateInstrumentUnit(unit);
-
         return switch (self.*) {
-            .noop => |_| Gauge(T){ .noop = validated_name },
+            .noop => |_| Gauge(T){ .noop = name },
             .bridge => |*bridge| switch (T) {
-                i64 => bridge.createGaugeI64Fn(bridge.meter_ptr, validated_name, validated_description, validated_unit),
-                f64 => bridge.createGaugeF64Fn(bridge.meter_ptr, validated_name, validated_description, validated_unit),
+                i64 => bridge.createGaugeI64Fn(bridge.meter_ptr, name, description, unit),
+                f64 => bridge.createGaugeF64Fn(bridge.meter_ptr, name, description, unit),
                 else => unreachable,
             },
         };
@@ -171,16 +156,11 @@ pub const Meter = union(enum) {
             else => @compileError("Histograms must be of type i64 or f64"),
         };
 
-        // Validate parameters in debug mode
-        const validated_name = validateInstrumentName(name);
-        const validated_description = validateInstrumentDescription(description);
-        const validated_unit = validateInstrumentUnit(unit);
-
         return switch (self.*) {
-            .noop => |_| Histogram(T){ .noop = validated_name },
+            .noop => |_| Histogram(T){ .noop = name },
             .bridge => |*bridge| switch (T) {
-                i64 => bridge.createHistogramI64Fn(bridge.meter_ptr, validated_name, validated_description, validated_unit),
-                f64 => bridge.createHistogramF64Fn(bridge.meter_ptr, validated_name, validated_description, validated_unit),
+                i64 => bridge.createHistogramI64Fn(bridge.meter_ptr, name, description, unit),
+                f64 => bridge.createHistogramF64Fn(bridge.meter_ptr, name, description, unit),
                 else => unreachable,
             },
         };
@@ -188,7 +168,7 @@ pub const Meter = union(enum) {
 };
 
 /// Validate instrument name according to OpenTelemetry requirements
-fn validateInstrumentName(name: []const u8) []const u8 {
+pub fn validateInstrumentName(name: []const u8) []const u8 {
     if (!isValidatingMode()) return name;
 
     if (name.len == 0) {
@@ -208,7 +188,7 @@ fn validateInstrumentName(name: []const u8) []const u8 {
 }
 
 /// Validate instrument description for reasonable length
-fn validateInstrumentDescription(description: ?[]const u8) ?[]const u8 {
+pub fn validateInstrumentDescription(description: ?[]const u8) ?[]const u8 {
     if (!isValidatingMode()) return description;
 
     if (description) |desc| {
@@ -223,7 +203,7 @@ fn validateInstrumentDescription(description: ?[]const u8) ?[]const u8 {
 }
 
 /// Validate instrument unit format
-fn validateInstrumentUnit(unit: ?[]const u8) ?[]const u8 {
+pub fn validateInstrumentUnit(unit: ?[]const u8) ?[]const u8 {
     if (!isValidatingMode()) return unit;
 
     if (unit) |u| {

@@ -26,6 +26,13 @@ const trace_context = otel_api.trace.trace_context;
 const SpanProcessor = @import("processor.zig").SpanProcessor;
 const SpanLimits = otel_api.trace.SpanLimits;
 
+// Import validation functions from API layer
+const validateAttributeKey = otel_api.trace.validateAttributeKey;
+const validateSpanName = otel_api.trace.validateSpanName;
+const validateAttributeValue = otel_api.trace.validateAttributeValue;
+const validateAttributes = otel_api.trace.validateAttributes;
+const reportValidationError = otel_api.common.reportValidationError;
+
 /// Forward declaration of BasicTracerProvider
 const BasicTracerProvider = @import("basic_provider.zig").BasicTracerProvider;
 
@@ -67,8 +74,27 @@ pub const StandardTracer = struct {
         // Get options or use defaults
         const opts = options orelse SpanStartOptions.default;
 
+        // Validate span name in debug mode
+        if (!validateSpanName(name)) {
+            reportValidationError(.tracer, "startSpan", "Empty span name provided", null);
+            // Continue with empty name (spec allows it, but we report it in debug)
+        }
+
+        // Validate attributes if present
+        const validated_options = if (opts.attributes != null) blk: {
+            const validated_attrs = validateAttributes(opts.attributes.?);
+            break :blk SpanStartOptions{
+                .parent_context = opts.parent_context,
+                .kind = opts.kind,
+                .attributes = validated_attrs,
+                .links = opts.links,
+                .start_time_ns = opts.start_time_ns,
+                .record = opts.record,
+            };
+        } else opts;
+
         // Get timestamp
-        const start_time = opts.start_time_ns orelse getTimestamp();
+        const start_time = validated_options.start_time_ns orelse getTimestamp();
 
         // Extract parent context if present
         const parent_span_context = trace_context.getSpanContext(ctx);
@@ -88,10 +114,10 @@ pub const StandardTracer = struct {
         }
 
         // Extract links from options
-        const links = opts.links orelse &.{};
+        const links = validated_options.links orelse &.{};
 
         // Extract attributes from options
-        const attributes = opts.attributes orelse &.{};
+        const attributes = validated_options.attributes orelse &.{};
 
         // Create sample parameters for sampling decision
         const sample_params = SampleParams{

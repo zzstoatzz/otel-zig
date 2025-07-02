@@ -16,6 +16,13 @@ const FlushResult = otel_api.common.FlushResult;
 const Sampler = otel_api.trace.Sampler;
 const SpanLimits = otel_api.trace.SpanLimits;
 
+// Import validation functions from API layer
+const validateAttributeKey = otel_api.trace.validateAttributeKey;
+const validateSpanName = otel_api.trace.validateSpanName;
+const validateAttributeValue = otel_api.trace.validateAttributeValue;
+const validateAttributes = otel_api.trace.validateAttributes;
+const reportValidationError = otel_api.common.reportValidationError;
+
 const IdGenerator = @import("id_generator.zig").IdGenerator;
 const createDefaultIdGenerator = @import("id_generator.zig").createDefaultIdGenerator;
 const Resource = @import("../resource/resource.zig").Resource;

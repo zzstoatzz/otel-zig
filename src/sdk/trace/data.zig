@@ -20,6 +20,11 @@ const Context = otel_api.Context;
 const TraceId = otel_api.common.TraceId;
 const SpanId = otel_api.common.SpanId;
 
+// Import validation functions from API layer
+const validateAttributeKey = otel_api.trace.validateAttributeKey;
+const validateSpanName = otel_api.trace.validateSpanName;
+const reportValidationError = otel_api.common.reportValidationError;
+
 const Clock = @import("../common/clock.zig").Clock;
 const getTimestamp = @import("../common/clock.zig").getTimestamp;
 const SpanLimits = otel_api.trace.SpanLimits;
@@ -447,6 +452,12 @@ pub const RecordingSpan = struct {
     fn setAttribute(self: *RecordingSpan, key: []const u8, value: AttributeValue) !void {
         if (!self.is_recording) return;
 
+        // Validate parameters in debug mode
+        if (!validateAttributeKey(key)) {
+            reportValidationError(.tracer, "setAttribute", "Invalid attribute key provided", null);
+            return; // Skip invalid attribute
+        }
+
         try self.ensureAttributes();
 
         // Check if attribute already exists and update it
@@ -464,6 +475,19 @@ pub const RecordingSpan = struct {
     fn setAttributes(self: *RecordingSpan, attributes: []const AttributeKeyValue) !void {
         if (!self.is_recording) return;
 
+        // Validate attributes inline without creating filtered array
+        var invalid_count: usize = 0;
+        for (attributes) |attr| {
+            if (!validateAttributeKey(attr.key)) {
+                invalid_count += 1;
+            }
+        }
+
+        if (invalid_count > 0) {
+            reportValidationError(.tracer, "setAttributes", "Invalid attributes detected", null);
+            // Still pass all attributes - let SDK handle the filtering
+        }
+
         for (attributes) |attr| {
             try self.setAttribute(attr.key, attr.value);
         }
@@ -475,6 +499,20 @@ pub const RecordingSpan = struct {
         // Validate event name
         if (event.name.len == 0) {
             return OpenTelemetryError.InvalidEventName;
+        }
+
+        // Validate event attributes if present
+        if (event.attributes != null) {
+            var invalid_count: usize = 0;
+            for (event.attributes.?) |attr| {
+                if (!validateAttributeKey(attr.key)) {
+                    invalid_count += 1;
+                }
+            }
+
+            if (invalid_count > 0) {
+                reportValidationError(.tracer, "addEvent", "Invalid event attributes detected", null);
+            }
         }
 
         try self.ensureEvents();
@@ -515,6 +553,12 @@ pub const RecordingSpan = struct {
 
     fn updateName(self: *RecordingSpan, name: []const u8) !void {
         if (!self.is_recording) return;
+
+        // Validate span name in debug mode
+        if (!validateSpanName(name)) {
+            reportValidationError(.tracer, "updateName", "Empty span name provided", null);
+            // Continue with empty name (spec allows it, but we report it in debug)
+        }
 
         self.name = name;
     }
@@ -610,6 +654,20 @@ pub const RecordingSpan = struct {
 
     fn recordException(self: *RecordingSpan, exception: anyerror, attributes: ?[]const AttributeKeyValue, timestamp: ?i64) !void {
         if (!self.is_recording) return;
+
+        // Validate exception attributes if present
+        if (attributes != null) {
+            var invalid_count: usize = 0;
+            for (attributes.?) |attr| {
+                if (!validateAttributeKey(attr.key)) {
+                    invalid_count += 1;
+                }
+            }
+
+            if (invalid_count > 0) {
+                reportValidationError(.tracer, "recordException", "Invalid exception attributes detected", null);
+            }
+        }
 
         // Convert exception to event following OpenTelemetry semantic conventions
         const attrs_len = if (attributes) |attrs| attrs.len else 0;

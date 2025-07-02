@@ -66,25 +66,18 @@ pub const Logger = union(enum) {
         span_id: ?[8]u8,
         flags: ?u8,
     ) void {
-        // Validate parameters in debug mode
-        const validated_severity = validateSeverity(severity);
-        const validated_body = validateLogBody(body);
-        const validated_attributes = validateLogAttributes(attributes);
-        const validated_event_name = validateEventName(event_name);
-        const validated_severity_text = validateSeverityText(severity_text);
-
         switch (self.*) {
             .noop => |_| {},
             .bridge => |bridge| bridge.emitLogRecordFn(
                 bridge.logger_ptr,
                 ctx,
-                validated_severity,
-                validated_body,
-                validated_attributes,
+                severity,
+                body,
+                attributes,
                 timestamp_ns,
                 observed_timestamp_ns,
-                validated_event_name,
-                validated_severity_text,
+                event_name,
+                severity_text,
                 trace_id,
                 span_id,
                 flags,
@@ -271,14 +264,14 @@ pub const LoggerBridge = struct {
 };
 
 /// Validate severity level in debug mode
-fn validateSeverity(severity: ?Severity) ?Severity {
+pub fn validateSeverity(severity: ?Severity) ?Severity {
     if (!isValidatingMode()) return severity;
     // All Severity enum values are valid by Zig type system
     return severity;
 }
 
 /// Validate log message body in debug mode
-fn validateLogBody(body: ?AttributeValue) ?AttributeValue {
+pub fn validateLogBody(body: ?AttributeValue) ?AttributeValue {
     if (!isValidatingMode()) return body;
 
     if (body) |b| {
@@ -295,7 +288,7 @@ fn validateLogBody(body: ?AttributeValue) ?AttributeValue {
 }
 
 /// Validate log attributes using existing attribute validation
-fn validateLogAttributes(attributes: ?[]const AttributeKeyValue) ?[]const AttributeKeyValue {
+pub fn validateLogAttributes(attributes: ?[]const AttributeKeyValue) ?[]const AttributeKeyValue {
     if (!isValidatingMode()) return attributes;
 
     if (attributes) |attrs| {
@@ -305,7 +298,7 @@ fn validateLogAttributes(attributes: ?[]const AttributeKeyValue) ?[]const Attrib
 }
 
 /// Validate event name in debug mode
-fn validateEventName(event_name: ?[]const u8) ?[]const u8 {
+pub fn validateEventName(event_name: ?[]const u8) ?[]const u8 {
     if (!isValidatingMode()) return event_name;
 
     if (event_name) |name| {
@@ -317,7 +310,7 @@ fn validateEventName(event_name: ?[]const u8) ?[]const u8 {
 }
 
 /// Validate severity text in debug mode
-fn validateSeverityText(severity_text: ?[]const u8) ?[]const u8 {
+pub fn validateSeverityText(severity_text: ?[]const u8) ?[]const u8 {
     if (!isValidatingMode()) return severity_text;
 
     if (severity_text) |text| {
@@ -329,13 +322,13 @@ fn validateSeverityText(severity_text: ?[]const u8) ?[]const u8 {
 }
 
 /// Validate format string in debug mode
-fn validateFormatString(comptime fmt: []const u8) bool {
+pub fn validateFormatString(comptime fmt: []const u8) bool {
     if (!isValidatingMode()) return true;
     return fmt.len > 0;
 }
 
 /// Validate attributes and report errors in debug mode (reuse from tracer)
-fn validateAttributes(attributes: []const AttributeKeyValue) []const AttributeKeyValue {
+pub fn validateAttributes(attributes: []const AttributeKeyValue) []const AttributeKeyValue {
     if (!isValidatingMode()) return attributes;
 
     // Count invalid attributes

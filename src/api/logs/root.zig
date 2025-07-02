@@ -31,6 +31,15 @@ const logger_zig = @import("logger.zig");
 pub const Logger = logger_zig.Logger;
 pub const LoggerBridge = logger_zig.LoggerBridge;
 
+// Validation functions for SDK use
+pub const validateSeverity = logger_zig.validateSeverity;
+pub const validateLogBody = logger_zig.validateLogBody;
+pub const validateLogAttributes = logger_zig.validateLogAttributes;
+pub const validateEventName = logger_zig.validateEventName;
+pub const validateSeverityText = logger_zig.validateSeverityText;
+pub const validateFormatString = logger_zig.validateFormatString;
+pub const validateAttributes = logger_zig.validateAttributes;
+
 // Logger provider types
 const logger_provider_zig = @import("logger_provider.zig");
 pub const LoggerProvider = logger_provider_zig.LoggerProvider;

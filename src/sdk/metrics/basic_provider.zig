@@ -14,6 +14,11 @@ const AttributeKeyValue = otel_api.common.AttributeKeyValue;
 const FlushResult = otel_api.common.FlushResult;
 const Context = otel_api.Context;
 
+// Import validation functions from API layer
+const validateInstrumentName = otel_api.metrics.validateInstrumentName;
+const validateInstrumentDescription = otel_api.metrics.validateInstrumentDescription;
+const validateInstrumentUnit = otel_api.metrics.validateInstrumentUnit;
+
 const PipelineBuilder = @import("../common/pipeline.zig").PipelineBuilder;
 const Resource = @import("../resource/resource.zig").Resource;
 const MetricData = @import("data.zig").MetricData;
@@ -270,13 +275,18 @@ pub const BasicMeter = struct {
             return otel_api.metrics.Counter(i64){ .noop = name };
         }
 
+        // Validate parameters in debug mode
+        const validated_name = validateInstrumentName(name);
+        const validated_description = validateInstrumentDescription(description);
+        const validated_unit = validateInstrumentUnit(unit);
+
         const counter = try self.allocator.create(StandardCounter(i64));
         errdefer self.allocator.destroy(counter);
 
         counter.* = try StandardCounter(i64).init(
-            name,
-            description,
-            unit,
+            validated_name,
+            validated_description,
+            validated_unit,
             self,
         );
         errdefer counter.deinit();
@@ -298,13 +308,18 @@ pub const BasicMeter = struct {
             return otel_api.metrics.Counter(f64){ .noop = name };
         }
 
+        // Validate parameters in debug mode
+        const validated_name = validateInstrumentName(name);
+        const validated_description = validateInstrumentDescription(description);
+        const validated_unit = validateInstrumentUnit(unit);
+
         const counter = try self.allocator.create(StandardCounter(f64));
         errdefer self.allocator.destroy(counter);
 
         counter.* = try StandardCounter(f64).init(
-            name,
-            description,
-            unit,
+            validated_name,
+            validated_description,
+            validated_unit,
             self,
         );
         errdefer counter.deinit();
@@ -326,13 +341,18 @@ pub const BasicMeter = struct {
             return otel_api.metrics.UpDownCounter(i64){ .noop = name };
         }
 
+        // Validate parameters in debug mode
+        const validated_name = validateInstrumentName(name);
+        const validated_description = validateInstrumentDescription(description);
+        const validated_unit = validateInstrumentUnit(unit);
+
         const counter = try self.allocator.create(StandardUpDownCounter(i64));
         errdefer self.allocator.destroy(counter);
 
         counter.* = try StandardUpDownCounter(i64).init(
-            name,
-            description,
-            unit,
+            validated_name,
+            validated_description,
+            validated_unit,
             self,
         );
         errdefer counter.deinit();
@@ -354,13 +374,18 @@ pub const BasicMeter = struct {
             return otel_api.metrics.UpDownCounter(f64){ .noop = name };
         }
 
+        // Validate parameters in debug mode
+        const validated_name = validateInstrumentName(name);
+        const validated_description = validateInstrumentDescription(description);
+        const validated_unit = validateInstrumentUnit(unit);
+
         const counter = try self.allocator.create(StandardUpDownCounter(f64));
         errdefer self.allocator.destroy(counter);
 
         counter.* = try StandardUpDownCounter(f64).init(
-            name,
-            description,
-            unit,
+            validated_name,
+            validated_description,
+            validated_unit,
             self,
         );
         errdefer counter.deinit();
@@ -382,13 +407,18 @@ pub const BasicMeter = struct {
             return otel_api.metrics.Gauge(i64){ .noop = name };
         }
 
+        // Validate parameters in debug mode
+        const validated_name = validateInstrumentName(name);
+        const validated_description = validateInstrumentDescription(description);
+        const validated_unit = validateInstrumentUnit(unit);
+
         const counter = try self.allocator.create(StandardGauge(i64));
         errdefer self.allocator.destroy(counter);
 
         counter.* = try StandardGauge(i64).init(
-            name,
-            description,
-            unit,
+            validated_name,
+            validated_description,
+            validated_unit,
             self,
         );
         errdefer counter.deinit();
@@ -410,13 +440,18 @@ pub const BasicMeter = struct {
             return otel_api.metrics.Gauge(f64){ .noop = name };
         }
 
+        // Validate parameters in debug mode
+        const validated_name = validateInstrumentName(name);
+        const validated_description = validateInstrumentDescription(description);
+        const validated_unit = validateInstrumentUnit(unit);
+
         const counter = try self.allocator.create(StandardGauge(f64));
         errdefer self.allocator.destroy(counter);
 
         counter.* = try StandardGauge(f64).init(
-            name,
-            description,
-            unit,
+            validated_name,
+            validated_description,
+            validated_unit,
             self,
         );
         errdefer counter.deinit();
@@ -438,14 +473,19 @@ pub const BasicMeter = struct {
             return otel_api.metrics.Histogram(i64){ .noop = name };
         }
 
+        // Validate parameters in debug mode
+        const validated_name = validateInstrumentName(name);
+        const validated_description = validateInstrumentDescription(description);
+        const validated_unit = validateInstrumentUnit(unit);
+
         const histogram = try self.allocator.create(StandardHistogram(i64));
         errdefer self.allocator.destroy(histogram);
 
         histogram.* = try StandardHistogram(i64).init(
             self.allocator,
-            name,
-            description,
-            unit,
+            validated_name,
+            validated_description,
+            validated_unit,
             self,
             .{}, // Use default config
         );
@@ -468,14 +508,19 @@ pub const BasicMeter = struct {
             return otel_api.metrics.Histogram(f64){ .noop = name };
         }
 
+        // Validate parameters in debug mode
+        const validated_name = validateInstrumentName(name);
+        const validated_description = validateInstrumentDescription(description);
+        const validated_unit = validateInstrumentUnit(unit);
+
         const histogram = try self.allocator.create(StandardHistogram(f64));
         errdefer self.allocator.destroy(histogram);
 
         histogram.* = try StandardHistogram(f64).init(
             self.allocator,
-            name,
-            description,
-            unit,
+            validated_name,
+            validated_description,
+            validated_unit,
             self,
             .{}, // Use default config
         );

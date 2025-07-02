@@ -78,28 +78,9 @@ pub const Tracer = union(enum) {
         options: SpanStartOptions,
         ctx: Context,
     ) !Span {
-        // Validate span name
-        if (!validateSpanName(name)) {
-            reportValidationError(.tracer, "startSpan", "Empty span name provided", null);
-            // Continue with empty name (spec allows it, but we report it in debug)
-        }
-
-        // Validate attributes
-        const safe_options = if (options.attributes != null) blk: {
-            const validated_attrs = validateAttributes(options.attributes.?);
-            break :blk SpanStartOptions{
-                .parent_context = options.parent_context,
-                .kind = options.kind,
-                .attributes = validated_attrs,
-                .links = options.links, // TODO: validate links in Phase 9
-                .start_time_ns = options.start_time_ns,
-                .record = options.record,
-            };
-        } else options;
-
         return switch (self.*) {
             .noop => Span{ .noop = SpanContext.invalid },
-            .bridge => |bridge| try bridge.startSpanFn(bridge.tracer_ptr, name, safe_options, ctx),
+            .bridge => |*bridge| try bridge.startSpanFn(bridge.tracer_ptr, name, options, ctx),
         };
     }
 
@@ -160,7 +141,7 @@ pub const TracerBridge = struct {
 };
 
 /// Validate that an attribute key meets OpenTelemetry requirements
-fn validateAttributeKey(key: []const u8) bool {
+pub fn validateAttributeKey(key: []const u8) bool {
     if (!isValidatingMode()) return true; // No validation in release
     return key.len > 0; // Non-null guaranteed by Zig type system
 }
@@ -174,14 +155,14 @@ fn validateAttributeKey(key: []const u8) bool {
 /// ## Returns
 /// - `true` if name is valid or if validation is disabled (release builds)
 /// - `false` if name is invalid and validation is enabled (debug builds)
-fn validateSpanName(name: []const u8) bool {
+pub fn validateSpanName(name: []const u8) bool {
     if (!isValidatingMode()) return true; // No validation in release
     // Empty span names are allowed per spec but should be reported
     return name.len > 0;
 }
 
 /// Validate that an attribute value meets OpenTelemetry requirements
-fn validateAttributeValue(value: AttributeValue) bool {
+pub fn validateAttributeValue(value: AttributeValue) bool {
     // All AttributeValue variants are non-null by union design
     // Arrays are homogeneous by AttributeValue definition
     _ = value;
@@ -207,7 +188,7 @@ fn validateAttributeValue(value: AttributeValue) bool {
 ///
 /// ## Returns
 /// Always returns the original `attributes` slice unchanged
-fn validateAttributes(attributes: []const AttributeKeyValue) []const AttributeKeyValue {
+pub fn validateAttributes(attributes: []const AttributeKeyValue) []const AttributeKeyValue {
     if (!isValidatingMode()) return attributes; // No validation in release
 
     // Count invalid attributes

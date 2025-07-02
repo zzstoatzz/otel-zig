@@ -21,6 +21,32 @@ The code targets zig version 0.14.1. Because zig prefers structs instead of indi
 - `zig build example-metrics-otlp` - Run metrics OTLP example
 - `zig build example-simple-trace-otlp` - Run simple trace OTLP example
 
+## Running individual files
+
+The commands `zig run` or `zig test` don't use the build system. To use these commands, you must be explicit with the dependencies for what you are trying to do. And you must run them from the project root directory.
+
+The commands work like this `zig (run|test) ((--dep "other-module-name")* -Mthis-module-name)*`. The first module provided is always expected to be the `main` module -- the one you are actually trying to run. Every module you add after that is a dependent module. Each `-Mthis-module-name` needs the `--dep` flags for it's dependencies before it.
+
+For example, to run the debug hang file, you would use this command:
+
+```bash
+# For a file that only needs the API:
+zig test -Mroot=some_api_test.zig -Motel-api=src/api/root.zig
+
+# For a file that needs API + SDK:
+zig test --dep "otel-api" -Mroot=some_sdk_test.zig -Motel-api=src/api/root.zig -Motel-sdk=src/sdk/root.zig
+
+# Complex example
+timeout 60s zig run --dep "otel-api" --dep "otel-sdk" --dep "otel-exporters" -Mroot=debug_hang.zig -Motel-api=src/api/root.zig --dep "otel-api" -Motel-sdk=src/sdk/root.zig --dep "otel-api" --dep "otel-sdk" --dep "protobuf" -Motel-exporters=src/exporters/root.zig -Mprotobuf=/Users/jwatson/.cache/zig/p/protobuf-2.0.0-0e82akObGwBZQtrB7Qb6CTWSrwYKRPJ0M4L0CuTJmJ9G/src/protobuf.zig
+```
+
+Helpful hints:
+- otel-api: doesn't have any dependencies.
+- otel-sdk: `--dep "otel-api"`
+- otel-exporters: `--dep "otel-api" --dep "otel-sdk"` and protobuf
+
+You can normally find the path to protobuf under the `.cache` directory.
+
 ## Architecture Overview
 
 This is a Zig implementation of the OpenTelemetry API and SDK following the official OpenTelemetry specification. The codebase is structured with clear separation between API interfaces and SDK implementations. The API

@@ -77,11 +77,6 @@ pub const Span = union(enum) {
         key: []const u8,
         value: AttributeValue,
     ) !void {
-        if (!validateAttributeKey(key)) {
-            reportValidationError(.tracer, "setAttribute", "Invalid attribute key provided", null);
-            return; // Skip invalid attribute
-        }
-
         switch (self.*) {
             .noop => {},
             .bridge => |bridge| try bridge.setAttributeFn(bridge.span_ptr, key, value),
@@ -114,19 +109,6 @@ pub const Span = union(enum) {
         self: *const Span,
         attributes: []const AttributeKeyValue,
     ) !void {
-        // Validate attributes inline without creating filtered array
-        var invalid_count: usize = 0;
-        for (attributes) |attr| {
-            if (!validateAttributeKey(attr.key)) {
-                invalid_count += 1;
-            }
-        }
-
-        if (invalid_count > 0) {
-            reportValidationError(.tracer, "setAttributes", "Invalid attributes detected", null);
-            // Still pass all attributes - let SDK handle the filtering
-        }
-
         switch (self.*) {
             .noop => {},
             .bridge => |bridge| try bridge.setAttributesFn(bridge.span_ptr, attributes),
@@ -158,20 +140,6 @@ pub const Span = union(enum) {
         self: *const Span,
         event: Event,
     ) !void {
-        if (event.attributes != null) {
-            // Validate event attributes inline
-            var invalid_count: usize = 0;
-            for (event.attributes.?) |attr| {
-                if (!validateAttributeKey(attr.key)) {
-                    invalid_count += 1;
-                }
-            }
-
-            if (invalid_count > 0) {
-                reportValidationError(.tracer, "addEvent", "Invalid event attributes detected", null);
-            }
-        }
-
         switch (self.*) {
             .noop => {},
             .bridge => |bridge| try bridge.addEventFn(bridge.span_ptr, event),
@@ -231,20 +199,6 @@ pub const Span = union(enum) {
         attributes: ?[]const AttributeKeyValue,
         timestamp_ns: ?i64,
     ) !void {
-        if (attributes != null) {
-            // Validate exception attributes inline
-            var invalid_count: usize = 0;
-            for (attributes.?) |attr| {
-                if (!validateAttributeKey(attr.key)) {
-                    invalid_count += 1;
-                }
-            }
-
-            if (invalid_count > 0) {
-                reportValidationError(.tracer, "recordException", "Invalid exception attributes detected", null);
-            }
-        }
-
         switch (self.*) {
             .noop => {},
             .bridge => |bridge| try bridge.recordExceptionFn(bridge.span_ptr, exception, attributes, timestamp_ns),
@@ -287,11 +241,6 @@ pub const Span = union(enum) {
         self: *const Span,
         name: []const u8,
     ) !void {
-        if (!validateSpanName(name)) {
-            reportValidationError(.tracer, "updateName", "Empty span name provided", null);
-            // Continue with empty name (spec allows it, but we report it in debug)
-        }
-
         switch (self.*) {
             .noop => {},
             .bridge => |bridge| try bridge.updateNameFn(bridge.span_ptr, name),
@@ -703,7 +652,7 @@ pub const StatusCode = enum(u8) {
 /// ## Returns
 /// - `true` if key is valid or validation is disabled (release builds)
 /// - `false` if key is invalid and validation is enabled (debug builds)
-fn validateAttributeKey(key: []const u8) bool {
+pub fn validateAttributeKey(key: []const u8) bool {
     if (!isValidatingMode()) return true; // No validation in release
     return key.len > 0; // Non-null guaranteed by Zig type system
 }
@@ -721,7 +670,7 @@ fn validateAttributeKey(key: []const u8) bool {
 /// ## Returns
 /// - `true` if name is valid or validation is disabled (release builds)
 /// - `false` if name should be reported (empty) and validation is enabled
-fn validateSpanName(name: []const u8) bool {
+pub fn validateSpanName(name: []const u8) bool {
     if (!isValidatingMode()) return true; // No validation in release
     // Empty span names are allowed per spec but should be reported
     return name.len > 0;

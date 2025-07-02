@@ -26,6 +26,11 @@ pub const Gauge = instrument_zig.Gauge;
 pub const Histogram = instrument_zig.Histogram;
 pub const InstrumentBridge = instrument_zig.InstrumentBridge;
 
+// Validation functions for SDK use
+pub const validateInstrumentName = meter_zig.validateInstrumentName;
+pub const validateInstrumentDescription = meter_zig.validateInstrumentDescription;
+pub const validateInstrumentUnit = meter_zig.validateInstrumentUnit;
+
 test {
     std.testing.refAllDecls(@This());
 }

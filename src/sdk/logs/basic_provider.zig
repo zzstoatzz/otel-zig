@@ -16,6 +16,15 @@ const Context = otel_api.Context;
 const Severity = otel_api.logs.Severity;
 const AttributeValue = otel_api.common.AttributeValue;
 
+// Import validation functions from API layer
+const validateSeverity = otel_api.logs.validateSeverity;
+const validateLogBody = otel_api.logs.validateLogBody;
+const validateLogAttributes = otel_api.logs.validateLogAttributes;
+const validateEventName = otel_api.logs.validateEventName;
+const validateSeverityText = otel_api.logs.validateSeverityText;
+const validateFormatString = otel_api.logs.validateFormatString;
+const reportValidationError = otel_api.common.reportValidationError;
+
 const PipelineBuilder = @import("../common/pipeline.zig").PipelineBuilder;
 const Resource = @import("../resource/resource.zig").Resource;
 const LogProcessor = @import("processor.zig").LogProcessor;
@@ -223,7 +232,14 @@ const BasicLogger = struct {
             return;
         }
 
-        const record_severity = severity orelse .invalid;
+        // Validate parameters in debug mode
+        const validated_severity = validateSeverity(severity);
+        const validated_body = validateLogBody(body);
+        const validated_attributes = validateLogAttributes(attributes);
+        const validated_event_name = validateEventName(event_name);
+        const validated_severity_text = validateSeverityText(severity_text);
+
+        const record_severity = validated_severity orelse .invalid;
 
         // Check severity filtering
         if (self.enabled(ctx, record_severity)) {
@@ -232,10 +248,10 @@ const BasicLogger = struct {
                 .timestamp_ns = timestamp_ns,
                 .observed_timestamp_ns = observed_timestamp_ns,
                 .severity_number = record_severity,
-                .severity_text = severity_text,
-                .body = body,
-                .event_name = event_name,
-                .attributes = attributes orelse &[_]AttributeKeyValue{},
+                .severity_text = validated_severity_text,
+                .body = validated_body,
+                .event_name = validated_event_name,
+                .attributes = validated_attributes orelse &[_]AttributeKeyValue{},
                 .trace_id = trace_id,
                 .span_id = span_id,
                 .flags = flags,
