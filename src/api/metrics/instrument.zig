@@ -14,8 +14,13 @@ const std = @import("std");
 const Context = @import("../context/root.zig").Context;
 const AttributeKeyValue = @import("../common/root.zig").AttributeKeyValue;
 
-/// Counter is a monotonic sum instrument
+/// Counter is a monotonic sum instrument that supports non-negative increments only.
 /// T must be a numeric type (i64, f64)
+///
+/// Per OpenTelemetry specification: "The increment value is expected to be non-negative.
+/// This API SHOULD be documented in a way to communicate to users that this value is
+/// expected to be non-negative. This API SHOULD NOT validate this value, that is left
+/// to implementations of the API."
 pub fn Counter(comptime T: type) type {
     return union(enum) {
         noop: []const u8,
@@ -29,7 +34,10 @@ pub fn Counter(comptime T: type) type {
             };
         }
 
-        /// Add a value to the counter
+        /// Add a non-negative value to the counter
+        ///
+        /// The increment value is expected to be non-negative. SDK implementations
+        /// will validate this requirement according to the OpenTelemetry specification.
         pub inline fn add(self: *const @This(), ctx: Context, value: T, attributes: []const AttributeKeyValue) void {
             switch (self.*) {
                 .noop => {}, // No-op implementation does nothing
@@ -146,8 +154,11 @@ pub fn Gauge(comptime T: type) type {
     };
 }
 
-/// Histogram is a metric instrument that aggregates values into buckets
+/// Histogram records distribution of values. Values are expected to be non-negative.
 /// T must be a numeric type (i64, f64)
+///
+/// Per OpenTelemetry specification, histogram values should be non-negative.
+/// SDK implementations will validate this requirement.
 pub fn Histogram(comptime T: type) type {
     return union(enum) {
         noop: []const u8,
@@ -161,7 +172,10 @@ pub fn Histogram(comptime T: type) type {
             };
         }
 
-        /// Record a value in the histogram
+        /// Record a non-negative value in the histogram
+        ///
+        /// The value is expected to be non-negative. SDK implementations
+        /// will validate this requirement.
         pub inline fn record(self: *const @This(), ctx: Context, value: T, attributes: []const AttributeKeyValue) void {
             switch (self.*) {
                 .noop => {}, // No-op implementation does nothing

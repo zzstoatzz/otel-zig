@@ -30,6 +30,8 @@ pub const InstrumentBridge = instrument_zig.InstrumentBridge;
 pub const validateInstrumentName = meter_zig.validateInstrumentName;
 pub const validateInstrumentDescription = meter_zig.validateInstrumentDescription;
 pub const validateInstrumentUnit = meter_zig.validateInstrumentUnit;
+pub const validateCounterValue = meter_zig.validateCounterValue;
+pub const validateHistogramValue = meter_zig.validateHistogramValue;
 
 test {
     std.testing.refAllDecls(@This());

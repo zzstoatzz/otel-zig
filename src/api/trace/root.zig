@@ -20,6 +20,7 @@
 const std = @import("std");
 
 pub const SpanContext = @import("span_context.zig").SpanContext;
+pub const TraceState = @import("trace_state.zig").TraceState;
 pub const Event = @import("event.zig").Event;
 
 // Context integration (Phase 2 - Implemented)

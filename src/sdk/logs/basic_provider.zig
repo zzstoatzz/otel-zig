@@ -266,13 +266,16 @@ const BasicLogger = struct {
         }
     }
 
-    pub inline fn enabled(self: *const BasicLogger, ctx: Context, severity: Severity) bool {
+    pub inline fn enabled(self: *const BasicLogger, ctx: Context, severity: ?Severity) bool {
         if (self.is_shutdown.load(.unordered)) {
             return false;
         }
 
+        // Use INFO level as default when severity is null
+        const actual_severity = severity orelse .info;
+
         // Compare severity levels for filtering
-        if (@intFromEnum(severity) < @intFromEnum(self.min_severity)) {
+        if (@intFromEnum(actual_severity) < @intFromEnum(self.min_severity)) {
             return false;
         }
 
@@ -283,7 +286,7 @@ const BasicLogger = struct {
 
         // Check processors per spec: only return false if ALL processors return false
         for (self.provider.processors.items) |processor| {
-            if (processor.enabled(ctx, self.scope, severity, null)) {
+            if (processor.enabled(ctx, self.scope, actual_severity, null)) {
                 return true; // At least one processor wants this record
             }
         }
@@ -295,15 +298,18 @@ const BasicLogger = struct {
     pub inline fn enabledWithEvent(
         self: *const BasicLogger,
         ctx: Context,
-        severity: Severity,
+        severity: ?Severity,
         event_name: []const u8,
     ) bool {
         if (self.is_shutdown.load(.unordered)) {
             return false;
         }
 
+        // Use INFO level as default when severity is null
+        const actual_severity = severity orelse .info;
+
         // Compare severity levels for filtering
-        if (@intFromEnum(severity) < @intFromEnum(self.min_severity)) {
+        if (@intFromEnum(actual_severity) < @intFromEnum(self.min_severity)) {
             return false;
         }
 
@@ -314,7 +320,7 @@ const BasicLogger = struct {
 
         // Check processors per spec: only return false if ALL processors return false
         for (self.provider.processors.items) |processor| {
-            if (processor.enabled(ctx, self.scope, severity, event_name)) {
+            if (processor.enabled(ctx, self.scope, actual_severity, event_name)) {
                 return true; // At least one processor wants this record
             }
         }

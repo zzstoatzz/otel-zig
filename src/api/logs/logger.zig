@@ -86,7 +86,7 @@ pub const Logger = union(enum) {
     }
 
     /// Check if logging is enabled for a given severity
-    pub inline fn enabled(self: *const Logger, ctx: Context, severity: Severity) bool {
+    pub inline fn enabled(self: *const Logger, ctx: Context, severity: ?Severity) bool {
         return switch (self.*) {
             .noop => |_| return false,
             .bridge => |bridge| bridge.enabledFn(bridge.logger_ptr, ctx, severity),
@@ -97,7 +97,7 @@ pub const Logger = union(enum) {
     pub inline fn enabledWithEvent(
         self: *const Logger,
         ctx: Context,
-        severity: Severity,
+        severity: ?Severity,
         event_name: []const u8,
     ) bool {
         return switch (self.*) {
@@ -158,11 +158,6 @@ pub const Logger = union(enum) {
         comptime fmt: []const u8,
         args: anytype,
     ) void {
-        // Validate format string in debug mode
-        if (!validateFormatString(fmt)) {
-            reportValidationError(.logger, "log", "Empty format string provided", null);
-        }
-
         if (!self.enabled(ctx, severity)) return;
 
         var buf: [4096]u8 = undefined;
@@ -206,8 +201,8 @@ pub const LoggerBridge = struct {
         span_id: ?[8]u8,
         flags: ?u8,
     ) void,
-    enabledFn: *const fn (logger_ptr: *anyopaque, ctx: Context, severity: Severity) bool,
-    enabledWithEventFn: *const fn (logger_ptr: *anyopaque, ctx: Context, severity: Severity, event_name: []const u8) bool,
+    enabledFn: *const fn (logger_ptr: *anyopaque, ctx: Context, severity: ?Severity) bool,
+    enabledWithEventFn: *const fn (logger_ptr: *anyopaque, ctx: Context, severity: ?Severity, event_name: []const u8) bool,
 
     pub fn init(ptr: anytype) LoggerBridge {
         const T = @TypeOf(ptr);
@@ -244,11 +239,11 @@ pub const LoggerBridge = struct {
                     flags,
                 );
             }
-            pub fn enabled(pointer: *anyopaque, ctx: Context, severity: Severity) bool {
+            pub fn enabled(pointer: *anyopaque, ctx: Context, severity: ?Severity) bool {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.enabled(self, ctx, severity);
             }
-            pub fn enabledWithEvent(pointer: *anyopaque, ctx: Context, severity: Severity, event_name: []const u8) bool {
+            pub fn enabledWithEvent(pointer: *anyopaque, ctx: Context, severity: ?Severity, event_name: []const u8) bool {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.enabledWithEvent(self, ctx, severity, event_name);
             }

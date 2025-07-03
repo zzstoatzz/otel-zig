@@ -18,6 +18,9 @@ const Context = otel_api.Context;
 const validateInstrumentName = otel_api.metrics.validateInstrumentName;
 const validateInstrumentDescription = otel_api.metrics.validateInstrumentDescription;
 const validateInstrumentUnit = otel_api.metrics.validateInstrumentUnit;
+const validateCounterValue = otel_api.metrics.validateCounterValue;
+const validateHistogramValue = otel_api.metrics.validateHistogramValue;
+const reportValidationError = otel_api.common.reportValidationError;
 
 const PipelineBuilder = @import("../common/pipeline.zig").PipelineBuilder;
 const Resource = @import("../resource/resource.zig").Resource;
@@ -816,6 +819,10 @@ fn StandardCounter(comptime T: type) type {
         }
 
         pub fn addI64(self: *@This(), ctx: Context, value: i64, attributes: []const AttributeKeyValue) void {
+            if (!validateCounterValue(i64, value)) {
+                reportValidationError(.meter, "Counter.add", "Negative value provided", "counter values must be non-negative");
+                return; // Return early in validation mode
+            }
             _ = ctx;
             _ = attributes;
             if (T == i64) {
@@ -828,6 +835,10 @@ fn StandardCounter(comptime T: type) type {
         }
 
         pub fn addF64(self: *@This(), ctx: Context, value: f64, attributes: []const AttributeKeyValue) void {
+            if (!validateCounterValue(f64, value)) {
+                reportValidationError(.meter, "Counter.add", "Negative value provided", "counter values must be non-negative");
+                return; // Return early in validation mode
+            }
             _ = ctx;
             _ = attributes;
             if (T == f64) {
@@ -1127,6 +1138,10 @@ fn StandardHistogram(comptime T: type) type {
         }
 
         pub fn recordI64(self: *@This(), ctx: Context, value: i64, attributes: []const AttributeKeyValue) void {
+            if (!validateHistogramValue(i64, value)) {
+                reportValidationError(.meter, "Histogram.record", "Negative value provided", "histogram values must be non-negative");
+                return; // Return early in validation mode
+            }
             _ = ctx;
             _ = attributes;
             if (T == i64) {
@@ -1139,6 +1154,10 @@ fn StandardHistogram(comptime T: type) type {
         }
 
         pub fn recordF64(self: *@This(), ctx: Context, value: f64, attributes: []const AttributeKeyValue) void {
+            if (!validateHistogramValue(f64, value)) {
+                reportValidationError(.meter, "Histogram.record", "Negative value provided", "histogram values must be non-negative");
+                return; // Return early in validation mode
+            }
             _ = ctx;
             _ = attributes;
             if (T == f64) {

@@ -168,18 +168,30 @@ pub const Meter = union(enum) {
 };
 
 /// Validate instrument name according to OpenTelemetry requirements
+/// ABNF: instrument-name = ALPHA 0*254 ("_" / "." / "-" / "/" / ALPHA / DIGIT)
 pub fn validateInstrumentName(name: []const u8) []const u8 {
     if (!isValidatingMode()) return name;
 
     if (name.len == 0) {
         reportValidationError(.meter, "createInstrument", "Empty instrument name provided", null);
-        return name; // Continue with empty name but report it
+        return name;
     }
 
-    // Check for valid characters (letters, digits, underscore, dot, hyphen)
-    for (name) |c| {
-        if (!std.ascii.isAlphanumeric(c) and c != '_' and c != '.' and c != '-') {
-            reportValidationError(.meter, "createInstrument", "Invalid character in instrument name", "names should contain only letters, digits, underscore, dot, or hyphen");
+    if (name.len > 255) {
+        reportValidationError(.meter, "createInstrument", "Instrument name too long", "names must be <= 255 characters");
+        return name;
+    }
+
+    // ABNF: First character must be alphabetic
+    if (!std.ascii.isAlphabetic(name[0])) {
+        reportValidationError(.meter, "createInstrument", "Invalid instrument name", "first character must be alphabetic (A-Z, a-z)");
+        return name;
+    }
+
+    // ABNF: Subsequent characters validation
+    for (name[1..]) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '_' and c != '.' and c != '-' and c != '/') {
+            reportValidationError(.meter, "createInstrument", "Invalid character in instrument name", "names should contain only letters, digits, underscore, dot, hyphen, or slash");
             break; // Report once per name
         }
     }
@@ -218,6 +230,26 @@ pub fn validateInstrumentUnit(unit: ?[]const u8) ?[]const u8 {
     }
 
     return unit;
+}
+
+/// Validate counter value is non-negative (for SDK use only)
+pub fn validateCounterValue(comptime T: type, value: T) bool {
+    if (!isValidatingMode()) return true;
+    return switch (T) {
+        i64 => value >= 0,
+        f64 => value >= 0.0,
+        else => @compileError("Invalid counter type"),
+    };
+}
+
+/// Validate histogram value is non-negative (for SDK use only)
+pub fn validateHistogramValue(comptime T: type, value: T) bool {
+    if (!isValidatingMode()) return true;
+    return switch (T) {
+        i64 => value >= 0,
+        f64 => value >= 0.0,
+        else => @compileError("Invalid histogram type"),
+    };
 }
 
 /// Bridge structure that holds SDK meter pointer and vtable
