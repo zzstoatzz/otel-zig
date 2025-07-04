@@ -31,6 +31,12 @@ const MetricValue = @import("data.zig").MetricValue;
 const MetricProcessor = @import("processor.zig").MetricProcessor;
 const aggregations = @import("basic_aggregations.zig");
 
+// Observable instrument imports
+const AsyncInstrumentConfig = @import("async_instrument_config.zig").AsyncInstrumentConfig;
+const SdkObservableCounter = @import("observable_instrument_sdk.zig").SdkObservableCounter;
+const SdkObservableGauge = @import("observable_instrument_sdk.zig").SdkObservableGauge;
+const SdkObservableUpDownCounter = @import("observable_instrument_sdk.zig").SdkObservableUpDownCounter;
+
 /// Context for meter cache HashMap
 const MeterCacheContext = struct {
     pub fn hash(_: MeterCacheContext, key: InstrumentationScope) u64 {
@@ -212,6 +218,17 @@ pub const BasicMeter = struct {
     histograms_i64: std.ArrayListUnmanaged(*StandardHistogram(i64)),
     histograms_f64: std.ArrayListUnmanaged(*StandardHistogram(f64)),
 
+    // Observable instruments
+    observable_counters_i64: std.ArrayListUnmanaged(*SdkObservableCounter(i64)),
+    observable_counters_f64: std.ArrayListUnmanaged(*SdkObservableCounter(f64)),
+    observable_gauges_i64: std.ArrayListUnmanaged(*SdkObservableGauge(i64)),
+    observable_gauges_f64: std.ArrayListUnmanaged(*SdkObservableGauge(f64)),
+    observable_updown_counters_i64: std.ArrayListUnmanaged(*SdkObservableUpDownCounter(i64)),
+    observable_updown_counters_f64: std.ArrayListUnmanaged(*SdkObservableUpDownCounter(f64)),
+
+    // Configuration for async instruments
+    async_config: AsyncInstrumentConfig,
+
     pub fn init(
         allocator: std.mem.Allocator,
         scope: InstrumentationScope,
@@ -230,6 +247,13 @@ pub const BasicMeter = struct {
             .gauges_f64 = .empty,
             .histograms_i64 = .empty,
             .histograms_f64 = .empty,
+            .observable_counters_i64 = .empty,
+            .observable_counters_f64 = .empty,
+            .observable_gauges_i64 = .empty,
+            .observable_gauges_f64 = .empty,
+            .observable_updown_counters_i64 = .empty,
+            .observable_updown_counters_f64 = .empty,
+            .async_config = AsyncInstrumentConfig.default(),
         };
     }
 
@@ -249,6 +273,12 @@ pub const BasicMeter = struct {
             self.gauges_f64,
             self.histograms_i64,
             self.histograms_f64,
+            self.observable_counters_i64,
+            self.observable_counters_f64,
+            self.observable_gauges_i64,
+            self.observable_gauges_f64,
+            self.observable_updown_counters_i64,
+            self.observable_updown_counters_f64,
         };
         inline for (instruments) |list| {
             for (list.items) |instrument| {
@@ -536,6 +566,212 @@ pub const BasicMeter = struct {
         };
     }
 
+    // Observable instrument creation methods
+
+    pub fn createObservableCounterI64(
+        self: *BasicMeter,
+        name: []const u8,
+        description: ?[]const u8,
+        unit: ?[]const u8,
+    ) !otel_api.metrics.ObservableCounter(i64) {
+        if (self.is_shutdown.load(.acquire)) {
+            return otel_api.metrics.ObservableCounter(i64){ .noop = name };
+        }
+
+        // Validate parameters in debug mode
+        const validated_name = validateInstrumentName(name);
+        const validated_description = validateInstrumentDescription(description);
+        const validated_unit = validateInstrumentUnit(unit);
+
+        const observable_counter = try self.allocator.create(SdkObservableCounter(i64));
+        errdefer self.allocator.destroy(observable_counter);
+
+        observable_counter.* = SdkObservableCounter(i64).init(
+            self.allocator,
+            validated_name,
+            validated_description,
+            validated_unit,
+            self.async_config,
+        );
+        errdefer observable_counter.deinit();
+
+        try self.observable_counters_i64.append(self.allocator, observable_counter);
+
+        return otel_api.metrics.ObservableCounter(i64){
+            .bridge = otel_api.metrics.AsyncInstrumentBridge.init(observable_counter),
+        };
+    }
+
+    pub fn createObservableCounterF64(
+        self: *BasicMeter,
+        name: []const u8,
+        description: ?[]const u8,
+        unit: ?[]const u8,
+    ) !otel_api.metrics.ObservableCounter(f64) {
+        if (self.is_shutdown.load(.acquire)) {
+            return otel_api.metrics.ObservableCounter(f64){ .noop = name };
+        }
+
+        // Validate parameters in debug mode
+        const validated_name = validateInstrumentName(name);
+        const validated_description = validateInstrumentDescription(description);
+        const validated_unit = validateInstrumentUnit(unit);
+
+        const observable_counter = try self.allocator.create(SdkObservableCounter(f64));
+        errdefer self.allocator.destroy(observable_counter);
+
+        observable_counter.* = SdkObservableCounter(f64).init(
+            self.allocator,
+            validated_name,
+            validated_description,
+            validated_unit,
+            self.async_config,
+        );
+        errdefer observable_counter.deinit();
+
+        try self.observable_counters_f64.append(self.allocator, observable_counter);
+
+        return otel_api.metrics.ObservableCounter(f64){
+            .bridge = otel_api.metrics.AsyncInstrumentBridge.init(observable_counter),
+        };
+    }
+
+    pub fn createObservableGaugeI64(
+        self: *BasicMeter,
+        name: []const u8,
+        description: ?[]const u8,
+        unit: ?[]const u8,
+    ) !otel_api.metrics.ObservableGauge(i64) {
+        if (self.is_shutdown.load(.acquire)) {
+            return otel_api.metrics.ObservableGauge(i64){ .noop = name };
+        }
+
+        // Validate parameters in debug mode
+        const validated_name = validateInstrumentName(name);
+        const validated_description = validateInstrumentDescription(description);
+        const validated_unit = validateInstrumentUnit(unit);
+
+        const observable_gauge = try self.allocator.create(SdkObservableGauge(i64));
+        errdefer self.allocator.destroy(observable_gauge);
+
+        observable_gauge.* = SdkObservableGauge(i64).init(
+            self.allocator,
+            validated_name,
+            validated_description,
+            validated_unit,
+            self.async_config,
+        );
+        errdefer observable_gauge.deinit();
+
+        try self.observable_gauges_i64.append(self.allocator, observable_gauge);
+
+        return otel_api.metrics.ObservableGauge(i64){
+            .bridge = otel_api.metrics.AsyncInstrumentBridge.init(observable_gauge),
+        };
+    }
+
+    pub fn createObservableGaugeF64(
+        self: *BasicMeter,
+        name: []const u8,
+        description: ?[]const u8,
+        unit: ?[]const u8,
+    ) !otel_api.metrics.ObservableGauge(f64) {
+        if (self.is_shutdown.load(.acquire)) {
+            return otel_api.metrics.ObservableGauge(f64){ .noop = name };
+        }
+
+        // Validate parameters in debug mode
+        const validated_name = validateInstrumentName(name);
+        const validated_description = validateInstrumentDescription(description);
+        const validated_unit = validateInstrumentUnit(unit);
+
+        const observable_gauge = try self.allocator.create(SdkObservableGauge(f64));
+        errdefer self.allocator.destroy(observable_gauge);
+
+        observable_gauge.* = SdkObservableGauge(f64).init(
+            self.allocator,
+            validated_name,
+            validated_description,
+            validated_unit,
+            self.async_config,
+        );
+        errdefer observable_gauge.deinit();
+
+        try self.observable_gauges_f64.append(self.allocator, observable_gauge);
+
+        return otel_api.metrics.ObservableGauge(f64){
+            .bridge = otel_api.metrics.AsyncInstrumentBridge.init(observable_gauge),
+        };
+    }
+
+    pub fn createObservableUpDownCounterI64(
+        self: *BasicMeter,
+        name: []const u8,
+        description: ?[]const u8,
+        unit: ?[]const u8,
+    ) !otel_api.metrics.ObservableUpDownCounter(i64) {
+        if (self.is_shutdown.load(.acquire)) {
+            return otel_api.metrics.ObservableUpDownCounter(i64){ .noop = name };
+        }
+
+        // Validate parameters in debug mode
+        const validated_name = validateInstrumentName(name);
+        const validated_description = validateInstrumentDescription(description);
+        const validated_unit = validateInstrumentUnit(unit);
+
+        const observable_counter = try self.allocator.create(SdkObservableUpDownCounter(i64));
+        errdefer self.allocator.destroy(observable_counter);
+
+        observable_counter.* = SdkObservableUpDownCounter(i64).init(
+            self.allocator,
+            validated_name,
+            validated_description,
+            validated_unit,
+            self.async_config,
+        );
+        errdefer observable_counter.deinit();
+
+        try self.observable_updown_counters_i64.append(self.allocator, observable_counter);
+
+        return otel_api.metrics.ObservableUpDownCounter(i64){
+            .bridge = otel_api.metrics.AsyncInstrumentBridge.init(observable_counter),
+        };
+    }
+
+    pub fn createObservableUpDownCounterF64(
+        self: *BasicMeter,
+        name: []const u8,
+        description: ?[]const u8,
+        unit: ?[]const u8,
+    ) !otel_api.metrics.ObservableUpDownCounter(f64) {
+        if (self.is_shutdown.load(.acquire)) {
+            return otel_api.metrics.ObservableUpDownCounter(f64){ .noop = name };
+        }
+
+        // Validate parameters in debug mode
+        const validated_name = validateInstrumentName(name);
+        const validated_description = validateInstrumentDescription(description);
+        const validated_unit = validateInstrumentUnit(unit);
+
+        const observable_counter = try self.allocator.create(SdkObservableUpDownCounter(f64));
+        errdefer self.allocator.destroy(observable_counter);
+
+        observable_counter.* = SdkObservableUpDownCounter(f64).init(
+            self.allocator,
+            validated_name,
+            validated_description,
+            validated_unit,
+            self.async_config,
+        );
+        errdefer observable_counter.deinit();
+
+        try self.observable_updown_counters_f64.append(self.allocator, observable_counter);
+
+        return otel_api.metrics.ObservableUpDownCounter(f64){
+            .bridge = otel_api.metrics.AsyncInstrumentBridge.init(observable_counter),
+        };
+    }
+
     /// Collect metrics from all instruments managed by this meter
     pub fn collectMetrics(self: *BasicMeter, allocator: std.mem.Allocator) ![]MetricData {
         var metrics = std.ArrayList(MetricData).init(allocator);
@@ -778,7 +1014,109 @@ pub const BasicMeter = struct {
             });
         }
 
+        // Collect from observable instruments
+        try self.collectAsynchronousMetrics(allocator, &metrics);
+
         return metrics.toOwnedSlice();
+    }
+
+    /// Collect metrics from all observable instruments
+    fn collectAsynchronousMetrics(self: *BasicMeter, allocator: std.mem.Allocator, metrics: *std.ArrayList(MetricData)) !void {
+        // Collect from i64 observable counters
+        for (self.observable_counters_i64.items) |counter| {
+            const data_points = try counter.collect(allocator);
+            if (data_points.len == 0) continue; // Skip if no measurements
+
+            try metrics.append(.{
+                .name = counter.name,
+                .description = counter.description,
+                .unit = counter.unit,
+                .type = .sum,
+                .data_points = data_points,
+                .scope = self.scope,
+                .resource = self.resource,
+            });
+        }
+
+        // Collect from f64 observable counters
+        for (self.observable_counters_f64.items) |counter| {
+            const data_points = try counter.collect(allocator);
+            if (data_points.len == 0) continue; // Skip if no measurements
+
+            try metrics.append(.{
+                .name = counter.name,
+                .description = counter.description,
+                .unit = counter.unit,
+                .type = .sum,
+                .data_points = data_points,
+                .scope = self.scope,
+                .resource = self.resource,
+            });
+        }
+
+        // Collect from i64 observable gauges
+        for (self.observable_gauges_i64.items) |gauge| {
+            const data_points = try gauge.collect(allocator);
+            if (data_points.len == 0) continue; // Skip if no measurements
+
+            try metrics.append(.{
+                .name = gauge.name,
+                .description = gauge.description,
+                .unit = gauge.unit,
+                .type = .gauge,
+                .data_points = data_points,
+                .scope = self.scope,
+                .resource = self.resource,
+            });
+        }
+
+        // Collect from f64 observable gauges
+        for (self.observable_gauges_f64.items) |gauge| {
+            const data_points = try gauge.collect(allocator);
+            if (data_points.len == 0) continue; // Skip if no measurements
+
+            try metrics.append(.{
+                .name = gauge.name,
+                .description = gauge.description,
+                .unit = gauge.unit,
+                .type = .gauge,
+                .data_points = data_points,
+                .scope = self.scope,
+                .resource = self.resource,
+            });
+        }
+
+        // Collect from i64 observable up-down counters
+        for (self.observable_updown_counters_i64.items) |counter| {
+            const data_points = try counter.collect(allocator);
+            if (data_points.len == 0) continue; // Skip if no measurements
+
+            try metrics.append(.{
+                .name = counter.name,
+                .description = counter.description,
+                .unit = counter.unit,
+                .type = .sum,
+                .data_points = data_points,
+                .scope = self.scope,
+                .resource = self.resource,
+            });
+        }
+
+        // Collect from f64 observable up-down counters
+        for (self.observable_updown_counters_f64.items) |counter| {
+            const data_points = try counter.collect(allocator);
+            if (data_points.len == 0) continue; // Skip if no measurements
+
+            try metrics.append(.{
+                .name = counter.name,
+                .description = counter.description,
+                .unit = counter.unit,
+                .type = .sum,
+                .data_points = data_points,
+                .scope = self.scope,
+                .resource = self.resource,
+            });
+        }
     }
 };
 

@@ -59,6 +59,8 @@ pub const reportNetworkError = error_handler_zig.reportNetworkError;
 pub const reportNetworkErrorWithSource = error_handler_zig.reportNetworkErrorWithSource;
 pub const reportSerializationError = error_handler_zig.reportSerializationError;
 pub const reportSerializationErrorWithSource = error_handler_zig.reportSerializationErrorWithSource;
+pub const reportCallbackError = error_handler_zig.reportCallbackError;
+pub const reportCallbackErrorWithSource = error_handler_zig.reportCallbackErrorWithSource;
 pub const isValidatingMode = error_handler_zig.isValidatingMode;
 
 test {

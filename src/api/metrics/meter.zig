@@ -24,6 +24,11 @@ const UpDownCounter = @import("instrument.zig").UpDownCounter;
 const Gauge = @import("instrument.zig").Gauge;
 const Histogram = @import("instrument.zig").Histogram;
 
+// Observable instrument imports
+const ObservableCounter = @import("observable_instrument.zig").ObservableCounter;
+const ObservableGauge = @import("observable_instrument.zig").ObservableGauge;
+const ObservableUpDownCounter = @import("observable_instrument.zig").ObservableUpDownCounter;
+
 /// Meter interface using tagged union for polymorphism
 pub const Meter = union(enum) {
     noop: InstrumentationScope,
@@ -165,6 +170,102 @@ pub const Meter = union(enum) {
             },
         };
     }
+
+    /// Create an ObservableCounter instrument
+    ///
+    /// This method creates an observable counter instrument with validation in debug builds.
+    /// Observable counters use callbacks to report monotonic, non-decreasing values.
+    ///
+    /// ## Validation (Debug Mode Only)
+    /// - **Name**: Must be non-empty and contain valid characters
+    /// - **Description**: Must be reasonable length if provided
+    /// - **Unit**: Must follow valid unit format if provided
+    /// - **Type**: Must be i64 or f64 (compile-time check)
+    pub inline fn createObservableCounter(
+        self: *Meter,
+        comptime T: type,
+        name: []const u8,
+        description: ?[]const u8,
+        unit: ?[]const u8,
+    ) !ObservableCounter(T) {
+        comptime switch (T) {
+            i64, f64 => {},
+            else => @compileError("ObservableCounters must be of type i64 or f64"),
+        };
+
+        return switch (self.*) {
+            .noop => |_| ObservableCounter(T){ .noop = name },
+            .bridge => |*bridge| switch (T) {
+                i64 => bridge.createObservableCounterI64Fn(bridge.meter_ptr, name, description, unit),
+                f64 => bridge.createObservableCounterF64Fn(bridge.meter_ptr, name, description, unit),
+                else => unreachable,
+            },
+        };
+    }
+
+    /// Create an ObservableGauge instrument
+    ///
+    /// This method creates an observable gauge instrument with validation in debug builds.
+    /// Observable gauges use callbacks to report current values.
+    ///
+    /// ## Validation (Debug Mode Only)
+    /// - **Name**: Must be non-empty and contain valid characters
+    /// - **Description**: Must be reasonable length if provided
+    /// - **Unit**: Must follow valid unit format if provided
+    /// - **Type**: Must be i64 or f64 (compile-time check)
+    pub inline fn createObservableGauge(
+        self: *Meter,
+        comptime T: type,
+        name: []const u8,
+        description: ?[]const u8,
+        unit: ?[]const u8,
+    ) !ObservableGauge(T) {
+        comptime switch (T) {
+            i64, f64 => {},
+            else => @compileError("ObservableGauges must be of type i64 or f64"),
+        };
+
+        return switch (self.*) {
+            .noop => |_| ObservableGauge(T){ .noop = name },
+            .bridge => |*bridge| switch (T) {
+                i64 => bridge.createObservableGaugeI64Fn(bridge.meter_ptr, name, description, unit),
+                f64 => bridge.createObservableGaugeF64Fn(bridge.meter_ptr, name, description, unit),
+                else => unreachable,
+            },
+        };
+    }
+
+    /// Create an ObservableUpDownCounter instrument
+    ///
+    /// This method creates an observable up-down counter instrument with validation in debug builds.
+    /// Observable up-down counters use callbacks to report values that can increase and decrease.
+    ///
+    /// ## Validation (Debug Mode Only)
+    /// - **Name**: Must be non-empty and contain valid characters
+    /// - **Description**: Must be reasonable length if provided
+    /// - **Unit**: Must follow valid unit format if provided
+    /// - **Type**: Must be i64 or f64 (compile-time check)
+    pub inline fn createObservableUpDownCounter(
+        self: *Meter,
+        comptime T: type,
+        name: []const u8,
+        description: ?[]const u8,
+        unit: ?[]const u8,
+    ) !ObservableUpDownCounter(T) {
+        comptime switch (T) {
+            i64, f64 => {},
+            else => @compileError("ObservableUpDownCounters must be of type i64 or f64"),
+        };
+
+        return switch (self.*) {
+            .noop => |_| ObservableUpDownCounter(T){ .noop = name },
+            .bridge => |*bridge| switch (T) {
+                i64 => bridge.createObservableUpDownCounterI64Fn(bridge.meter_ptr, name, description, unit),
+                f64 => bridge.createObservableUpDownCounterF64Fn(bridge.meter_ptr, name, description, unit),
+                else => unreachable,
+            },
+        };
+    }
 };
 
 /// Validate instrument name according to OpenTelemetry requirements
@@ -263,6 +364,12 @@ pub const MeterBridge = struct {
     createGaugeF64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!Gauge(f64),
     createHistogramI64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!Histogram(i64),
     createHistogramF64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!Histogram(f64),
+    createObservableCounterI64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!ObservableCounter(i64),
+    createObservableCounterF64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!ObservableCounter(f64),
+    createObservableGaugeI64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!ObservableGauge(i64),
+    createObservableGaugeF64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!ObservableGauge(f64),
+    createObservableUpDownCounterI64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!ObservableUpDownCounter(i64),
+    createObservableUpDownCounterF64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!ObservableUpDownCounter(f64),
 
     pub fn init(ptr: anytype) MeterBridge {
         const T = @TypeOf(ptr);
@@ -301,6 +408,30 @@ pub const MeterBridge = struct {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.createHistogramI64(self, name, description, unit);
             }
+            pub fn createObservableCounterI64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!ObservableCounter(i64) {
+                const self: T = @ptrCast(@alignCast(pointer));
+                return ptr_info.pointer.child.createObservableCounterI64(self, name, description, unit);
+            }
+            pub fn createObservableCounterF64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!ObservableCounter(f64) {
+                const self: T = @ptrCast(@alignCast(pointer));
+                return ptr_info.pointer.child.createObservableCounterF64(self, name, description, unit);
+            }
+            pub fn createObservableGaugeI64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!ObservableGauge(i64) {
+                const self: T = @ptrCast(@alignCast(pointer));
+                return ptr_info.pointer.child.createObservableGaugeI64(self, name, description, unit);
+            }
+            pub fn createObservableGaugeF64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!ObservableGauge(f64) {
+                const self: T = @ptrCast(@alignCast(pointer));
+                return ptr_info.pointer.child.createObservableGaugeF64(self, name, description, unit);
+            }
+            pub fn createObservableUpDownCounterI64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!ObservableUpDownCounter(i64) {
+                const self: T = @ptrCast(@alignCast(pointer));
+                return ptr_info.pointer.child.createObservableUpDownCounterI64(self, name, description, unit);
+            }
+            pub fn createObservableUpDownCounterF64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!ObservableUpDownCounter(f64) {
+                const self: T = @ptrCast(@alignCast(pointer));
+                return ptr_info.pointer.child.createObservableUpDownCounterF64(self, name, description, unit);
+            }
         };
 
         return .{
@@ -313,6 +444,12 @@ pub const MeterBridge = struct {
             .createGaugeF64Fn = VTable.createGaugeF64,
             .createHistogramI64Fn = VTable.createHistogramI64,
             .createHistogramF64Fn = VTable.createHistogramF64,
+            .createObservableCounterI64Fn = VTable.createObservableCounterI64,
+            .createObservableCounterF64Fn = VTable.createObservableCounterF64,
+            .createObservableGaugeI64Fn = VTable.createObservableGaugeI64,
+            .createObservableGaugeF64Fn = VTable.createObservableGaugeF64,
+            .createObservableUpDownCounterI64Fn = VTable.createObservableUpDownCounterI64,
+            .createObservableUpDownCounterF64Fn = VTable.createObservableUpDownCounterF64,
         };
     }
 };

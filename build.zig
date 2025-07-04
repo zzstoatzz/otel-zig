@@ -291,6 +291,66 @@ pub fn build(b: *std.Build) void {
     const metrics_histogram_step = b.step("example-metrics-histogram", "Run metrics histogram example");
     metrics_histogram_step.dependOn(&run_metrics_histogram.step);
 
+    // Observable Metrics Demo Example
+    const observable_metrics_demo_example = b.addExecutable(.{
+        .name = "observable_metrics_demo",
+        .root_source_file = b.path("examples/observable_metrics_demo.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    observable_metrics_demo_example.root_module.addImport("otel-api", otel_api_mod);
+    observable_metrics_demo_example.root_module.addImport("otel-sdk", otel_sdk_mod);
+    observable_metrics_demo_example.root_module.addImport("otel-exporters", otel_exporters_mod);
+
+    const run_observable_metrics_demo = b.addRunArtifact(observable_metrics_demo_example);
+    const observable_metrics_demo_step = b.step("example-observable-metrics", "Run observable metrics demo");
+    observable_metrics_demo_step.dependOn(&run_observable_metrics_demo.step);
+
+    // Observable API Demo Example
+    const observable_api_demo_example = b.addExecutable(.{
+        .name = "observable_api_demo",
+        .root_source_file = b.path("examples/observable_api_demo.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    observable_api_demo_example.root_module.addImport("otel-api", otel_api_mod);
+    observable_api_demo_example.root_module.addImport("otel-sdk", otel_sdk_mod);
+    observable_api_demo_example.root_module.addImport("otel-exporters", otel_exporters_mod);
+
+    const run_observable_api_demo = b.addRunArtifact(observable_api_demo_example);
+    const observable_api_demo_step = b.step("example-observable-api", "Run observable API demo");
+    observable_api_demo_step.dependOn(&run_observable_api_demo.step);
+
+    // Observable Process Metrics Example
+    const observable_process_example = b.addExecutable(.{
+        .name = "observable_process_metrics",
+        .root_source_file = b.path("examples/observable_process_metrics.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    observable_process_example.root_module.addImport("otel-api", otel_api_mod);
+    observable_process_example.root_module.addImport("otel-sdk", otel_sdk_mod);
+    observable_process_example.root_module.addImport("otel-exporters", otel_exporters_mod);
+
+    const run_observable_process = b.addRunArtifact(observable_process_example);
+    const observable_process_step = b.step("example-observable-process", "Run observable process metrics example");
+    observable_process_step.dependOn(&run_observable_process.step);
+
+    // Observable Callback Monitoring Example
+    const observable_callback_example = b.addExecutable(.{
+        .name = "observable_callback_monitoring",
+        .root_source_file = b.path("examples/observable_callback_monitoring.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    observable_callback_example.root_module.addImport("otel-api", otel_api_mod);
+    observable_callback_example.root_module.addImport("otel-sdk", otel_sdk_mod);
+    observable_callback_example.root_module.addImport("otel-exporters", otel_exporters_mod);
+
+    const run_observable_callback = b.addRunArtifact(observable_callback_example);
+    const observable_callback_step = b.step("example-observable-callback-monitoring", "Run observable callback monitoring example");
+    observable_callback_step.dependOn(&run_observable_callback.step);
+
     // Comprehensive Metrics OTLP Example
     const metrics_comprehensive_otlp_example = b.addExecutable(.{
         .name = "metrics_comprehensive_otlp",

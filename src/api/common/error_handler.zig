@@ -92,6 +92,9 @@ pub const ErrorType = enum {
     /// Internal logic errors
     internal,
 
+    /// Callback execution errors (observable instruments)
+    callback,
+
     /// Unknown/unspecified errors
     unknown,
 };
@@ -395,6 +398,40 @@ pub fn reportSerializationErrorWithSource(
         .component = component,
         .operation = operation,
         .error_type = .serialization,
+        .message = message,
+        .context = context,
+        .source_error = source_error,
+    });
+}
+
+/// Report a callback execution error with context
+pub fn reportCallbackError(
+    component: Component,
+    operation: []const u8,
+    message: []const u8,
+    context: ?[]const u8,
+) void {
+    reportError(.{
+        .component = component,
+        .operation = operation,
+        .error_type = .callback,
+        .message = message,
+        .context = context,
+    });
+}
+
+/// Report a callback execution error with source error
+pub fn reportCallbackErrorWithSource(
+    component: Component,
+    operation: []const u8,
+    message: []const u8,
+    context: ?[]const u8,
+    source_error: anyerror,
+) void {
+    reportError(.{
+        .component = component,
+        .operation = operation,
+        .error_type = .callback,
         .message = message,
         .context = context,
         .source_error = source_error,
