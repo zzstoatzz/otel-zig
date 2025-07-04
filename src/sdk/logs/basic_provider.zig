@@ -15,14 +15,10 @@ const FlushResult = otel_api.common.FlushResult;
 const Context = otel_api.Context;
 const Severity = otel_api.logs.Severity;
 const AttributeValue = otel_api.common.AttributeValue;
+const TraceId = otel_api.common.TraceId;
+const SpanId = otel_api.common.SpanId;
 
 // Import validation functions from API layer
-const validateSeverity = otel_api.logs.validateSeverity;
-const validateLogBody = otel_api.logs.validateLogBody;
-const validateLogAttributes = otel_api.logs.validateLogAttributes;
-const validateEventName = otel_api.logs.validateEventName;
-const validateSeverityText = otel_api.logs.validateSeverityText;
-const validateFormatString = otel_api.logs.validateFormatString;
 const reportValidationError = otel_api.common.reportValidationError;
 
 const PipelineBuilder = @import("../common/pipeline.zig").PipelineBuilder;
@@ -224,8 +220,8 @@ const BasicLogger = struct {
         observed_timestamp_ns: ?i64,
         event_name: ?[]const u8,
         severity_text: ?[]const u8,
-        trace_id: ?[16]u8,
-        span_id: ?[8]u8,
+        trace_id: ?TraceId,
+        span_id: ?SpanId,
         flags: ?u8,
     ) void {
         if (self.is_shutdown.load(.unordered)) {
@@ -233,11 +229,14 @@ const BasicLogger = struct {
         }
 
         // Validate parameters in debug mode
-        const validated_severity = validateSeverity(severity);
-        const validated_body = validateLogBody(body);
-        const validated_attributes = validateLogAttributes(attributes);
-        const validated_event_name = validateEventName(event_name);
-        const validated_severity_text = validateSeverityText(severity_text);
+        const validated_severity = otel_api.logs.validateSeverity(severity);
+        const validated_body = otel_api.logs.validateLogBody(body);
+        const validated_attributes = otel_api.logs.validateLogAttributes(attributes);
+        const validated_event_name = otel_api.logs.validateEventName(event_name);
+        const validated_severity_text = otel_api.logs.validateSeverityText(severity_text);
+        const validated_trace_id = otel_api.common.validateTraceId(trace_id);
+        const validated_span_id = otel_api.common.validateSpanId(span_id);
+        const validated_flags = otel_api.common.validateTraceFlags(flags);
 
         const record_severity = validated_severity orelse .invalid;
 
@@ -252,9 +251,9 @@ const BasicLogger = struct {
                 .body = validated_body,
                 .event_name = validated_event_name,
                 .attributes = validated_attributes orelse &[_]AttributeKeyValue{},
-                .trace_id = trace_id,
-                .span_id = span_id,
-                .flags = flags,
+                .trace_id = validated_trace_id,
+                .span_id = validated_span_id,
+                .flags = validated_flags,
                 .instrumentation_scope = self.scope,
             };
 

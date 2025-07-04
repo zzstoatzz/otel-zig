@@ -34,6 +34,9 @@ pub const FlushResult = results_zig.FlushResult;
 const types_zig = @import("types.zig");
 pub const TraceId = types_zig.TraceId;
 pub const SpanId = types_zig.SpanId;
+pub const validateTraceId = types_zig.validateTraceId;
+pub const validateSpanId = types_zig.validateSpanId;
+pub const validateTraceFlags = types_zig.validateTraceFlags;
 
 // Re-export error types
 const errors_zig = @import("errors.zig");
@@ -62,6 +65,9 @@ pub const reportSerializationErrorWithSource = error_handler_zig.reportSerializa
 pub const reportCallbackError = error_handler_zig.reportCallbackError;
 pub const reportCallbackErrorWithSource = error_handler_zig.reportCallbackErrorWithSource;
 pub const isValidatingMode = error_handler_zig.isValidatingMode;
+pub const MockErrorHandler = error_handler_zig.MockErrorHandler;
+pub const setMockErrorHandler = error_handler_zig.setMockErrorHandler;
+pub const clearMockErrorHandler = error_handler_zig.clearMockErrorHandler;
 
 test {
     std.testing.refAllDecls(@This());

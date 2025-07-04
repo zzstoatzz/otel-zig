@@ -303,7 +303,9 @@ pub const BasicMeter = struct {
         name: []const u8,
         description: ?[]const u8,
         unit: ?[]const u8,
+        advisory: ?otel_api.metrics.AdvisoryParams,
     ) !otel_api.metrics.Counter(i64) {
+        _ = advisory; // Ignore advisory parameters for now
         if (self.is_shutdown.load(.acquire)) {
             return otel_api.metrics.Counter(i64){ .noop = name };
         }
@@ -336,7 +338,9 @@ pub const BasicMeter = struct {
         name: []const u8,
         description: ?[]const u8,
         unit: ?[]const u8,
+        advisory: ?otel_api.metrics.AdvisoryParams,
     ) !otel_api.metrics.Counter(f64) {
+        _ = advisory; // Ignore advisory parameters for now
         if (self.is_shutdown.load(.acquire)) {
             return otel_api.metrics.Counter(f64){ .noop = name };
         }
@@ -369,7 +373,9 @@ pub const BasicMeter = struct {
         name: []const u8,
         description: ?[]const u8,
         unit: ?[]const u8,
+        advisory: ?otel_api.metrics.AdvisoryParams,
     ) !otel_api.metrics.UpDownCounter(i64) {
+        _ = advisory; // Ignore advisory parameters for now
         if (self.is_shutdown.load(.acquire)) {
             return otel_api.metrics.UpDownCounter(i64){ .noop = name };
         }
@@ -402,7 +408,9 @@ pub const BasicMeter = struct {
         name: []const u8,
         description: ?[]const u8,
         unit: ?[]const u8,
+        advisory: ?otel_api.metrics.AdvisoryParams,
     ) !otel_api.metrics.UpDownCounter(f64) {
+        _ = advisory; // Ignore advisory parameters for now
         if (self.is_shutdown.load(.acquire)) {
             return otel_api.metrics.UpDownCounter(f64){ .noop = name };
         }
@@ -435,7 +443,9 @@ pub const BasicMeter = struct {
         name: []const u8,
         description: ?[]const u8,
         unit: ?[]const u8,
+        advisory: ?otel_api.metrics.AdvisoryParams,
     ) !otel_api.metrics.Gauge(i64) {
+        _ = advisory; // Ignore advisory parameters for now
         if (self.is_shutdown.load(.acquire)) {
             return otel_api.metrics.Gauge(i64){ .noop = name };
         }
@@ -468,7 +478,9 @@ pub const BasicMeter = struct {
         name: []const u8,
         description: ?[]const u8,
         unit: ?[]const u8,
+        advisory: ?otel_api.metrics.AdvisoryParams,
     ) !otel_api.metrics.Gauge(f64) {
+        _ = advisory; // Ignore advisory parameters for now
         if (self.is_shutdown.load(.acquire)) {
             return otel_api.metrics.Gauge(f64){ .noop = name };
         }
@@ -501,7 +513,9 @@ pub const BasicMeter = struct {
         name: []const u8,
         description: ?[]const u8,
         unit: ?[]const u8,
+        advisory: ?otel_api.metrics.AdvisoryParams,
     ) !otel_api.metrics.Histogram(i64) {
+        _ = advisory; // Ignore advisory parameters for now
         if (self.is_shutdown.load(.acquire)) {
             return otel_api.metrics.Histogram(i64){ .noop = name };
         }
@@ -536,7 +550,9 @@ pub const BasicMeter = struct {
         name: []const u8,
         description: ?[]const u8,
         unit: ?[]const u8,
+        advisory: ?otel_api.metrics.AdvisoryParams,
     ) !otel_api.metrics.Histogram(f64) {
+        _ = advisory; // Ignore advisory parameters for now
         if (self.is_shutdown.load(.acquire)) {
             return otel_api.metrics.Histogram(f64){ .noop = name };
         }
@@ -573,7 +589,11 @@ pub const BasicMeter = struct {
         name: []const u8,
         description: ?[]const u8,
         unit: ?[]const u8,
+        advisory: ?otel_api.metrics.AdvisoryParams,
+        callbacks: []const otel_api.metrics.TypeErasedCallback,
     ) !otel_api.metrics.ObservableCounter(i64) {
+        _ = advisory; // Ignore advisory parameters for now
+        _ = callbacks; // Ignore creation-time callbacks for now
         if (self.is_shutdown.load(.acquire)) {
             return otel_api.metrics.ObservableCounter(i64){ .noop = name };
         }
@@ -607,7 +627,11 @@ pub const BasicMeter = struct {
         name: []const u8,
         description: ?[]const u8,
         unit: ?[]const u8,
+        advisory: ?otel_api.metrics.AdvisoryParams,
+        callbacks: []const otel_api.metrics.TypeErasedCallback,
     ) !otel_api.metrics.ObservableCounter(f64) {
+        _ = advisory; // Ignore advisory parameters for now
+        _ = callbacks; // Ignore creation-time callbacks for now
         if (self.is_shutdown.load(.acquire)) {
             return otel_api.metrics.ObservableCounter(f64){ .noop = name };
         }
@@ -641,7 +665,11 @@ pub const BasicMeter = struct {
         name: []const u8,
         description: ?[]const u8,
         unit: ?[]const u8,
+        advisory: ?otel_api.metrics.AdvisoryParams,
+        callbacks: []const otel_api.metrics.TypeErasedCallback,
     ) !otel_api.metrics.ObservableGauge(i64) {
+        _ = advisory; // Ignore advisory parameters for now
+        _ = callbacks; // Ignore creation-time callbacks for now
         if (self.is_shutdown.load(.acquire)) {
             return otel_api.metrics.ObservableGauge(i64){ .noop = name };
         }
@@ -675,7 +703,11 @@ pub const BasicMeter = struct {
         name: []const u8,
         description: ?[]const u8,
         unit: ?[]const u8,
+        advisory: ?otel_api.metrics.AdvisoryParams,
+        callbacks: []const otel_api.metrics.TypeErasedCallback,
     ) !otel_api.metrics.ObservableGauge(f64) {
+        _ = advisory; // Ignore advisory parameters for now
+        _ = callbacks; // Ignore creation-time callbacks for now
         if (self.is_shutdown.load(.acquire)) {
             return otel_api.metrics.ObservableGauge(f64){ .noop = name };
         }
@@ -709,7 +741,11 @@ pub const BasicMeter = struct {
         name: []const u8,
         description: ?[]const u8,
         unit: ?[]const u8,
+        advisory: ?otel_api.metrics.AdvisoryParams,
+        callbacks: []const otel_api.metrics.TypeErasedCallback,
     ) !otel_api.metrics.ObservableUpDownCounter(i64) {
+        _ = advisory; // Ignore advisory parameters for now
+        _ = callbacks; // Ignore creation-time callbacks for now
         if (self.is_shutdown.load(.acquire)) {
             return otel_api.metrics.ObservableUpDownCounter(i64){ .noop = name };
         }
@@ -743,7 +779,11 @@ pub const BasicMeter = struct {
         name: []const u8,
         description: ?[]const u8,
         unit: ?[]const u8,
+        advisory: ?otel_api.metrics.AdvisoryParams,
+        callbacks: []const otel_api.metrics.TypeErasedCallback,
     ) !otel_api.metrics.ObservableUpDownCounter(f64) {
+        _ = advisory; // Ignore advisory parameters for now
+        _ = callbacks; // Ignore creation-time callbacks for now
         if (self.is_shutdown.load(.acquire)) {
             return otel_api.metrics.ObservableUpDownCounter(f64){ .noop = name };
         }
@@ -1661,11 +1701,11 @@ test "BasicMeter instrument creation and data collection" {
     var meter = try provider.getMeterWithScope(scope);
 
     // Create various instrument types
-    const counter_i64 = try meter.createCounter(i64, "test.counter.i64", "Test counter", "requests");
-    const counter_f64 = try meter.createCounter(f64, "test.counter.f64", "Test counter", "seconds");
-    const updown_i64 = try meter.createUpDownCounter(i64, "test.updown.i64", "Test updown", "connections");
-    const gauge_i64 = try meter.createGauge(i64, "test.gauge.i64", "Test gauge", "bytes");
-    const histogram_f64 = try meter.createHistogram(f64, "test.histogram.f64", "Test histogram", "ms");
+    const counter_i64 = try meter.createCounter(i64, "test.counter.i64", "Test counter", "requests", null);
+    const counter_f64 = try meter.createCounter(f64, "test.counter.f64", "Test counter", "seconds", null);
+    const updown_i64 = try meter.createUpDownCounter(i64, "test.updown.i64", "Test updown", "connections", null);
+    const gauge_i64 = try meter.createGauge(i64, "test.gauge.i64", "Test gauge", "bytes", null);
+    const histogram_f64 = try meter.createHistogram(f64, "test.histogram.f64", "Test histogram", "ms", null);
 
     const ctx = Context.init(allocator);
     const empty_attributes = [_]AttributeKeyValue{};
@@ -1733,8 +1773,8 @@ test "BasicMeter data collection through processor pipeline" {
     var meter = try provider.getMeterWithScope(scope);
 
     // Create instruments and record data
-    const counter = try meter.createCounter(i64, "http.requests", "HTTP requests", "requests");
-    const histogram = try meter.createHistogram(f64, "http.duration", "HTTP duration", "ms");
+    const counter = try meter.createCounter(i64, "http.requests", "HTTP requests", "requests", null);
+    const histogram = try meter.createHistogram(f64, "http.duration", "HTTP duration", "ms", null);
 
     const ctx = Context.init(allocator);
     const empty_attributes = [_]AttributeKeyValue{};
@@ -1787,7 +1827,7 @@ test "BasicMeter shutdown behavior" {
     var meter = try provider.getMeterWithScope(scope);
 
     // Create counter and record data before shutdown
-    const counter = try meter.createCounter(i64, "test.counter", "Test counter", "requests");
+    const counter = try meter.createCounter(i64, "test.counter", "Test counter", "requests", null);
     const ctx = Context.init(allocator);
     const empty_attributes = [_]AttributeKeyValue{};
 
@@ -1869,14 +1909,14 @@ test "BasicMeter comprehensive instrument test with attributes" {
     _ = [_]f64{ 0.0, 1.0, 5.0, 10.0, 50.0 };
 
     // Create all instrument types with different value types
-    const counter_i64 = try meter.createCounter(i64, "test.counter.i64", "Test i64 counter", "ops");
-    const counter_f64 = try meter.createCounter(f64, "test.counter.f64", "Test f64 counter", "seconds");
-    const updown_i64 = try meter.createUpDownCounter(i64, "test.updown.i64", "Test i64 updown", "items");
-    const updown_f64 = try meter.createUpDownCounter(f64, "test.updown.f64", "Test f64 updown", "temperature");
-    const gauge_i64 = try meter.createGauge(i64, "test.gauge.i64", "Test i64 gauge", "bytes");
-    const gauge_f64 = try meter.createGauge(f64, "test.gauge.f64", "Test f64 gauge", "ratio");
-    const histogram_i64 = try meter.createHistogram(i64, "test.histogram.i64", "Test i64 histogram", "count");
-    const histogram_f64 = try meter.createHistogram(f64, "test.histogram.f64", "Test f64 histogram", "latency");
+    const counter_i64 = try meter.createCounter(i64, "test.counter.i64", "Test i64 counter", "ops", null);
+    const counter_f64 = try meter.createCounter(f64, "test.counter.f64", "Test f64 counter", "seconds", null);
+    const updown_i64 = try meter.createUpDownCounter(i64, "test.updown.i64", "Test i64 updown", "items", null);
+    const updown_f64 = try meter.createUpDownCounter(f64, "test.updown.f64", "Test f64 updown", "temperature", null);
+    const gauge_i64 = try meter.createGauge(i64, "test.gauge.i64", "Test i64 gauge", "bytes", null);
+    const gauge_f64 = try meter.createGauge(f64, "test.gauge.f64", "Test f64 gauge", "ratio", null);
+    const histogram_i64 = try meter.createHistogram(i64, "test.histogram.i64", "Test i64 histogram", "count", null);
+    const histogram_f64 = try meter.createHistogram(f64, "test.histogram.f64", "Test f64 histogram", "latency", null);
 
     const ctx = Context.init(allocator);
     const empty_attributes = [_]AttributeKeyValue{};
@@ -1971,7 +2011,7 @@ test "BasicMeter instrument creation after shutdown returns noop instruments" {
     var meter = try provider.getMeterWithScope(scope);
 
     // Create instrument before shutdown - should be normal SDK instrument
-    const counter_before = try meter.createCounter(i64, "test.counter.before", "Test counter", "requests");
+    const counter_before = try meter.createCounter(i64, "test.counter.before", "Test counter", "requests", null);
     try testing.expect(counter_before == .bridge); // Should be bridge to SDK instrument
 
     // Get the BasicMeter instance to shutdown directly
@@ -1979,10 +2019,10 @@ test "BasicMeter instrument creation after shutdown returns noop instruments" {
     basic_meter.shutdown();
 
     // Create instruments after shutdown - should be noop instruments
-    const counter_after = try meter.createCounter(i64, "test.counter.after", "Test counter", "requests");
-    const updown_after = try meter.createUpDownCounter(f64, "test.updown.after", "Test updown", "bytes");
-    const gauge_after = try meter.createGauge(i64, "test.gauge.after", "Test gauge", "items");
-    const histogram_after = try meter.createHistogram(f64, "test.histogram.after", "Test histogram", "ms");
+    const counter_after = try meter.createCounter(i64, "test.counter.after", "Test counter", "requests", null);
+    const updown_after = try meter.createUpDownCounter(f64, "test.updown.after", "Test updown", "bytes", null);
+    const gauge_after = try meter.createGauge(i64, "test.gauge.after", "Test gauge", "items", null);
+    const histogram_after = try meter.createHistogram(f64, "test.histogram.after", "Test histogram", "ms", null);
 
     // All instruments created after shutdown should be noop
     try testing.expect(counter_after == .noop);

@@ -211,9 +211,16 @@ pub fn validateAttributes(attributes: []const AttributeKeyValue) []const Attribu
 
 test "validateAttributes has no memory leak and reports errors" {
     const testing = std.testing;
+    const allocator = testing.allocator;
 
     // This test only runs in debug mode
     if (!isValidatingMode()) return;
+
+    // Use mock error handler to capture validation errors instead of printing to stderr
+    var mock_error_handler = @import("../common/error_handler.zig").MockErrorHandler.init(allocator);
+    defer mock_error_handler.deinit();
+    @import("../common/error_handler.zig").setMockErrorHandler(&mock_error_handler);
+    defer @import("../common/error_handler.zig").clearMockErrorHandler();
 
     // Create attributes with some invalid keys
     const test_attrs = [_]AttributeKeyValue{
@@ -232,6 +239,13 @@ test "validateAttributes has no memory leak and reports errors" {
     // Verify no memory allocation occurred - same pointer and length returned
     try testing.expectEqual(original_ptr, result.ptr);
     try testing.expectEqual(original_len, result.len);
+
+    // Verify validation error was captured
+    try testing.expectEqual(@as(usize, 1), mock_error_handler.errorCount());
+    const captured_error = mock_error_handler.getError(0).?;
+    try testing.expectEqual(@import("../common/error_handler.zig").Component.tracer, captured_error.component);
+    try testing.expectEqual(@import("../common/error_handler.zig").ErrorType.validation, captured_error.error_type);
+    try testing.expectEqualStrings("Invalid attributes detected due to empty keys", captured_error.message);
 
     // Verify all original data is unchanged
     try testing.expectEqualStrings("valid.key", result[0].key);

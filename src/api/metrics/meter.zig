@@ -23,6 +23,10 @@ const Counter = @import("instrument.zig").Counter;
 const UpDownCounter = @import("instrument.zig").UpDownCounter;
 const Gauge = @import("instrument.zig").Gauge;
 const Histogram = @import("instrument.zig").Histogram;
+const AdvisoryParams = @import("instrument.zig").AdvisoryParams;
+
+// Observable instrument imports
+const TypeErasedCallback = @import("observable_instrument.zig").TypeErasedCallback;
 
 // Observable instrument imports
 const ObservableCounter = @import("observable_instrument.zig").ObservableCounter;
@@ -59,6 +63,7 @@ pub const Meter = union(enum) {
         name: []const u8,
         description: ?[]const u8,
         unit: ?[]const u8,
+        advisory: ?AdvisoryParams,
     ) !Counter(T) {
         comptime switch (T) {
             i64, f64 => {},
@@ -68,8 +73,8 @@ pub const Meter = union(enum) {
         return switch (self.*) {
             .noop => |_| Counter(T){ .noop = name },
             .bridge => |*bridge| switch (T) {
-                i64 => bridge.createCounterI64Fn(bridge.meter_ptr, name, description, unit),
-                f64 => bridge.createCounterF64Fn(bridge.meter_ptr, name, description, unit),
+                i64 => bridge.createCounterI64Fn(bridge.meter_ptr, name, description, unit, advisory),
+                f64 => bridge.createCounterF64Fn(bridge.meter_ptr, name, description, unit, advisory),
                 else => unreachable,
             },
         };
@@ -91,6 +96,7 @@ pub const Meter = union(enum) {
         name: []const u8,
         description: ?[]const u8,
         unit: ?[]const u8,
+        advisory: ?AdvisoryParams,
     ) !UpDownCounter(T) {
         comptime switch (T) {
             i64, f64 => {},
@@ -100,8 +106,8 @@ pub const Meter = union(enum) {
         return switch (self.*) {
             .noop => |_| UpDownCounter(T){ .noop = name },
             .bridge => |*bridge| switch (T) {
-                i64 => bridge.createUpDownCounterI64Fn(bridge.meter_ptr, name, description, unit),
-                f64 => bridge.createUpDownCounterF64Fn(bridge.meter_ptr, name, description, unit),
+                i64 => bridge.createUpDownCounterI64Fn(bridge.meter_ptr, name, description, unit, advisory),
+                f64 => bridge.createUpDownCounterF64Fn(bridge.meter_ptr, name, description, unit, advisory),
                 else => unreachable,
             },
         };
@@ -123,6 +129,7 @@ pub const Meter = union(enum) {
         name: []const u8,
         description: ?[]const u8,
         unit: ?[]const u8,
+        advisory: ?AdvisoryParams,
     ) !Gauge(T) {
         comptime switch (T) {
             i64, f64 => {},
@@ -132,8 +139,8 @@ pub const Meter = union(enum) {
         return switch (self.*) {
             .noop => |_| Gauge(T){ .noop = name },
             .bridge => |*bridge| switch (T) {
-                i64 => bridge.createGaugeI64Fn(bridge.meter_ptr, name, description, unit),
-                f64 => bridge.createGaugeF64Fn(bridge.meter_ptr, name, description, unit),
+                i64 => bridge.createGaugeI64Fn(bridge.meter_ptr, name, description, unit, advisory),
+                f64 => bridge.createGaugeF64Fn(bridge.meter_ptr, name, description, unit, advisory),
                 else => unreachable,
             },
         };
@@ -155,6 +162,7 @@ pub const Meter = union(enum) {
         name: []const u8,
         description: ?[]const u8,
         unit: ?[]const u8,
+        advisory: ?AdvisoryParams,
     ) !Histogram(T) {
         comptime switch (T) {
             i64, f64 => {},
@@ -164,8 +172,8 @@ pub const Meter = union(enum) {
         return switch (self.*) {
             .noop => |_| Histogram(T){ .noop = name },
             .bridge => |*bridge| switch (T) {
-                i64 => bridge.createHistogramI64Fn(bridge.meter_ptr, name, description, unit),
-                f64 => bridge.createHistogramF64Fn(bridge.meter_ptr, name, description, unit),
+                i64 => bridge.createHistogramI64Fn(bridge.meter_ptr, name, description, unit, advisory),
+                f64 => bridge.createHistogramF64Fn(bridge.meter_ptr, name, description, unit, advisory),
                 else => unreachable,
             },
         };
@@ -187,6 +195,8 @@ pub const Meter = union(enum) {
         name: []const u8,
         description: ?[]const u8,
         unit: ?[]const u8,
+        advisory: ?AdvisoryParams,
+        callbacks: []const TypeErasedCallback,
     ) !ObservableCounter(T) {
         comptime switch (T) {
             i64, f64 => {},
@@ -196,8 +206,8 @@ pub const Meter = union(enum) {
         return switch (self.*) {
             .noop => |_| ObservableCounter(T){ .noop = name },
             .bridge => |*bridge| switch (T) {
-                i64 => bridge.createObservableCounterI64Fn(bridge.meter_ptr, name, description, unit),
-                f64 => bridge.createObservableCounterF64Fn(bridge.meter_ptr, name, description, unit),
+                i64 => bridge.createObservableCounterI64Fn(bridge.meter_ptr, name, description, unit, advisory, callbacks),
+                f64 => bridge.createObservableCounterF64Fn(bridge.meter_ptr, name, description, unit, advisory, callbacks),
                 else => unreachable,
             },
         };
@@ -219,6 +229,8 @@ pub const Meter = union(enum) {
         name: []const u8,
         description: ?[]const u8,
         unit: ?[]const u8,
+        advisory: ?AdvisoryParams,
+        callbacks: []const TypeErasedCallback,
     ) !ObservableGauge(T) {
         comptime switch (T) {
             i64, f64 => {},
@@ -228,8 +240,8 @@ pub const Meter = union(enum) {
         return switch (self.*) {
             .noop => |_| ObservableGauge(T){ .noop = name },
             .bridge => |*bridge| switch (T) {
-                i64 => bridge.createObservableGaugeI64Fn(bridge.meter_ptr, name, description, unit),
-                f64 => bridge.createObservableGaugeF64Fn(bridge.meter_ptr, name, description, unit),
+                i64 => bridge.createObservableGaugeI64Fn(bridge.meter_ptr, name, description, unit, advisory, callbacks),
+                f64 => bridge.createObservableGaugeF64Fn(bridge.meter_ptr, name, description, unit, advisory, callbacks),
                 else => unreachable,
             },
         };
@@ -251,6 +263,8 @@ pub const Meter = union(enum) {
         name: []const u8,
         description: ?[]const u8,
         unit: ?[]const u8,
+        advisory: ?AdvisoryParams,
+        callbacks: []const TypeErasedCallback,
     ) !ObservableUpDownCounter(T) {
         comptime switch (T) {
             i64, f64 => {},
@@ -260,8 +274,8 @@ pub const Meter = union(enum) {
         return switch (self.*) {
             .noop => |_| ObservableUpDownCounter(T){ .noop = name },
             .bridge => |*bridge| switch (T) {
-                i64 => bridge.createObservableUpDownCounterI64Fn(bridge.meter_ptr, name, description, unit),
-                f64 => bridge.createObservableUpDownCounterF64Fn(bridge.meter_ptr, name, description, unit),
+                i64 => bridge.createObservableUpDownCounterI64Fn(bridge.meter_ptr, name, description, unit, advisory, callbacks),
+                f64 => bridge.createObservableUpDownCounterF64Fn(bridge.meter_ptr, name, description, unit, advisory, callbacks),
                 else => unreachable,
             },
         };
@@ -356,81 +370,81 @@ pub fn validateHistogramValue(comptime T: type, value: T) bool {
 /// Bridge structure that holds SDK meter pointer and vtable
 pub const MeterBridge = struct {
     meter_ptr: *anyopaque,
-    createCounterI64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!Counter(i64),
-    createCounterF64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!Counter(f64),
-    createUpDownCounterI64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!UpDownCounter(i64),
-    createUpDownCounterF64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!UpDownCounter(f64),
-    createGaugeI64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!Gauge(i64),
-    createGaugeF64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!Gauge(f64),
-    createHistogramI64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!Histogram(i64),
-    createHistogramF64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!Histogram(f64),
-    createObservableCounterI64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!ObservableCounter(i64),
-    createObservableCounterF64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!ObservableCounter(f64),
-    createObservableGaugeI64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!ObservableGauge(i64),
-    createObservableGaugeF64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!ObservableGauge(f64),
-    createObservableUpDownCounterI64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!ObservableUpDownCounter(i64),
-    createObservableUpDownCounterF64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!ObservableUpDownCounter(f64),
+    createCounterI64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8, advisory: ?AdvisoryParams) anyerror!Counter(i64),
+    createCounterF64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8, advisory: ?AdvisoryParams) anyerror!Counter(f64),
+    createUpDownCounterI64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8, advisory: ?AdvisoryParams) anyerror!UpDownCounter(i64),
+    createUpDownCounterF64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8, advisory: ?AdvisoryParams) anyerror!UpDownCounter(f64),
+    createGaugeI64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8, advisory: ?AdvisoryParams) anyerror!Gauge(i64),
+    createGaugeF64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8, advisory: ?AdvisoryParams) anyerror!Gauge(f64),
+    createHistogramI64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8, advisory: ?AdvisoryParams) anyerror!Histogram(i64),
+    createHistogramF64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8, advisory: ?AdvisoryParams) anyerror!Histogram(f64),
+    createObservableCounterI64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8, advisory: ?AdvisoryParams, callbacks: []const TypeErasedCallback) anyerror!ObservableCounter(i64),
+    createObservableCounterF64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8, advisory: ?AdvisoryParams, callbacks: []const TypeErasedCallback) anyerror!ObservableCounter(f64),
+    createObservableGaugeI64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8, advisory: ?AdvisoryParams, callbacks: []const TypeErasedCallback) anyerror!ObservableGauge(i64),
+    createObservableGaugeF64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8, advisory: ?AdvisoryParams, callbacks: []const TypeErasedCallback) anyerror!ObservableGauge(f64),
+    createObservableUpDownCounterI64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8, advisory: ?AdvisoryParams, callbacks: []const TypeErasedCallback) anyerror!ObservableUpDownCounter(i64),
+    createObservableUpDownCounterF64Fn: *const fn (meter_ptr: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8, advisory: ?AdvisoryParams, callbacks: []const TypeErasedCallback) anyerror!ObservableUpDownCounter(f64),
 
     pub fn init(ptr: anytype) MeterBridge {
         const T = @TypeOf(ptr);
         const ptr_info = @typeInfo(T);
 
         const VTable = struct {
-            pub fn createCounterF64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!Counter(f64) {
+            pub fn createCounterF64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8, advisory: ?AdvisoryParams) anyerror!Counter(f64) {
                 const self: T = @ptrCast(@alignCast(pointer));
-                return ptr_info.pointer.child.createCounterF64(self, name, description, unit);
+                return ptr_info.pointer.child.createCounterF64(self, name, description, unit, advisory);
             }
-            pub fn createCounterI64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!Counter(i64) {
+            pub fn createCounterI64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8, advisory: ?AdvisoryParams) anyerror!Counter(i64) {
                 const self: T = @ptrCast(@alignCast(pointer));
-                return ptr_info.pointer.child.createCounterI64(self, name, description, unit);
+                return ptr_info.pointer.child.createCounterI64(self, name, description, unit, advisory);
             }
-            pub fn createUpDownCounterF64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!UpDownCounter(f64) {
+            pub fn createUpDownCounterF64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8, advisory: ?AdvisoryParams) anyerror!UpDownCounter(f64) {
                 const self: T = @ptrCast(@alignCast(pointer));
-                return ptr_info.pointer.child.createUpDownCounterF64(self, name, description, unit);
+                return ptr_info.pointer.child.createUpDownCounterF64(self, name, description, unit, advisory);
             }
-            pub fn createUpDownCounterI64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!UpDownCounter(i64) {
+            pub fn createUpDownCounterI64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8, advisory: ?AdvisoryParams) anyerror!UpDownCounter(i64) {
                 const self: T = @ptrCast(@alignCast(pointer));
-                return ptr_info.pointer.child.createUpDownCounterI64(self, name, description, unit);
+                return ptr_info.pointer.child.createUpDownCounterI64(self, name, description, unit, advisory);
             }
-            pub fn createGaugeF64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!Gauge(f64) {
+            pub fn createGaugeF64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8, advisory: ?AdvisoryParams) anyerror!Gauge(f64) {
                 const self: T = @ptrCast(@alignCast(pointer));
-                return ptr_info.pointer.child.createGaugeF64(self, name, description, unit);
+                return ptr_info.pointer.child.createGaugeF64(self, name, description, unit, advisory);
             }
-            pub fn createGaugeI64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!Gauge(i64) {
+            pub fn createGaugeI64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8, advisory: ?AdvisoryParams) anyerror!Gauge(i64) {
                 const self: T = @ptrCast(@alignCast(pointer));
-                return ptr_info.pointer.child.createGaugeI64(self, name, description, unit);
+                return ptr_info.pointer.child.createGaugeI64(self, name, description, unit, advisory);
             }
-            pub fn createHistogramF64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!Histogram(f64) {
+            pub fn createHistogramF64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8, advisory: ?AdvisoryParams) anyerror!Histogram(f64) {
                 const self: T = @ptrCast(@alignCast(pointer));
-                return ptr_info.pointer.child.createHistogramF64(self, name, description, unit);
+                return ptr_info.pointer.child.createHistogramF64(self, name, description, unit, advisory);
             }
-            pub fn createHistogramI64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!Histogram(i64) {
+            pub fn createHistogramI64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8, advisory: ?AdvisoryParams) anyerror!Histogram(i64) {
                 const self: T = @ptrCast(@alignCast(pointer));
-                return ptr_info.pointer.child.createHistogramI64(self, name, description, unit);
+                return ptr_info.pointer.child.createHistogramI64(self, name, description, unit, advisory);
             }
-            pub fn createObservableCounterI64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!ObservableCounter(i64) {
+            pub fn createObservableCounterI64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8, advisory: ?AdvisoryParams, callbacks: []const TypeErasedCallback) anyerror!ObservableCounter(i64) {
                 const self: T = @ptrCast(@alignCast(pointer));
-                return ptr_info.pointer.child.createObservableCounterI64(self, name, description, unit);
+                return ptr_info.pointer.child.createObservableCounterI64(self, name, description, unit, advisory, callbacks);
             }
-            pub fn createObservableCounterF64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!ObservableCounter(f64) {
+            pub fn createObservableCounterF64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8, advisory: ?AdvisoryParams, callbacks: []const TypeErasedCallback) anyerror!ObservableCounter(f64) {
                 const self: T = @ptrCast(@alignCast(pointer));
-                return ptr_info.pointer.child.createObservableCounterF64(self, name, description, unit);
+                return ptr_info.pointer.child.createObservableCounterF64(self, name, description, unit, advisory, callbacks);
             }
-            pub fn createObservableGaugeI64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!ObservableGauge(i64) {
+            pub fn createObservableGaugeI64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8, advisory: ?AdvisoryParams, callbacks: []const TypeErasedCallback) anyerror!ObservableGauge(i64) {
                 const self: T = @ptrCast(@alignCast(pointer));
-                return ptr_info.pointer.child.createObservableGaugeI64(self, name, description, unit);
+                return ptr_info.pointer.child.createObservableGaugeI64(self, name, description, unit, advisory, callbacks);
             }
-            pub fn createObservableGaugeF64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!ObservableGauge(f64) {
+            pub fn createObservableGaugeF64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8, advisory: ?AdvisoryParams, callbacks: []const TypeErasedCallback) anyerror!ObservableGauge(f64) {
                 const self: T = @ptrCast(@alignCast(pointer));
-                return ptr_info.pointer.child.createObservableGaugeF64(self, name, description, unit);
+                return ptr_info.pointer.child.createObservableGaugeF64(self, name, description, unit, advisory, callbacks);
             }
-            pub fn createObservableUpDownCounterI64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!ObservableUpDownCounter(i64) {
+            pub fn createObservableUpDownCounterI64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8, advisory: ?AdvisoryParams, callbacks: []const TypeErasedCallback) anyerror!ObservableUpDownCounter(i64) {
                 const self: T = @ptrCast(@alignCast(pointer));
-                return ptr_info.pointer.child.createObservableUpDownCounterI64(self, name, description, unit);
+                return ptr_info.pointer.child.createObservableUpDownCounterI64(self, name, description, unit, advisory, callbacks);
             }
-            pub fn createObservableUpDownCounterF64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8) anyerror!ObservableUpDownCounter(f64) {
+            pub fn createObservableUpDownCounterF64(pointer: *anyopaque, name: []const u8, description: ?[]const u8, unit: ?[]const u8, advisory: ?AdvisoryParams, callbacks: []const TypeErasedCallback) anyerror!ObservableUpDownCounter(f64) {
                 const self: T = @ptrCast(@alignCast(pointer));
-                return ptr_info.pointer.child.createObservableUpDownCounterF64(self, name, description, unit);
+                return ptr_info.pointer.child.createObservableUpDownCounterF64(self, name, description, unit, advisory, callbacks);
             }
         };
 

@@ -14,6 +14,16 @@ const std = @import("std");
 const Context = @import("../context/root.zig").Context;
 const AttributeKeyValue = @import("../common/root.zig").AttributeKeyValue;
 
+/// Advisory parameters for instrument creation
+/// These are optional recommendations that implementations MAY use or ignore
+pub const AdvisoryParams = struct {
+    /// Recommended bucket boundaries for Histogram instruments (Stable)
+    explicit_bucket_boundaries: ?[]const f64 = null,
+
+    /// Recommended attribute keys to be used for the resulting metrics (Development)
+    attributes: ?[]const []const u8 = null,
+};
+
 /// Counter is a monotonic sum instrument that supports non-negative increments only.
 /// T must be a numeric type (i64, f64)
 ///

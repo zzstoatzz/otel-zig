@@ -29,18 +29,6 @@ pub fn main() !void {
     print("🚀 Starting Comprehensive Trace SDK Example\n", .{});
     print("=" ** 50 ++ "\n", .{});
 
-    // Create resource with comprehensive service information
-    const resource = try otel_sdk.resource.ResourceBuilder.init(allocator)
-        .withDefaults()
-        .addKeyValue(.{ .key = "service.name", .value = .{ .string = "comprehensive-trace-demo" } })
-        .addKeyValue(.{ .key = "service.version", .value = .{ .string = "2.0.0" } })
-        .addKeyValue(.{ .key = "service.namespace", .value = .{ .string = "otel-zig-examples" } })
-        .addKeyValue(.{ .key = "deployment.environment", .value = .{ .string = "development" } })
-        .addKeyValue(.{ .key = "telemetry.sdk.name", .value = .{ .string = "otel-zig" } })
-        .addSchemaUrl("https://opentelemetry.io/schemas/1.21.0")
-        .finish(allocator);
-    errdefer resource.deinitOwned(allocator);
-
     // Set up trace provider using the new setupGlobalProvider pattern
     // Note: setupGlobalProvider uses automatic resource detection
     // The custom resource above demonstrates resource building but won't be used

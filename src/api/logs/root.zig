@@ -39,6 +39,9 @@ pub const validateEventName = logger_zig.validateEventName;
 pub const validateSeverityText = logger_zig.validateSeverityText;
 pub const validateFormatString = logger_zig.validateFormatString;
 pub const validateAttributes = logger_zig.validateAttributes;
+pub const validateTraceId = @import("../common/types.zig").validateTraceId;
+pub const validateSpanId = @import("../common/types.zig").validateSpanId;
+pub const validateTraceFlags = @import("../common/types.zig").validateTraceFlags;
 
 // Logger provider types
 const logger_provider_zig = @import("logger_provider.zig");

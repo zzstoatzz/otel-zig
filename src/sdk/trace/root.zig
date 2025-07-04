@@ -62,21 +62,6 @@ const Resource = @import("../resource/resource.zig").Resource;
 // Re-export the setup helper functions
 pub const setupGlobalProvider = @import("setup.zig").setupGlobalProvider;
 
-test "trace sdk module compilation" {
-    const testing = std.testing;
-    _ = testing;
-
-    // Test that all types are properly imported
-    _ = RecordingSpan;
-    _ = StandardTracer;
-    _ = BasicTracerProvider;
-    _ = SpanProcessor;
-    _ = BasicSpanProcessor;
-    _ = SimpleSpanProcessor;
-    _ = BridgeSpanProcessor;
-    _ = SpanExporter;
-}
-
 test {
-    _ = @import("test_phase6_sdk.zig");
+    std.testing.refAllDecls(@This());
 }

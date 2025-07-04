@@ -110,3 +110,46 @@ test "SpanId hex string conversion" {
     const formatted = try std.fmt.bufPrint(&buffer, "{}", .{span_id});
     try testing.expectEqualStrings(hex_string, formatted);
 }
+
+// Validation functions for use by SDK implementations
+const isValidatingMode = @import("error_handler.zig").isValidatingMode;
+const reportValidationError = @import("error_handler.zig").reportValidationError;
+
+/// Validate trace ID in debug mode
+pub fn validateTraceId(trace_id: ?TraceId) ?TraceId {
+    if (!isValidatingMode()) return trace_id;
+
+    if (trace_id) |id| {
+        if (id.isInvalid()) {
+            reportValidationError(.logger, "emitLogRecord", "Invalid all-zero trace ID provided", null);
+        }
+    }
+    return trace_id;
+}
+
+/// Validate span ID in debug mode
+pub fn validateSpanId(span_id: ?SpanId) ?SpanId {
+    if (!isValidatingMode()) return span_id;
+
+    if (span_id) |id| {
+        if (id.isInvalid()) {
+            reportValidationError(.logger, "emitLogRecord", "Invalid all-zero span ID provided", null);
+        }
+    }
+    return span_id;
+}
+
+/// Validate trace flags in debug mode
+pub fn validateTraceFlags(flags: ?u8) ?u8 {
+    if (!isValidatingMode()) return flags;
+
+    if (flags) |f| {
+        // Currently all 8 bits are allowed per W3C trace context spec
+        // This validation is here for future extensibility
+        const DEFINED_FLAGS_MASK: u8 = 0xFF;
+        if (f & ~DEFINED_FLAGS_MASK != 0) {
+            reportValidationError(.logger, "emitLogRecord", "Invalid trace flags with undefined bits set", null);
+        }
+    }
+    return flags;
+}

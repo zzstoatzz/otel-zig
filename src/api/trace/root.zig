@@ -63,6 +63,9 @@ pub const validateSpanName = span.validateSpanName;
 pub const validateAttributeValue = @import("tracer.zig").validateAttributeValue;
 pub const validateAttributes = @import("tracer.zig").validateAttributes;
 
+// Span utilities
+pub const wrapSpanContext = span.wrapSpanContext;
+
 // Tests
 test "trace api module compilation" {
     std.testing.refAllDecls(@This());

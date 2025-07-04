@@ -51,20 +51,23 @@ pub fn main() !void {
         "foo.bar.bas.request_count",
         "Total number of HTTP requests processed",
         "1",
+        null,
     );
 
     const bytes_sent_counter = try meter.createCounter(
         i64,
         "foo.bar.bas.bytes_sent",
-        "Total bytes sent in HTTP responses",
+        "Total bytes sent",
         "bytes",
+        null,
     );
 
     const request_duration_total = try meter.createCounter(
         f64,
         "foo.bar.bas.request_duration_total",
-        "Total time spent processing HTTP requests",
-        "ms",
+        "Total time spent processing requests",
+        "seconds",
+        null,
     );
 
     // UP-DOWN COUNTERS: Values that can increase or decrease
@@ -73,6 +76,7 @@ pub fn main() !void {
         "foo.bar.bas.active_requests",
         "Number of currently active HTTP requests",
         "1",
+        null,
     );
 
     const connection_pool_size = try meter.createUpDownCounter(
@@ -80,43 +84,49 @@ pub fn main() !void {
         "foo.bar.bas.connection_pool_size",
         "Current number of connections in the pool",
         "1",
+        null,
     );
 
     // GAUGES: Point-in-time measurements
     const memory_usage = try meter.createGauge(
         f64,
         "foo.bar.bas.memory_usage",
-        "Current memory usage",
-        "MiB",
+        "Current memory usage in megabytes",
+        "MB",
+        null,
     );
 
     const cpu_usage = try meter.createGauge(
         f64,
         "foo.bar.bas.cpu_usage",
         "Current CPU usage percentage",
-        "%",
+        "percent",
+        null,
     );
 
     const disk_free_space = try meter.createGauge(
         f64,
         "foo.bar.bas.disk_free_space",
-        "Available disk space",
-        "GiB",
+        "Available disk space in gigabytes",
+        "GB",
+        null,
     );
 
     // HISTOGRAMS: Distribution of values with buckets
     const latency_histogram = try meter.createHistogram(
         f64,
         "foo.bar.bas.request_duration",
-        "Distribution of HTTP request durations",
-        "ms",
+        "Distribution of request durations",
+        "milliseconds",
+        null,
     );
 
     const request_size_histogram = try meter.createHistogram(
         i64,
         "foo.bar.bas.request.size",
-        "Distribution of HTTP request body sizes",
+        "Distribution of request sizes",
         "bytes",
+        null,
     );
 
     const response_size_histogram = try meter.createHistogram(
@@ -124,6 +134,7 @@ pub fn main() !void {
         "foo.bar.bas.response.size",
         "Distribution of HTTP response body sizes",
         "bytes",
+        null,
     );
 
     const db_query_duration_histogram = try meter.createHistogram(
@@ -131,6 +142,7 @@ pub fn main() !void {
         "foo.bar.bas.db_query.duration",
         "Distribution of database query durations",
         "ms",
+        null,
     );
 
     const ctx = otel_api.Context.empty(allocator);

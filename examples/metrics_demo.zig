@@ -39,7 +39,8 @@ pub fn basicProcessorDemo(allocator: std.mem.Allocator) !void {
         i64,
         "http.requests.total",
         "Total number of HTTP requests",
-        "1", // unit: count
+        "requests",
+        null,
     );
 
     // Create an up-down counter for tracking active connections
@@ -47,7 +48,8 @@ pub fn basicProcessorDemo(allocator: std.mem.Allocator) !void {
         i64,
         "connections.active",
         "Number of active connections",
-        "1", // unit: count
+        "connections",
+        null,
     );
 
     // Create a gauge for temperature readings
@@ -55,7 +57,8 @@ pub fn basicProcessorDemo(allocator: std.mem.Allocator) !void {
         f64,
         "room.temperature",
         "Current room temperature",
-        "°C", // unit: Celsius
+        "celsius",
+        null,
     );
 
     // Create a context for recording
@@ -171,14 +174,16 @@ pub fn advancedProcessorDemo(allocator: std.mem.Allocator) !void {
         i64,
         "http.requests.total",
         "Total number of HTTP requests",
-        "1", // unit: count
+        "requests",
+        null,
     );
 
     const active_connections = try meter.createUpDownCounter(
         i64,
         "connections.active",
         "Number of active connections",
-        "1",
+        "connections",
+        null,
     );
 
     const cpu_usage = try meter.createGauge(
@@ -186,16 +191,18 @@ pub fn advancedProcessorDemo(allocator: std.mem.Allocator) !void {
         "cpu.usage",
         "Current CPU usage percentage",
         "%",
+        null,
     );
 
     const response_time = try meter.createHistogram(
         f64,
         "http.response_time",
-        "HTTP response time in milliseconds",
+        "HTTP response time",
         "ms",
+        null,
     );
 
-    const response_nonce = try meter.createHistogram(i64, "foo.bar.baz.thoughts", "random thoughts", "thought");
+    const response_nonce = try meter.createHistogram(i64, "foo.bar.baz.thoughts", "random thoughts", "thought", null);
 
     std.log.info("Created instruments, starting metric recording...", .{});
     std.log.info("Metrics will be exported every 5 seconds by the background thread", .{});

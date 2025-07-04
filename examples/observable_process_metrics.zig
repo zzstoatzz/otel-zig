@@ -290,11 +290,11 @@ pub fn main() !void {
     std.log.info("Creating observable instruments for process monitoring...", .{});
 
     // Create observable instruments
-    var cpu_gauge = try meter.createObservableGauge(f64, "process.cpu.usage", "Process CPU usage percentage", "percent");
-    var memory_gauge = try meter.createObservableGauge(i64, "process.memory.usage", "Process memory usage", "bytes");
-    var resource_gauge = try meter.createObservableGauge(i64, "process.resource.usage", "Process resource usage", "count");
-    var uptime_gauge = try meter.createObservableGauge(f64, "system.uptime", "System uptime", "seconds");
-    var load_gauge = try meter.createObservableGauge(f64, "system.load.average", "System load average", "ratio");
+    var cpu_gauge = try meter.createObservableGauge(f64, "process.cpu.usage", "Process CPU usage percentage", "percent", null, &[_]otel_api.metrics.TypeErasedCallback{});
+    var memory_gauge = try meter.createObservableGauge(i64, "process.memory.usage", "Process memory usage", "bytes", null, &[_]otel_api.metrics.TypeErasedCallback{});
+    var resource_gauge = try meter.createObservableGauge(i64, "process.resource.usage", "Process resource usage", "count", null, &[_]otel_api.metrics.TypeErasedCallback{});
+    var uptime_gauge = try meter.createObservableGauge(f64, "system.uptime", "System uptime", "seconds", null, &[_]otel_api.metrics.TypeErasedCallback{});
+    var load_gauge = try meter.createObservableGauge(f64, "system.load.average", "System load average", "ratio", null, &[_]otel_api.metrics.TypeErasedCallback{});
 
     std.log.info("Registering process monitoring callbacks...", .{});
 

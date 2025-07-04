@@ -22,6 +22,8 @@ pub const MeterProvider = union(enum) {
     bridge: MeterProviderBridge,
 
     /// Get or create a meter for the given instrumentation scope
+    /// Providers are expected to return the same meter when provided
+    /// an identical scope.
     pub inline fn getMeterWithScope(self: *const MeterProvider, scope: InstrumentationScope) !Meter {
         return switch (self.*) {
             .noop => Meter{ .noop = scope },

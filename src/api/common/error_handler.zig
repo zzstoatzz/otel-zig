@@ -438,6 +438,166 @@ pub fn reportCallbackErrorWithSource(
     });
 }
 
+/// Mock error handler for testing that collects errors instead of printing them
+pub const MockErrorHandler = struct {
+    allocator: std.mem.Allocator,
+    errors: std.ArrayList(ErrorInfo),
+
+    pub fn init(allocator: std.mem.Allocator) MockErrorHandler {
+        return .{
+            .allocator = allocator,
+            .errors = std.ArrayList(ErrorInfo).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *MockErrorHandler) void {
+        // Free any allocated context strings
+        for (self.errors.items) |error_info| {
+            if (error_info.context) |ctx| {
+                self.allocator.free(ctx);
+            }
+        }
+        self.errors.deinit();
+    }
+
+    pub fn handleError(self: *MockErrorHandler, info: ErrorInfo) void {
+        // Clone the ErrorInfo to ensure we own all memory
+        var cloned_info = info;
+        if (info.context) |ctx| {
+            cloned_info.context = self.allocator.dupe(u8, ctx) catch return;
+        }
+
+        self.errors.append(cloned_info) catch return;
+    }
+
+    pub fn errorCount(self: *const MockErrorHandler) usize {
+        return self.errors.items.len;
+    }
+
+    pub fn getError(self: *const MockErrorHandler, index: usize) ?ErrorInfo {
+        if (index >= self.errors.items.len) return null;
+        return self.errors.items[index];
+    }
+
+    pub fn clearErrors(self: *MockErrorHandler) void {
+        // Free any allocated context strings
+        for (self.errors.items) |error_info| {
+            if (error_info.context) |ctx| {
+                self.allocator.free(ctx);
+            }
+        }
+        self.errors.clearRetainingCapacity();
+    }
+
+    pub fn hasErrorWithMessage(self: *const MockErrorHandler, message: []const u8) bool {
+        for (self.errors.items) |error_info| {
+            if (std.mem.eql(u8, error_info.message, message)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    pub fn hasErrorWithComponent(self: *const MockErrorHandler, component: Component) bool {
+        for (self.errors.items) |error_info| {
+            if (error_info.component == component) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    pub fn hasErrorWithType(self: *const MockErrorHandler, error_type: ErrorType) bool {
+        for (self.errors.items) |error_info| {
+            if (error_info.error_type == error_type) {
+                return true;
+            }
+        }
+        return false;
+    }
+};
+
+/// Global mock error handler instance for testing
+var global_mock_handler: ?*MockErrorHandler = null;
+var mock_handler_mutex: std.Thread.Mutex = .{};
+
+/// Set a mock error handler for testing
+pub fn setMockErrorHandler(mock_handler: *MockErrorHandler) void {
+    mock_handler_mutex.lock();
+    defer mock_handler_mutex.unlock();
+
+    global_mock_handler = mock_handler;
+    setGlobalErrorHandler(mockErrorHandlerDispatch);
+}
+
+/// Clear the mock error handler and restore default behavior
+pub fn clearMockErrorHandler() void {
+    mock_handler_mutex.lock();
+    defer mock_handler_mutex.unlock();
+
+    global_mock_handler = null;
+    setGlobalErrorHandler(null);
+}
+
+/// Dispatch function for the mock error handler
+fn mockErrorHandlerDispatch(info: ErrorInfo, allocator: ?std.mem.Allocator) void {
+    _ = allocator;
+
+    mock_handler_mutex.lock();
+    defer mock_handler_mutex.unlock();
+
+    if (global_mock_handler) |mock_handler| {
+        mock_handler.handleError(info);
+    }
+}
+
+test "MockErrorHandler collects errors" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var mock_handler = MockErrorHandler.init(allocator);
+    defer mock_handler.deinit();
+
+    // Set the mock handler
+    setMockErrorHandler(&mock_handler);
+    defer clearMockErrorHandler();
+
+    // Generate some errors
+    reportValidationError(.tracer, "test", "Test validation error", null);
+    reportError(.{
+        .component = .meter,
+        .operation = "test",
+        .error_type = .callback,
+        .message = "Test callback error",
+        .context = "test context",
+    });
+
+    // Verify errors were collected
+    try testing.expectEqual(@as(usize, 2), mock_handler.errorCount());
+
+    // Check first error
+    const error1 = mock_handler.getError(0).?;
+    try testing.expectEqual(Component.tracer, error1.component);
+    try testing.expectEqual(ErrorType.validation, error1.error_type);
+    try testing.expectEqualStrings("Test validation error", error1.message);
+
+    // Check second error
+    const error2 = mock_handler.getError(1).?;
+    try testing.expectEqual(Component.meter, error2.component);
+    try testing.expectEqual(ErrorType.callback, error2.error_type);
+    try testing.expectEqualStrings("Test callback error", error2.message);
+    try testing.expectEqualStrings("test context", error2.context.?);
+
+    // Test helper functions
+    try testing.expect(mock_handler.hasErrorWithMessage("Test validation error"));
+    try testing.expect(mock_handler.hasErrorWithComponent(.tracer));
+    try testing.expect(mock_handler.hasErrorWithType(.validation));
+
+    // Test clear functionality
+    mock_handler.clearErrors();
+    try testing.expectEqual(@as(usize, 0), mock_handler.errorCount());
+}
+
 test "error handler registration and invocation" {
     const testing = std.testing;
 
@@ -564,9 +724,14 @@ test "convenience error reporting functions" {
 }
 
 test "default error handler does not crash on stderr errors" {
-    // This test ensures the default error handler doesn't crash even if
-    // stderr writing fails. We can't easily test stderr failure, but we
-    // can at least test that the default handler can be called without issues.
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // Use mock error handler to capture errors instead of printing to stderr
+    var mock_error_handler = MockErrorHandler.init(allocator);
+    defer mock_error_handler.deinit();
+    setMockErrorHandler(&mock_error_handler);
+    defer clearMockErrorHandler();
 
     const test_info = ErrorInfo{
         .component = .general,
@@ -576,8 +741,8 @@ test "default error handler does not crash on stderr errors" {
         .context = "test context",
     };
 
-    // This should not crash
-    defaultErrorHandler(test_info, null);
+    // This should not crash and should be captured by mock handler
+    reportError(test_info);
 
     // Test with null context
     const test_info_no_context = ErrorInfo{
@@ -588,8 +753,11 @@ test "default error handler does not crash on stderr errors" {
         .context = null,
     };
 
-    // This should also not crash
-    defaultErrorHandler(test_info_no_context, null);
+    // This should also not crash and should be captured by mock handler
+    reportError(test_info_no_context);
+
+    // Verify errors were captured
+    try testing.expectEqual(@as(usize, 2), mock_error_handler.errorCount());
 }
 
 test "enhanced error reporting with source errors" {

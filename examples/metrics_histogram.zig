@@ -33,6 +33,7 @@ pub fn main() !void {
         "http.request.duration",
         "Duration of HTTP requests",
         "ms",
+        null,
     );
 
     // Create a histogram to track response sizes
@@ -41,6 +42,7 @@ pub fn main() !void {
         "http.response.size",
         "Size of HTTP responses",
         "bytes",
+        null,
     );
 
     const ctx = otel_api.Context.empty(allocator);

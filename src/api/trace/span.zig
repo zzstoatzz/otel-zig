@@ -206,6 +206,10 @@ pub const Span = union(enum) {
     }
 
     /// Set the status of the span
+    ///
+    /// Status order is `.ok > .@"error" > .unset`. Where setting an `.ok` status is
+    /// final, and overrides an error status set elsewhere. Setting a status of
+    /// `.unset` is ignored.
     pub inline fn setStatus(
         self: *const Span,
         status: Status,
@@ -247,7 +251,11 @@ pub const Span = union(enum) {
         }
     }
 
-    /// End the span with optional end options
+    /// End the span with optional end options. This does NOT automatically
+    /// invoke `.deinit()`. It is still up to the caller to ensure the span
+    /// is freed when finished.
+    ///
+    /// The span becomes non-recording once `end()` is called.
     pub inline fn end(
         self: *const Span,
         options: ?SpanEndOptions,
@@ -259,6 +267,8 @@ pub const Span = union(enum) {
     }
 
     /// Check if the span is recording (accepting data)
+    ///
+    /// This method will always return false after `.end()` is called.
     pub inline fn isRecording(self: *const Span) bool {
         return switch (self.*) {
             .noop => |_| false,
@@ -748,3 +758,82 @@ pub const Status = struct {
         try writer.print("}}", .{});
     }
 };
+
+/// Wrap a SpanContext in a Span interface for propagation
+///
+/// Creates a non-recording Span that wraps the provided SpanContext.
+/// This is used for distributed tracing scenarios where you need to
+/// propagate context but not record new telemetry data.
+///
+/// The returned Span:
+/// - `getSpanContext()` returns the wrapped SpanContext
+/// - `isRecording()` returns false
+/// - All other operations are no-ops
+///
+/// This function implements the OpenTelemetry specification requirement
+/// for wrapping SpanContexts in Span interfaces for propagation purposes.
+///
+/// ## Parameters
+/// - `span_context`: The SpanContext to wrap
+///
+/// ## Returns
+/// A non-recording Span that wraps the provided SpanContext
+pub fn wrapSpanContext(span_context: SpanContext) Span {
+    return .{ .noop = span_context };
+}
+
+test "wrapSpanContext creates non-recording span" {
+    const testing = std.testing;
+
+    // Create a valid SpanContext
+    const span_context = SpanContext{
+        .trace_id = @import("../common/types.zig").TraceId.fromBytes([_]u8{ 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10 }),
+        .span_id = @import("../common/types.zig").SpanId.fromBytes([_]u8{ 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08 }),
+        .trace_flags = SpanContext.SAMPLED_FLAG,
+        .trace_state = "vendor=value",
+        .is_remote = true,
+    };
+
+    // Wrap it in a Span
+    const wrapped_span = wrapSpanContext(span_context);
+
+    // Verify it's a non-recording span
+    try testing.expect(!wrapped_span.isRecording());
+
+    // Verify getSpanContext returns the wrapped context
+    const returned_context = wrapped_span.getSpanContext();
+    try testing.expectEqualSlices(u8, &span_context.trace_id.bytes, &returned_context.trace_id.bytes);
+    try testing.expectEqualSlices(u8, &span_context.span_id.bytes, &returned_context.span_id.bytes);
+    try testing.expectEqual(span_context.trace_flags, returned_context.trace_flags);
+    try testing.expectEqual(span_context.is_remote, returned_context.is_remote);
+    try testing.expectEqualStrings(span_context.trace_state.?, returned_context.trace_state.?);
+
+    // Verify all operations are no-ops (should not crash)
+    try wrapped_span.setAttribute("key", AttributeValue{ .string = "value" });
+    try wrapped_span.addEvent(Event{
+        .name = "test",
+        .timestamp_ns = 0,
+        .attributes = &[_]AttributeKeyValue{},
+    });
+    try wrapped_span.setStatus(Status.ok(null));
+    try wrapped_span.updateName("new-name");
+    wrapped_span.end(null);
+
+    // Should still be able to get context after operations
+    const final_context = wrapped_span.getSpanContext();
+    try testing.expectEqualSlices(u8, &span_context.trace_id.bytes, &final_context.trace_id.bytes);
+}
+
+test "wrapSpanContext works with invalid SpanContext" {
+    const testing = std.testing;
+
+    // Test with invalid SpanContext
+    const invalid_context = SpanContext.invalid;
+    const wrapped_span = wrapSpanContext(invalid_context);
+
+    // Should still work
+    try testing.expect(!wrapped_span.isRecording());
+
+    const returned_context = wrapped_span.getSpanContext();
+    try testing.expect(!returned_context.isValid());
+}

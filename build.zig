@@ -351,6 +351,21 @@ pub fn build(b: *std.Build) void {
     const observable_callback_step = b.step("example-observable-callback-monitoring", "Run observable callback monitoring example");
     observable_callback_step.dependOn(&run_observable_callback.step);
 
+    // Observable Callback Patterns Example
+    const observable_callback_patterns_example = b.addExecutable(.{
+        .name = "observable_callback_patterns",
+        .root_source_file = b.path("examples/observable_callback_patterns.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    observable_callback_patterns_example.root_module.addImport("otel-api", otel_api_mod);
+    observable_callback_patterns_example.root_module.addImport("otel-sdk", otel_sdk_mod);
+    observable_callback_patterns_example.root_module.addImport("otel-exporters", otel_exporters_mod);
+
+    const run_observable_callback_patterns = b.addRunArtifact(observable_callback_patterns_example);
+    const observable_callback_patterns_step = b.step("example-observable-callback-patterns", "Run observable callback patterns example");
+    observable_callback_patterns_step.dependOn(&run_observable_callback_patterns.step);
+
     // Comprehensive Metrics OTLP Example
     const metrics_comprehensive_otlp_example = b.addExecutable(.{
         .name = "metrics_comprehensive_otlp",
@@ -546,20 +561,4 @@ pub fn build(b: *std.Build) void {
     examples_step.dependOn(&run_error_handling_demo.step);
     examples_step.dependOn(&run_validation_test.step);
     examples_step.dependOn(&run_force_flush_test.step);
-
-    // Debug Hang Test
-    const debug_hang_exe = b.addExecutable(.{
-        .name = "debug_hang",
-        .root_source_file = b.path("debug_hang.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    debug_hang_exe.root_module.addImport("otel-api", otel_api_mod);
-    debug_hang_exe.root_module.addImport("otel-sdk", otel_sdk_mod);
-    debug_hang_exe.root_module.addImport("otel-exporters", otel_exporters_mod);
-    b.installArtifact(debug_hang_exe);
-
-    const run_debug_hang = b.addRunArtifact(debug_hang_exe);
-    const debug_hang_step = b.step("debug-hang", "Run debug hang test");
-    debug_hang_step.dependOn(&run_debug_hang.step);
 }

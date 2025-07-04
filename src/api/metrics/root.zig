@@ -25,6 +25,7 @@ pub const UpDownCounter = instrument_zig.UpDownCounter;
 pub const Gauge = instrument_zig.Gauge;
 pub const Histogram = instrument_zig.Histogram;
 pub const InstrumentBridge = instrument_zig.InstrumentBridge;
+pub const AdvisoryParams = instrument_zig.AdvisoryParams;
 
 // Observable instrument exports
 const observable_instrument_zig = @import("observable_instrument.zig");

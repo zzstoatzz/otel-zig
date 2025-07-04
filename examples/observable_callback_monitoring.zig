@@ -177,11 +177,11 @@ pub fn main() !void {
     std.log.info("Creating observable instruments with callback monitoring enabled...", .{});
 
     // Create observable instruments with different configurations
-    var normal_gauge = try meter.createObservableGauge(i64, "callback.normal", "Normal callback gauge", "units");
-    var slow_gauge = try meter.createObservableGauge(i64, "callback.slow", "Slow callback gauge", "units");
-    var unreliable_counter = try meter.createObservableCounter(i64, "callback.unreliable", "Unreliable callback counter", "count");
-    var variable_gauge = try meter.createObservableGauge(i64, "callback.variable", "Variable measurement gauge", "units");
-    var stateless_gauge = try meter.createObservableGauge(i64, "callback.stateless", "Stateless callback gauge", "units");
+    var normal_gauge = try meter.createObservableGauge(i64, "callback.normal", "Normal callback gauge", "units", null, &[_]otel_api.metrics.TypeErasedCallback{});
+    var slow_gauge = try meter.createObservableGauge(i64, "callback.slow", "Slow callback gauge", "units", null, &[_]otel_api.metrics.TypeErasedCallback{});
+    var unreliable_counter = try meter.createObservableCounter(i64, "callback.unreliable", "Unreliable callback counter", "count", null, &[_]otel_api.metrics.TypeErasedCallback{});
+    var variable_gauge = try meter.createObservableGauge(i64, "callback.variable", "Variable measurement gauge", "units", null, &[_]otel_api.metrics.TypeErasedCallback{});
+    var stateless_gauge = try meter.createObservableGauge(i64, "callback.stateless", "Stateless callback gauge", "units", null, &[_]otel_api.metrics.TypeErasedCallback{});
 
     std.log.info("Registering callbacks with different characteristics...", .{});
 

@@ -1177,6 +1177,12 @@ test "callback metrics basic functionality" {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    // Use mock error handler to capture errors instead of printing to stderr
+    var mock_error_handler = api.common.MockErrorHandler.init(allocator);
+    defer mock_error_handler.deinit();
+    api.common.setMockErrorHandler(&mock_error_handler);
+    defer api.common.clearMockErrorHandler();
+
     var metrics = CallbackMetrics{};
     defer metrics.deinit(allocator);
 
@@ -1196,6 +1202,13 @@ test "callback metrics basic functionality" {
     try testing.expectEqual(@as(u64, 1), metrics.error_count);
     try testing.expect(metrics.last_error != null);
     try testing.expectEqualStrings("Test error", metrics.last_error.?);
+
+    // Verify error was captured by mock handler
+    try testing.expectEqual(@as(usize, 1), mock_error_handler.errorCount());
+    const captured_error = mock_error_handler.getError(0).?;
+    try testing.expectEqual(api.common.Component.meter, captured_error.component);
+    try testing.expectEqual(api.common.ErrorType.callback, captured_error.error_type);
+    try testing.expectEqualStrings("Test error", captured_error.message);
 }
 
 test "observable counter basic functionality" {

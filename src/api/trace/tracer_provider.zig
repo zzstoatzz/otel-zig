@@ -19,6 +19,8 @@ pub const TracerProvider = union(enum) {
     bridge: TracerProviderBridge, // SDK provider bridge
 
     /// Get or create a tracer with instrumentation scope (OpenTelemetry API specification compliant)
+    ///
+    /// Implementations must return the same tracer for the same scope.
     pub inline fn getTracerWithScope(self: *const TracerProvider, scope: InstrumentationScope) !Tracer {
         return switch (self.*) {
             .noop => |_| Tracer{ .noop = {} },

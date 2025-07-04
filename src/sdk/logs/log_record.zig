@@ -11,6 +11,8 @@ const Severity = otel_api.logs.Severity;
 const AttributeValue = otel_api.common.AttributeValue;
 const AttributeKeyValue = otel_api.common.AttributeKeyValue;
 const InstrumentationScope = otel_api.common.InstrumentationScope;
+const TraceId = otel_api.common.TraceId;
+const SpanId = otel_api.common.SpanId;
 
 /// LogRecord represents a log entry according to the OpenTelemetry specification.
 /// This is a non-owning structure - all slices reference external memory.
@@ -51,11 +53,11 @@ pub const LogRecord = struct {
     /// Additional attributes associated with the log record
     attributes: []const AttributeKeyValue = &[_]AttributeKeyValue{},
 
-    /// TraceId of the span that this log record is associated with (16 bytes)
-    trace_id: ?[16]u8 = null,
+    /// TraceId of the span that this log record is associated with
+    trace_id: ?TraceId = null,
 
-    /// SpanId of the span that this log record is associated with (8 bytes)
-    span_id: ?[8]u8 = null,
+    /// SpanId of the span that this log record is associated with
+    span_id: ?SpanId = null,
 
     /// Trace flags (1 byte)
     flags: ?u8 = null,
@@ -77,7 +79,7 @@ pub const LogRecord = struct {
     pub fn formatTraceId(self: LogRecord, buf: []u8) ![]const u8 {
         if (self.trace_id) |tid| {
             if (buf.len < 32) return error.BufferTooSmall;
-            return std.fmt.bufPrint(buf, "{x:0>32}", .{std.fmt.fmtSliceHexLower(&tid)}) catch unreachable;
+            return std.fmt.bufPrint(buf, "{}", .{tid});
         }
         return "";
     }
@@ -86,7 +88,7 @@ pub const LogRecord = struct {
     pub fn formatSpanId(self: LogRecord, buf: []u8) ![]const u8 {
         if (self.span_id) |sid| {
             if (buf.len < 16) return error.BufferTooSmall;
-            return std.fmt.bufPrint(buf, "{x:0>16}", .{std.fmt.fmtSliceHexLower(&sid)}) catch unreachable;
+            return std.fmt.bufPrint(buf, "{}", .{sid});
         }
         return "";
     }

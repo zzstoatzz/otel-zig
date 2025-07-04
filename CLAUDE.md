@@ -284,5 +284,70 @@ Exporters are complete for OTLP and console, with full PipelineStep integration 
 
 The examples serve as comprehensive integration tests and demonstrate proper usage patterns for all three signals.
 
+## Testing Utilities
+
+The codebase provides mock implementations for clean, testable code without stderr output or external dependencies.
+
+### MockSpanExporter
+
+Located in `src/sdk/trace/exporter.zig`, provides a test-friendly span exporter that captures exported spans for verification:
+
+```zig
+// Initialize mock exporter
+const mock_exporter = try allocator.create(MockSpanExporter);
+mock_exporter.* = MockSpanExporter.init(allocator);
+defer mock_exporter.destroy();
+
+// Use in tests
+const processor = try BatchSpanProcessor.init(
+    allocator,
+    mock_exporter.spanExporter(),
+    resource,
+    export_interval_ms,
+    max_queue_size,
+);
+
+// Verify exported data
+try testing.expectEqual(@as(usize, 1), mock_exporter.spanCount());
+const exported_span = mock_exporter.getSpan(0).?;
+```
+
+**Key Methods:**
+- `spanCount()` - Number of exported spans
+- `getSpan(index)` - Get span by index
+- `clearSpans()` - Reset collected spans
+- `spanExporter()` - Get SpanExporter interface
+
+### MockErrorHandler
+
+Located in `src/api/common/error_handler.zig`, captures OpenTelemetry errors for verification instead of printing to stderr:
+
+```zig
+// Initialize mock error handler
+var mock_error_handler = api.common.MockErrorHandler.init(allocator);
+defer mock_error_handler.deinit();
+api.common.setMockErrorHandler(&mock_error_handler);
+defer api.common.clearMockErrorHandler();
+
+// Test code that generates errors...
+
+// Verify captured errors
+try testing.expectEqual(@as(usize, 1), mock_error_handler.errorCount());
+const error_info = mock_error_handler.getError(0).?;
+try testing.expectEqual(api.common.Component.tracer, error_info.component);
+try testing.expectEqual(api.common.ErrorType.validation, error_info.error_type);
+try testing.expectEqualStrings("Expected error message", error_info.message);
+```
+
+**Key Methods:**
+- `errorCount()` - Number of captured errors
+- `getError(index)` - Get error info by index
+- `clearErrors()` - Reset collected errors
+- `hasErrorWithMessage(message)` - Check for specific error messages
+- `hasErrorWithComponent(component)` - Check for errors from specific components
+- `hasErrorWithType(error_type)` - Check for specific error types
+
+**Best Practice:** Always use these mock handlers in tests to keep test output clean and enable verification of error conditions without relying on stderr inspection.
+
 ## Local Resources
 The OTel specification is in the `spec` directory. A C++ reference implementation is in the `reference/cpp-sdk` directory. The protobuf definitions are in the `opentelemetry-proto` directory.

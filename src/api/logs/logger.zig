@@ -16,6 +16,8 @@ const AttributeKeyValue = @import("../common/root.zig").AttributeKeyValue;
 const reportValidationError = @import("../common/error_handler.zig").reportValidationError;
 const Context = @import("../context/root.zig").Context;
 const Severity = @import("severity.zig").Severity;
+const TraceId = @import("../common/types.zig").TraceId;
+const SpanId = @import("../common/types.zig").SpanId;
 
 /// Logger interface using tagged union for compile-time polymorphism.
 /// In the API layer, only the noop implementation is provided.
@@ -62,8 +64,8 @@ pub const Logger = union(enum) {
         observed_timestamp_ns: ?i64,
         event_name: ?[]const u8,
         severity_text: ?[]const u8,
-        trace_id: ?[16]u8,
-        span_id: ?[8]u8,
+        trace_id: ?TraceId,
+        span_id: ?SpanId,
         flags: ?u8,
     ) void {
         switch (self.*) {
@@ -197,8 +199,8 @@ pub const LoggerBridge = struct {
         observed_timestamp_ns: ?i64,
         event_name: ?[]const u8,
         severity_text: ?[]const u8,
-        trace_id: ?[16]u8,
-        span_id: ?[8]u8,
+        trace_id: ?TraceId,
+        span_id: ?SpanId,
         flags: ?u8,
     ) void,
     enabledFn: *const fn (logger_ptr: *anyopaque, ctx: Context, severity: ?Severity) bool,
@@ -219,8 +221,8 @@ pub const LoggerBridge = struct {
                 observed_timestamp_ns: ?i64,
                 event_name: ?[]const u8,
                 severity_text: ?[]const u8,
-                trace_id: ?[16]u8,
-                span_id: ?[8]u8,
+                trace_id: ?TraceId,
+                span_id: ?SpanId,
                 flags: ?u8,
             ) void {
                 const self: T = @ptrCast(@alignCast(pointer));

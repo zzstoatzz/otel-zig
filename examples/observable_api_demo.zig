@@ -73,19 +73,19 @@ pub fn main() !void {
     std.log.info("Creating observable instruments using NEW API methods...", .{});
 
     // Create observable gauge for CPU usage (f64)
-    var cpu_gauge = try meter.createObservableGauge(f64, "system.cpu.usage", "CPU usage percentage", "percent");
+    var cpu_gauge = try meter.createObservableGauge(f64, "system.cpu.usage", "CPU usage percentage", "percent", null, &[_]otel_api.metrics.TypeErasedCallback{});
     std.log.info("✓ Created observable gauge: {s}", .{cpu_gauge.getName()});
 
     // Create observable gauge for memory usage (i64)
-    var memory_gauge = try meter.createObservableGauge(i64, "system.memory.usage", "Memory usage in bytes", "bytes");
+    var memory_gauge = try meter.createObservableGauge(i64, "system.memory.usage", "Memory usage in bytes", "bytes", null, &[_]otel_api.metrics.TypeErasedCallback{});
     std.log.info("✓ Created observable gauge: {s}", .{memory_gauge.getName()});
 
     // Create observable up-down counter for connections (i64)
-    var connections_counter = try meter.createObservableUpDownCounter(i64, "system.connections.active", "Active connections", "connections");
+    var connections_counter = try meter.createObservableUpDownCounter(i64, "system.connections.active", "Active connections", "connections", null, &[_]otel_api.metrics.TypeErasedCallback{});
     std.log.info("✓ Created observable up-down counter: {s}", .{connections_counter.getName()});
 
     // Create observable counter for uptime (f64)
-    var uptime_counter = try meter.createObservableCounter(f64, "system.uptime", "System uptime", "seconds");
+    var uptime_counter = try meter.createObservableCounter(f64, "system.uptime", "System uptime", "seconds", null, &[_]otel_api.metrics.TypeErasedCallback{});
     std.log.info("✓ Created observable counter: {s}", .{uptime_counter.getName()});
 
     // Register callbacks using the API

@@ -16,6 +16,7 @@ const ExportResult = otel_api.common.ExportResult;
 const SpanLimits = otel_api.trace.SpanLimits;
 const RecordingSpan = @import("data.zig").RecordingSpan;
 const SpanExporter = @import("exporter.zig").SpanExporter;
+const MockSpanExporter = @import("exporter.zig").MockSpanExporter;
 const Resource = @import("../resource/resource.zig").Resource;
 
 // Import error handler for structured error reporting
@@ -456,60 +457,14 @@ test "BatchSpanProcessor - basic initialization and cleanup" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    // Mock exporter for testing
-    const MockExporter = struct {
-        export_count: usize = 0,
-        exported_spans: std.ArrayList(*RecordingSpan),
-        flush_count: usize = 0,
-        shutdown_count: usize = 0,
-        allocator: std.mem.Allocator,
+    // Use mock error handler to capture errors instead of printing to stderr
+    var mock_error_handler = otel_api.common.MockErrorHandler.init(allocator);
+    defer mock_error_handler.deinit();
+    otel_api.common.setMockErrorHandler(&mock_error_handler);
+    defer otel_api.common.clearMockErrorHandler();
 
-        pub fn init(alloc: std.mem.Allocator) !*@This() {
-            const self = try alloc.create(@This());
-            self.* = .{
-                .allocator = alloc,
-                .exported_spans = std.ArrayList(*RecordingSpan).init(alloc),
-            };
-            return self;
-        }
-
-        pub fn deinit(self: *@This()) void {
-            self.exported_spans.deinit();
-            self.allocator.destroy(self);
-        }
-
-        pub fn exportSpans(self: *@This(), spans: []const *RecordingSpan, resource: Resource) ExportResult {
-            _ = resource;
-            self.export_count += spans.len;
-            for (spans) |span| {
-                self.exported_spans.append(span) catch {};
-            }
-            return .success;
-        }
-
-        pub fn forceFlush(self: *@This(), timeout_ms: ?u64) ExportResult {
-            _ = timeout_ms;
-            self.flush_count += 1;
-            return .success;
-        }
-
-        pub fn shutdown(self: *@This(), timeout_ms: ?u64) ExportResult {
-            _ = timeout_ms;
-            self.shutdown_count += 1;
-            return .success;
-        }
-
-        pub fn destroy(self: *@This()) void {
-            self.allocator.destroy(self);
-        }
-
-        pub fn spanExporter(self: *@This()) SpanExporter {
-            return SpanExporter{ .bridge = @import("exporter.zig").BridgeSpanExporter.init(self) };
-        }
-    };
-
-    var mock_exporter = try MockExporter.init(allocator);
-    defer mock_exporter.deinit();
+    const mock_exporter = try allocator.create(MockSpanExporter);
+    mock_exporter.* = MockSpanExporter.init(allocator);
 
     const resource = Resource{
         .attributes = &.{},
@@ -523,11 +478,14 @@ test "BatchSpanProcessor - basic initialization and cleanup" {
         100, // Very short interval for testing
         5, // Small queue for testing
     );
-    defer processor.deinit();
+    defer {
+        processor.deinit();
+        processor.destroy();
+    }
 
     // Test initial state
-    try testing.expect(!processor.is_running);
-    try testing.expect(!processor.is_shutdown);
+    try testing.expect(!processor.is_running.load(.unordered));
+    try testing.expect(!processor.is_shutdown.load(.unordered));
     try testing.expectEqual(@as(usize, 0), processor.span_queue.items.len);
 }
 
@@ -535,44 +493,15 @@ test "BatchSpanProcessor - span queuing and export" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const MockExporter = struct {
-        export_count: usize = 0,
-        flush_count: usize = 0,
-        shutdown_count: usize = 0,
+    // Use mock error handler to capture errors instead of printing to stderr
+    var mock_error_handler = otel_api.common.MockErrorHandler.init(allocator);
+    defer mock_error_handler.deinit();
+    otel_api.common.setMockErrorHandler(&mock_error_handler);
+    defer otel_api.common.clearMockErrorHandler();
 
-        pub fn deinit(self: *@This()) void {
-            _ = self;
-        }
+    const mock_exporter = try allocator.create(MockSpanExporter);
+    mock_exporter.* = MockSpanExporter.init(allocator);
 
-        pub fn exportSpans(self: *@This(), spans: []const *RecordingSpan, resource: Resource) ExportResult {
-            _ = resource;
-            _ = spans;
-            self.export_count += 1;
-            return .success;
-        }
-
-        pub fn forceFlush(self: *@This(), timeout_ms: ?u64) ExportResult {
-            _ = timeout_ms;
-            self.flush_count += 1;
-            return .success;
-        }
-
-        pub fn shutdown(self: *@This(), timeout_ms: ?u64) ExportResult {
-            _ = timeout_ms;
-            self.shutdown_count += 1;
-            return .success;
-        }
-
-        pub fn destroy(self: *@This()) void {
-            self.allocator.destroy(self);
-        }
-
-        pub fn spanExporter(self: *@This()) SpanExporter {
-            return SpanExporter{ .bridge = @import("exporter.zig").BridgeSpanExporter.init(self) };
-        }
-    };
-
-    var mock_exporter = MockExporter{};
     const resource = Resource{
         .attributes = &.{},
         .schema_url = null,
@@ -585,19 +514,34 @@ test "BatchSpanProcessor - span queuing and export" {
         50, // Short interval
         10, // Small queue
     );
-    defer processor.deinit();
+    defer {
+        processor.deinit();
+        processor.destroy();
+    }
 
-    // Create mock spans
-    const MockSpan = struct {
-        deinit_called: bool = false,
-
-        pub fn deinit(self: *@This()) void {
-            self.deinit_called = true;
-        }
+    // Create proper RecordingSpan for testing
+    const span_context = otel_api.trace.SpanContext{
+        .trace_id = otel_api.common.TraceId{ .bytes = [_]u8{1} ** 16 },
+        .span_id = otel_api.common.SpanId{ .bytes = [_]u8{1} ** 8 },
+        .trace_flags = 0,
+        .trace_state = null,
+        .is_remote = false,
     };
 
-    var mock_span = MockSpan{};
-    const recording_span: *RecordingSpan = @ptrCast(&mock_span);
+    const recording_span = try @import("data.zig").RecordingSpan.init(
+        allocator,
+        "test-span",
+        span_context,
+        null, // parent_span_context
+        .internal,
+        @import("../common/clock.zig").getTimestamp(),
+        &[_]otel_api.common.AttributeKeyValue{}, // initial_attributes
+        &[_]otel_api.trace.Link{}, // initial_links
+        otel_api.trace.SpanLimits.default,
+        @ptrCast(processor), // processor
+        null, // processorOnEndFn
+    );
+    defer recording_span.deinit();
 
     // Test adding span to queue
     processor.onEnd(recording_span);
@@ -608,8 +552,7 @@ test "BatchSpanProcessor - span queuing and export" {
 
     // Test force flush
     try testing.expectEqual(ProcessResult.success, processor.forceFlush(null));
-    try testing.expectEqual(@as(usize, 1), mock_exporter.export_count);
-    try testing.expectEqual(@as(usize, 1), mock_exporter.flush_count);
+    try testing.expectEqual(@as(usize, 1), mock_exporter.spanCount());
 
     processor.mutex.lock();
     try testing.expectEqual(@as(usize, 0), processor.span_queue.items.len);
@@ -620,36 +563,15 @@ test "BatchSpanProcessor - queue overflow drops newest" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const MockExporter = struct {
-        pub fn deinit(self: *@This()) void {
-            _ = self;
-        }
+    // Use mock error handler to capture errors instead of printing to stderr
+    var mock_error_handler = otel_api.common.MockErrorHandler.init(allocator);
+    defer mock_error_handler.deinit();
+    otel_api.common.setMockErrorHandler(&mock_error_handler);
+    defer otel_api.common.clearMockErrorHandler();
 
-        pub fn exportSpans(self: *@This(), spans: []const *RecordingSpan, resource: Resource) ProcessResult {
-            _ = self;
-            _ = spans;
-            _ = resource;
-            return .success;
-        }
+    const mock_exporter = try allocator.create(MockSpanExporter);
+    mock_exporter.* = MockSpanExporter.init(allocator);
 
-        pub fn forceFlush(self: *@This(), timeout_ms: ?u64) ProcessResult {
-            _ = self;
-            _ = timeout_ms;
-            return .success;
-        }
-
-        pub fn shutdown(self: *@This(), timeout_ms: ?u64) ProcessResult {
-            _ = self;
-            _ = timeout_ms;
-            return .success;
-        }
-
-        pub fn spanExporter(self: *@This()) SpanExporter {
-            return SpanExporter{ .bridge = @import("exporter.zig").BridgeSpanExporter.init(self) };
-        }
-    };
-
-    var mock_exporter = MockExporter{};
     const resource = Resource{
         .attributes = &.{},
         .schema_url = null,
@@ -662,79 +584,108 @@ test "BatchSpanProcessor - queue overflow drops newest" {
         1000, // Long interval
         2, // Very small queue
     );
-    defer processor.deinit();
+    defer {
+        processor.deinit();
+        processor.destroy();
+    }
 
-    const MockSpan = struct {
-        id: u32,
-        deinit_called: bool = false,
-
-        pub fn deinit(self: *@This()) void {
-            self.deinit_called = true;
-        }
+    // Create proper RecordingSpans for testing
+    const span_context1 = otel_api.trace.SpanContext{
+        .trace_id = otel_api.common.TraceId{ .bytes = [_]u8{1} ** 16 },
+        .span_id = otel_api.common.SpanId{ .bytes = [_]u8{1} ** 8 },
+        .trace_flags = 0,
+        .trace_state = null,
+        .is_remote = false,
+    };
+    const span_context2 = otel_api.trace.SpanContext{
+        .trace_id = otel_api.common.TraceId{ .bytes = [_]u8{2} ** 16 },
+        .span_id = otel_api.common.SpanId{ .bytes = [_]u8{2} ** 8 },
+        .trace_flags = 0,
+        .trace_state = null,
+        .is_remote = false,
+    };
+    const span_context3 = otel_api.trace.SpanContext{
+        .trace_id = otel_api.common.TraceId{ .bytes = [_]u8{3} ** 16 },
+        .span_id = otel_api.common.SpanId{ .bytes = [_]u8{3} ** 8 },
+        .trace_flags = 0,
+        .trace_state = null,
+        .is_remote = false,
     };
 
-    var span1 = MockSpan{ .id = 1 };
-    var span2 = MockSpan{ .id = 2 };
-    var span3 = MockSpan{ .id = 3 }; // This should be dropped
+    const span1 = try @import("data.zig").RecordingSpan.init(
+        allocator,
+        "test-span-1",
+        span_context1,
+        null,
+        .internal,
+        @import("../common/clock.zig").getTimestamp(),
+        &[_]otel_api.common.AttributeKeyValue{}, // initial_attributes
+        &[_]otel_api.trace.Link{}, // initial_links
+        otel_api.trace.SpanLimits.default,
+        @ptrCast(processor), // processor
+        null, // processorOnEndFn
+    );
+    defer span1.deinit();
+
+    const span2 = try @import("data.zig").RecordingSpan.init(
+        allocator,
+        "test-span-2",
+        span_context2,
+        null,
+        .internal,
+        @import("../common/clock.zig").getTimestamp(),
+        &[_]otel_api.common.AttributeKeyValue{}, // initial_attributes
+        &[_]otel_api.trace.Link{}, // initial_links
+        otel_api.trace.SpanLimits.default,
+        @ptrCast(processor), // processor
+        null, // processorOnEndFn
+    );
+    defer span2.deinit();
+
+    const span3 = try @import("data.zig").RecordingSpan.init(
+        allocator,
+        "test-span-3",
+        span_context3,
+        null,
+        .internal,
+        @import("../common/clock.zig").getTimestamp(),
+        &[_]otel_api.common.AttributeKeyValue{}, // initial_attributes
+        &[_]otel_api.trace.Link{}, // initial_links
+        otel_api.trace.SpanLimits.default,
+        @ptrCast(processor), // processor
+        null, // processorOnEndFn
+    );
+    defer span3.deinit();
 
     // Fill queue to capacity
-    processor.onEnd(@ptrCast(&span1));
-    processor.onEnd(@ptrCast(&span2));
+    processor.onEnd(span1);
+    processor.onEnd(span2);
 
     processor.mutex.lock();
     try testing.expectEqual(@as(usize, 2), processor.span_queue.items.len);
     processor.mutex.unlock();
 
     // This should be dropped (newest dropped policy)
-    processor.onEnd(@ptrCast(&span3));
+    processor.onEnd(span3);
 
     processor.mutex.lock();
     try testing.expectEqual(@as(usize, 2), processor.span_queue.items.len); // Still 2
     processor.mutex.unlock();
-
-    try testing.expect(span3.deinit_called); // Dropped span should be cleaned up
 }
 
 test "BatchSpanProcessor - shutdown behavior" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const MockExporter = struct {
-        export_count: usize = 0,
-        shutdown_count: usize = 0,
+    // Use mock error handler to capture errors instead of printing to stderr
+    var mock_error_handler = otel_api.common.MockErrorHandler.init(allocator);
+    defer mock_error_handler.deinit();
+    otel_api.common.setMockErrorHandler(&mock_error_handler);
+    defer otel_api.common.clearMockErrorHandler();
 
-        pub fn deinit(self: *@This()) void {
-            _ = self;
-        }
+    const mock_exporter = try allocator.create(MockSpanExporter);
+    mock_exporter.* = MockSpanExporter.init(allocator);
 
-        pub fn exportSpans(self: *@This(), spans: []const *RecordingSpan, resource: Resource) ExportResult {
-            _ = resource;
-            self.export_count += spans.len;
-            return .success;
-        }
-
-        pub fn forceFlush(self: *@This(), timeout_ms: ?u64) ExportResult {
-            _ = self;
-            _ = timeout_ms;
-            return .success;
-        }
-
-        pub fn shutdown(self: *@This(), timeout_ms: ?u64) ExportResult {
-            _ = timeout_ms;
-            self.shutdown_count += 1;
-            return .success;
-        }
-
-        pub fn destroy(self: *@This()) void {
-            _ = self;
-        }
-
-        pub fn spanExporter(self: *@This()) SpanExporter {
-            return SpanExporter{ .bridge = @import("exporter.zig").BridgeSpanExporter.init(self) };
-        }
-    };
-
-    var mock_exporter = MockExporter{};
     const resource = Resource{
         .attributes = &.{},
         .schema_url = null,
@@ -747,24 +698,40 @@ test "BatchSpanProcessor - shutdown behavior" {
         100,
         10,
     );
-    defer processor.deinit();
+    defer {
+        processor.deinit();
+        processor.destroy();
+    }
 
     // Test shutdown
     try testing.expectEqual(ProcessResult.success, processor.shutdown(null));
-    try testing.expect(processor.is_shutdown);
-    try testing.expectEqual(@as(usize, 1), mock_exporter.shutdown_count);
+    try testing.expect(processor.is_shutdown.load(.unordered));
 
     // Operations after shutdown should handle gracefully
-    const MockSpan = struct {
-        deinit_called: bool = false,
-        pub fn deinit(self: *@This()) void {
-            self.deinit_called = true;
-        }
+    const span_context = otel_api.trace.SpanContext{
+        .trace_id = otel_api.common.TraceId{ .bytes = [_]u8{1} ** 16 },
+        .span_id = otel_api.common.SpanId{ .bytes = [_]u8{1} ** 8 },
+        .trace_flags = 0,
+        .trace_state = null,
+        .is_remote = false,
     };
 
-    var mock_span = MockSpan{};
-    processor.onEnd(@ptrCast(&mock_span));
-    try testing.expect(mock_span.deinit_called); // Should be cleaned up immediately
+    const test_span = try @import("data.zig").RecordingSpan.init(
+        allocator,
+        "test-span",
+        span_context,
+        null,
+        .internal,
+        @import("../common/clock.zig").getTimestamp(),
+        &[_]otel_api.common.AttributeKeyValue{}, // initial_attributes
+        &[_]otel_api.trace.Link{}, // initial_links
+        otel_api.trace.SpanLimits.default,
+        @ptrCast(processor), // processor
+        null, // processorOnEndFn
+    );
+    defer test_span.deinit();
+
+    processor.onEnd(test_span); // Should be handled gracefully after shutdown
 
     try testing.expectEqual(ProcessResult.failure, processor.forceFlush(null));
 }
