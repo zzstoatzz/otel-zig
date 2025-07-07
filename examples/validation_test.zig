@@ -155,34 +155,34 @@ fn testMeterValidation() !void {
 
     // Test 1: Empty instrument name (should trigger validation error)
     print("Test 1: Empty instrument name...\n", .{});
-    _ = try meter.createCounter(i64, "", "A counter with empty name", "count");
+    _ = try meter.createCounter(i64, "", "A counter with empty name", "count", null);
 
     // Test 2: Invalid characters in instrument name
     print("Test 2: Invalid characters in instrument name...\n", .{});
-    _ = try meter.createCounter(i64, "invalid@name#with$symbols", "Counter with invalid characters", "count");
+    _ = try meter.createCounter(i64, "invalid@name#with$symbols", "Counter with invalid characters", "count", null);
 
     // Test 3: Empty description (should trigger validation warning)
     print("Test 3: Empty description...\n", .{});
-    _ = try meter.createHistogram(f64, "valid.histogram", "", "ms");
+    _ = try meter.createHistogram(f64, "valid.histogram", "", "ms", null);
 
     // Test 4: Very long description (should trigger validation warning)
     print("Test 4: Very long description...\n", .{});
     const long_desc = "This is an extremely long description that exceeds reasonable limits and should trigger a validation warning because descriptions should be concise and to the point, not verbose explanations that go on and on without adding meaningful value to the understanding of what this instrument measures in the context of the application's telemetry data collection strategy and monitoring infrastructure setup which is already quite complex without adding unnecessary verbosity to instrument descriptions that could be much shorter and still convey the essential information needed by operators and developers who need to understand what this metric represents in their monitoring dashboards and alerting systems that rely on clear and concise naming conventions and descriptions that follow best practices for observability and monitoring in distributed systems architecture patterns commonly used in modern cloud-native applications and microservices deployments across various infrastructure platforms and container orchestration systems like Kubernetes which require careful consideration of telemetry data volume and cardinality management to ensure optimal performance and cost-effectiveness of monitoring solutions while maintaining adequate observability coverage for troubleshooting and performance analysis purposes in production environments where reliability and maintainability are critical success factors for operational excellence and business continuity objectives that depend on effective monitoring 123456789012345678901234567890";
-    _ = try meter.createGauge(i64, "valid.gauge", long_desc, "units");
+    _ = try meter.createGauge(i64, "valid.gauge", long_desc, "units", null);
 
     // Test 5: Empty unit (should trigger validation warning)
     print("Test 5: Empty unit...\n", .{});
-    _ = try meter.createUpDownCounter(f64, "valid.updown", "Valid counter", "");
+    _ = try meter.createUpDownCounter(f64, "valid.updown", "Valid counter", "", null);
 
     // Test 6: Very long unit (should trigger validation warning)
     print("Test 6: Very long unit...\n", .{});
-    _ = try meter.createCounter(i64, "another.counter", "Counter with long unit", "this_is_a_very_very_very_very_very_very_long_unit_name_that_exceeds_limits");
+    _ = try meter.createCounter(i64, "another.counter", "Counter with long unit", "this_is_a_very_very_very_very_very_very_long_unit_name_that_exceeds_limits", null);
 
     // Test 7: Valid usage (should not trigger errors)
     print("Test 7: Valid usage (should be clean)...\n", .{});
-    const valid_counter = try meter.createCounter(i64, "valid.requests.total", "Total number of requests processed", "count");
-    const valid_histogram = try meter.createHistogram(f64, "valid.request.duration", "Request processing time", "ms");
-    const valid_gauge = try meter.createGauge(f64, "valid.cpu.usage", "Current CPU usage percentage", "percent");
+    const valid_counter = try meter.createCounter(i64, "valid.requests.total", "Total number of requests processed", "count", null);
+    const valid_histogram = try meter.createHistogram(f64, "valid.request.duration", "Request processing time", "ms", null);
+    const valid_gauge = try meter.createGauge(f64, "valid.cpu.usage", "Current CPU usage percentage", "percent", null);
 
     // Use the instruments briefly to ensure they work
     _ = valid_counter;
