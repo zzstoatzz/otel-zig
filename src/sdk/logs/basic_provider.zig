@@ -25,17 +25,9 @@ const PipelineBuilder = @import("../common/pipeline.zig").PipelineBuilder;
 const Resource = @import("../resource/resource.zig").Resource;
 const LogProcessor = @import("processor.zig").LogProcessor;
 const LogRecord = @import("log_record.zig").LogRecord;
+const InstrumentationScopeMapContext = @import("../common/scope_context.zig").InstrumentationScopeMapContext;
 
-/// Context for logger cache HashMap
-const LoggerCacheContext = struct {
-    pub fn hash(_: LoggerCacheContext, key: InstrumentationScope) u64 {
-        return key.hashCode();
-    }
-
-    pub fn eql(_: LoggerCacheContext, a: InstrumentationScope, b: InstrumentationScope) bool {
-        return InstrumentationScope.eql(a, b);
-    }
-};
+const LoggerCacheContext = InstrumentationScopeMapContext;
 
 /// Basic logger provider with caching
 pub const BasicLoggerProvider = struct {

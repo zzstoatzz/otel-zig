@@ -30,6 +30,7 @@ const MetricType = @import("data.zig").MetricType;
 const MetricValue = @import("data.zig").MetricValue;
 const MetricProcessor = @import("processor.zig").MetricProcessor;
 const aggregations = @import("basic_aggregations.zig");
+const InstrumentationScopeMapContext = @import("../common/scope_context.zig").InstrumentationScopeMapContext;
 
 // Observable instrument imports
 const AsyncInstrumentConfig = @import("async_instrument_config.zig").AsyncInstrumentConfig;
@@ -37,16 +38,7 @@ const SdkObservableCounter = @import("observable_instrument_sdk.zig").SdkObserva
 const SdkObservableGauge = @import("observable_instrument_sdk.zig").SdkObservableGauge;
 const SdkObservableUpDownCounter = @import("observable_instrument_sdk.zig").SdkObservableUpDownCounter;
 
-/// Context for meter cache HashMap
-const MeterCacheContext = struct {
-    pub fn hash(_: MeterCacheContext, key: InstrumentationScope) u64 {
-        return key.hashCode();
-    }
-
-    pub fn eql(_: MeterCacheContext, a: InstrumentationScope, b: InstrumentationScope) bool {
-        return InstrumentationScope.eql(a, b);
-    }
-};
+const MeterCacheContext = InstrumentationScopeMapContext;
 
 /// Basic meter provider with caching and configuration
 pub const BasicMeterProvider = struct {

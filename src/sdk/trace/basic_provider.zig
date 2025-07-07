@@ -32,16 +32,10 @@ const StandardTracer = @import("tracer.zig").StandardTracer;
 
 const PipelineBuilder = @import("../common/pipeline.zig").PipelineBuilder;
 
-/// Context for meter cache HashMap
-const TracerCacheContext = struct {
-    pub fn hash(_: TracerCacheContext, key: InstrumentationScope) u64 {
-        return key.hashCode();
-    }
+const InstrumentationScopeMapContext = @import("../common/scope_context.zig").InstrumentationScopeMapContext;
 
-    pub fn eql(_: TracerCacheContext, a: InstrumentationScope, b: InstrumentationScope) bool {
-        return InstrumentationScope.eql(a, b);
-    }
-};
+/// Context for meter cache HashMap
+const TracerCacheContext = InstrumentationScopeMapContext;
 
 /// Basic implementation of the TracerProvider interface
 pub const BasicTracerProvider = struct {
