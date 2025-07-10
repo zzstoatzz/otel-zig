@@ -5,6 +5,7 @@ const std = @import("std");
 pub const logs = @import("logs/root.zig");
 pub const trace = @import("trace/root.zig");
 pub const metrics = @import("metrics/root.zig");
+pub const config = @import("config/root.zig");
 pub const baggage = @import("baggage/root.zig");
 pub const context = @import("context/root.zig");
 pub const common = @import("common/root.zig");
@@ -20,6 +21,7 @@ pub const InstrumentationScope = common.InstrumentationScope;
 pub const getGlobalLoggerProvider = provider_registry.getGlobalLoggerProvider;
 pub const getGlobalMeterProvider = provider_registry.getGlobalMeterProvider;
 pub const getGlobalTracerProvider = provider_registry.getGlobalTracerProvider;
+pub const getGlobalConfigProvider = provider_registry.getGlobalConfigProvider;
 
 test "api module compilation" {
     std.testing.refAllDecls(@This());

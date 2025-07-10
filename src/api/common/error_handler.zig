@@ -62,6 +62,9 @@ pub const Component = enum {
     /// Baggage-related components
     baggage,
 
+    /// Configuration-related components
+    config,
+
     /// General/unknown component
     general,
 };
