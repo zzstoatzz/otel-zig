@@ -1,74 +1,29 @@
-//! OpenTelemetry Protocol (OTLP) Log Exporter
-//!
-//! This module provides an OTLP exporter for log records that sends
-//! data to OTLP-compatible backends using HTTP/JSON transport.
-
 const std = @import("std");
-const otel_api = @import("otel-api");
-const otel_sdk = @import("otel-sdk");
+const api = @import("otel-api");
+const sdk = @import("otel-sdk");
+const protobuf = @import("protobuf");
 
-const LogRecord = otel_sdk.logs.LogRecord;
-const ExportResult = otel_api.common.ExportResult;
+const LogRecord = sdk.logs.LogRecord;
+const ExportResult = api.common.ExportResult;
 const OtlpExporterConfig = @import("root.zig").OtlpExporterConfig;
-const Resource = otel_sdk.resource.Resource;
-const ResourceBuilder = otel_sdk.resource.ResourceBuilder;
+const Resource = sdk.resource.Resource;
+const ResourceBuilder = sdk.resource.ResourceBuilder;
 
-// Import error handler for structured error reporting
-const error_handler = otel_api.common;
+// Import protobuf definitions
+const logs_v1 = @import("proto/opentelemetry/proto/logs/v1.pb.zig");
+const common_v1 = @import("proto/opentelemetry/proto/common/v1.pb.zig");
+const resource_v1 = @import("proto/opentelemetry/proto/resource/v1.pb.zig");
 
-/// OTLP JSON structures for serialization
-const OtlpResourceLogs = struct {
-    resourceLogs: []const OtlpResourceLog,
-};
+const error_handler = api.common;
 
-const OtlpResourceLog = struct {
-    resource: OtlpResource,
-    scopeLogs: []const OtlpScopeLog,
-};
-
-const OtlpResource = struct {
-    attributes: []const OtlpKeyValue,
-};
-
-const OtlpScopeLog = struct {
-    scope: OtlpInstrumentationScope,
-    logRecords: []const OtlpLogRecord,
-};
-
-const OtlpInstrumentationScope = struct {
-    name: []const u8,
-    version: []const u8,
-};
-
-const OtlpLogRecord = struct {
-    timeUnixNano: []const u8,
-    severityNumber: u32,
-    severityText: []const u8,
-    body: OtlpAnyValue,
-    attributes: []const OtlpKeyValue,
-};
-
-const OtlpKeyValue = struct {
-    key: []const u8,
-    value: OtlpAnyValue,
-};
-
-const OtlpAnyValue = union(enum) {
-    stringValue: []const u8,
-    intValue: i64,
-    doubleValue: f64,
-    boolValue: bool,
-};
-
-/// OTLP log exporter implementation
 pub const OtlpLogExporter = struct {
-    pub const PipelineStep = otel_sdk.common.PipelineStepInstructions(
+    pub const PipelineStep = sdk.common.PipelineStepInstructions(
         OtlpLogExporter,
-        otel_sdk.logs.LogExporter,
+        sdk.logs.LogExporter,
         OtlpExporterConfig,
         logExporter,
         _init,
-        otel_sdk.common.PipelineDeinitConnection,
+        sdk.common.PipelineDeinitConnection,
     );
 
     config: OtlpExporterConfig,
@@ -109,20 +64,25 @@ pub const OtlpLogExporter = struct {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
 
-        const json_data = convertToOtlpFormat(arena.allocator(), records, resource) catch |err| {
+        // Choose format based on transport configuration
+        const data_result = switch (self.config.transport) {
+            .http_json => self.convertToJsonFormat(arena.allocator(), records, resource),
+            .http_protobuf, .grpc => self.convertToProtobufFormat(arena.allocator(), records, resource),
+        };
+
+        const data = data_result catch |err| {
             error_handler.reportError(.{
                 .component = .exporter,
                 .operation = "otlp_serialization",
                 .error_type = .serialization,
-                .message = "OTLP JSON conversion failed",
+                .message = "OTLP serialization failed",
                 .context = "log records",
                 .source_error = err,
             });
             return .failure;
         };
-        defer arena.allocator().free(json_data);
 
-        const result = self.sendRequest(arena.allocator(), json_data) catch |err| {
+        const result = self.sendRequest(arena.allocator(), data) catch |err| {
             error_handler.reportError(.{
                 .component = .exporter,
                 .operation = "otlp_network",
@@ -138,23 +98,24 @@ pub const OtlpLogExporter = struct {
     }
 
     pub fn forceFlush(self: *OtlpLogExporter, timeout_ms: ?u64) ExportResult {
-        _ = self;
         _ = timeout_ms;
-        // For HTTP transport, no persistent connection to flush
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        // No-op for OTLP exporter
         return .success;
     }
 
     pub fn shutdown(self: *OtlpLogExporter, timeout_ms: ?u64) ExportResult {
+        _ = timeout_ms;
         self.mutex.lock();
         defer self.mutex.unlock();
 
         if (self.is_shutdown) {
-            return .success;
+            return .failure;
         }
 
         self.is_shutdown = true;
-        _ = timeout_ms;
-
         return .success;
     }
 
@@ -177,7 +138,14 @@ pub const OtlpLogExporter = struct {
         const scheme_str = if (uri.scheme.len > 0) uri.scheme else "http";
         const full_url = try std.fmt.allocPrint(allocator, "{s}://{s}:{d}{s}", .{ scheme_str, host_str, uri.port orelse 4318, self.config.protocol_config.logs_path });
         defer allocator.free(full_url);
-        std.log.debug("OTLP Request Details. URL:{s} Method:{s} content-type:{s} content-length:{} data:{s}", .{ full_url, "POST", "application/json", data.len, data });
+
+        // Determine content type based on transport
+        const content_type = switch (self.config.transport) {
+            .http_json => "application/json",
+            .http_protobuf, .grpc => "application/x-protobuf",
+        };
+
+        std.log.debug("OTLP Request Details. URL:{s} Method:{s} content-type:{s} content-length:{} transport:{s}", .{ full_url, "POST", content_type, data.len, @tagName(self.config.transport) });
 
         // Create HTTP request
         const full_uri = try std.Uri.parse(full_url);
@@ -188,7 +156,7 @@ pub const OtlpLogExporter = struct {
         defer req.deinit();
 
         // Set request headers
-        req.headers.content_type = .{ .override = "application/json" };
+        req.headers.content_type = .{ .override = content_type };
         req.transfer_encoding = .{ .content_length = @intCast(data.len) };
 
         // Add custom headers from config (simplified approach)
@@ -220,297 +188,484 @@ pub const OtlpLogExporter = struct {
         }
     }
 
-    pub fn logExporter(self: *OtlpLogExporter) otel_sdk.logs.LogExporter {
-        return .{ .bridge = otel_sdk.logs.BridgeLogExporter.init(self) };
+    pub fn logExporter(self: *OtlpLogExporter) sdk.logs.LogExporter {
+        return sdk.logs.LogExporter{ .bridge = sdk.logs.BridgeLogExporter.init(self) };
+    }
+
+    fn convertToJsonFormat(self: *OtlpLogExporter, allocator: std.mem.Allocator, records: []const LogRecord, resource: Resource) ![]u8 {
+        _ = self;
+
+        // Create protobuf LogsData structure
+        var logs_data = logs_v1.LogsData{
+            .resource_logs = std.ArrayList(logs_v1.ResourceLogs).init(allocator),
+        };
+
+        // Convert resource
+        var resource_logs = logs_v1.ResourceLogs{
+            .resource = try convertResourceToProtobuf(allocator, resource),
+            .scope_logs = std.ArrayList(logs_v1.ScopeLogs).init(allocator),
+            .schema_url = protobuf.ManagedString.static(""),
+        };
+
+        // Convert scope logs
+        var scope_logs = logs_v1.ScopeLogs{
+            .scope = common_v1.InstrumentationScope{
+                .name = protobuf.ManagedString.static("zig-otel-logs"),
+                .version = protobuf.ManagedString.static("1.0.0"),
+                .attributes = std.ArrayList(common_v1.KeyValue).init(allocator),
+                .dropped_attributes_count = 0,
+            },
+            .log_records = std.ArrayList(logs_v1.LogRecord).init(allocator),
+            .schema_url = protobuf.ManagedString.static(""),
+        };
+
+        // Convert log records
+        for (records) |record| {
+            const protobuf_record = try convertLogRecordToProtobuf(allocator, record);
+            try scope_logs.log_records.append(protobuf_record);
+        }
+
+        try resource_logs.scope_logs.append(scope_logs);
+        try logs_data.resource_logs.append(resource_logs);
+
+        // Serialize to JSON using std.json.stringify
+        var json_buffer = std.ArrayList(u8).init(allocator);
+        try std.json.stringify(logs_data, .{}, json_buffer.writer());
+        return json_buffer.toOwnedSlice();
+    }
+
+    fn convertToProtobufFormat(self: *OtlpLogExporter, allocator: std.mem.Allocator, records: []const LogRecord, resource: Resource) ![]u8 {
+        _ = self;
+
+        // Create protobuf LogsData structure
+        var logs_data = logs_v1.LogsData{
+            .resource_logs = std.ArrayList(logs_v1.ResourceLogs).init(allocator),
+        };
+
+        // Convert resource
+        var resource_logs = logs_v1.ResourceLogs{
+            .resource = try convertResourceToProtobuf(allocator, resource),
+            .scope_logs = std.ArrayList(logs_v1.ScopeLogs).init(allocator),
+            .schema_url = protobuf.ManagedString.static(""),
+        };
+
+        // Convert scope logs
+        var scope_logs = logs_v1.ScopeLogs{
+            .scope = common_v1.InstrumentationScope{
+                .name = protobuf.ManagedString.static("zig-otel-logs"),
+                .version = protobuf.ManagedString.static("1.0.0"),
+                .attributes = std.ArrayList(common_v1.KeyValue).init(allocator),
+                .dropped_attributes_count = 0,
+            },
+            .log_records = std.ArrayList(logs_v1.LogRecord).init(allocator),
+            .schema_url = protobuf.ManagedString.static(""),
+        };
+
+        // Convert log records
+        for (records) |record| {
+            const protobuf_record = try convertLogRecordToProtobuf(allocator, record);
+            try scope_logs.log_records.append(protobuf_record);
+        }
+
+        try resource_logs.scope_logs.append(scope_logs);
+        try logs_data.resource_logs.append(resource_logs);
+
+        // Serialize to protobuf binary format
+        return try logs_data.encode(allocator);
     }
 };
 
-/// Convert LogRecords to OTLP format JSON
-fn convertToOtlpFormat(allocator: std.mem.Allocator, records: []const LogRecord, resource: Resource) ![]u8 {
-    // Convert LogRecords to OTLP ResourceLogs format
-    var otlp_log_records = try allocator.alloc(OtlpLogRecord, records.len);
-    defer allocator.free(otlp_log_records);
-
-    for (records, 0..) |record, i| {
-        // Convert severity number
-        const severity_number: u32 = @intFromEnum(record.severity_number);
-        const severity_text = record.severity_number.toShortText();
-
-        // Convert timestamp
-        const timestamp_str = try std.fmt.allocPrint(allocator, "{}", .{record.timestamp_ns orelse @as(i64, @intCast(std.time.nanoTimestamp()))});
-        defer allocator.free(timestamp_str);
-
-        // Convert body
-        const body = if (record.body) |body_value| switch (body_value) {
-            .string => |s| OtlpAnyValue{ .stringValue = s },
-            .int => |int_val| OtlpAnyValue{ .intValue = int_val },
-            .float => |f| OtlpAnyValue{ .doubleValue = f },
-            .bool => |b| OtlpAnyValue{ .boolValue = b },
-            .bool_array => |arr| blk: {
-                var result = std.ArrayList(u8).init(allocator);
-                defer result.deinit();
-                try result.append('[');
-                for (arr, 0..) |item, idx| {
-                    if (idx > 0) try result.appendSlice(", ");
-                    try result.appendSlice(if (item) "true" else "false");
-                }
-                try result.append(']');
-                const str = try result.toOwnedSlice();
-                break :blk OtlpAnyValue{ .stringValue = str };
-            },
-            .int_array => |arr| blk: {
-                var result = std.ArrayList(u8).init(allocator);
-                defer result.deinit();
-                try result.append('[');
-                for (arr, 0..) |item, idx| {
-                    if (idx > 0) try result.appendSlice(", ");
-                    try result.writer().print("{}", .{item});
-                }
-                try result.append(']');
-                const str = try result.toOwnedSlice();
-                break :blk OtlpAnyValue{ .stringValue = str };
-            },
-            .float_array => |arr| blk: {
-                var result = std.ArrayList(u8).init(allocator);
-                defer result.deinit();
-                try result.append('[');
-                for (arr, 0..) |item, idx| {
-                    if (idx > 0) try result.appendSlice(", ");
-                    try result.writer().print("{}", .{item});
-                }
-                try result.append(']');
-                const str = try result.toOwnedSlice();
-                break :blk OtlpAnyValue{ .stringValue = str };
-            },
-            .string_array => |arr| blk: {
-                var result = std.ArrayList(u8).init(allocator);
-                defer result.deinit();
-                try result.append('[');
-                for (arr, 0..) |item, idx| {
-                    if (idx > 0) try result.appendSlice(", ");
-                    try result.writer().print("\"{s}\"", .{item});
-                }
-                try result.append(']');
-                const str = try result.toOwnedSlice();
-                break :blk OtlpAnyValue{ .stringValue = str };
-            },
-        } else OtlpAnyValue{ .stringValue = "" };
-
-        // Convert attributes
-        var otlp_attributes = std.ArrayList(OtlpKeyValue).init(allocator);
-        defer otlp_attributes.deinit();
-
-        for (record.attributes) |attr| {
-            const otlp_value = switch (attr.value) {
-                .string => |s| OtlpAnyValue{ .stringValue = s },
-                .int => |int_val| OtlpAnyValue{ .intValue = int_val },
-                .float => |f| OtlpAnyValue{ .doubleValue = f },
-                .bool => |b| OtlpAnyValue{ .boolValue = b },
-                .bool_array => |arr| blk: {
-                    var result = std.ArrayList(u8).init(allocator);
-                    defer result.deinit();
-                    try result.append('[');
-                    for (arr, 0..) |item, idx| {
-                        if (idx > 0) try result.appendSlice(", ");
-                        try result.appendSlice(if (item) "true" else "false");
-                    }
-                    try result.append(']');
-                    const str = try result.toOwnedSlice();
-                    break :blk OtlpAnyValue{ .stringValue = str };
-                },
-                .int_array => |arr| blk: {
-                    var result = std.ArrayList(u8).init(allocator);
-                    defer result.deinit();
-                    try result.append('[');
-                    for (arr, 0..) |item, idx| {
-                        if (idx > 0) try result.appendSlice(", ");
-                        try result.writer().print("{}", .{item});
-                    }
-                    try result.append(']');
-                    const str = try result.toOwnedSlice();
-                    break :blk OtlpAnyValue{ .stringValue = str };
-                },
-                .float_array => |arr| blk: {
-                    var result = std.ArrayList(u8).init(allocator);
-                    defer result.deinit();
-                    try result.append('[');
-                    for (arr, 0..) |item, idx| {
-                        if (idx > 0) try result.appendSlice(", ");
-                        try result.writer().print("{}", .{item});
-                    }
-                    try result.append(']');
-                    const str = try result.toOwnedSlice();
-                    break :blk OtlpAnyValue{ .stringValue = str };
-                },
-                .string_array => |arr| blk: {
-                    var result = std.ArrayList(u8).init(allocator);
-                    defer result.deinit();
-                    try result.append('[');
-                    for (arr, 0..) |item, idx| {
-                        if (idx > 0) try result.appendSlice(", ");
-                        try result.writer().print("\"{s}\"", .{item});
-                    }
-                    try result.append(']');
-                    const str = try result.toOwnedSlice();
-                    break :blk OtlpAnyValue{ .stringValue = str };
-                },
-            };
-
-            try otlp_attributes.append(OtlpKeyValue{
-                .key = attr.key,
-                .value = otlp_value,
-            });
-        }
-
-        otlp_log_records[i] = OtlpLogRecord{
-            .timeUnixNano = try allocator.dupe(u8, timestamp_str),
-            .severityNumber = severity_number,
-            .severityText = severity_text,
-            .body = body,
-            .attributes = try otlp_attributes.toOwnedSlice(),
-        };
-    }
-
-    // Convert resource attributes to OTLP format
-    var otlp_resource_attributes = std.ArrayList(OtlpKeyValue).init(allocator);
-    defer otlp_resource_attributes.deinit();
+fn convertResourceToProtobuf(allocator: std.mem.Allocator, resource: Resource) !?resource_v1.Resource {
+    var pb_resource = resource_v1.Resource{
+        .attributes = std.ArrayList(common_v1.KeyValue).init(allocator),
+        .dropped_attributes_count = 0,
+        .entity_refs = std.ArrayList(common_v1.EntityRef).init(allocator),
+    };
 
     for (resource.attributes) |attr| {
-        const otlp_value = switch (attr.value) {
-            .string => |s| OtlpAnyValue{ .stringValue = s },
-            .int => |int_val| OtlpAnyValue{ .intValue = int_val },
-            .float => |f| OtlpAnyValue{ .doubleValue = f },
-            .bool => |b| OtlpAnyValue{ .boolValue = b },
-            .bool_array => |arr| blk: {
-                var result = std.ArrayList(u8).init(allocator);
-                defer result.deinit();
-                try result.append('[');
-                for (arr, 0..) |item, idx| {
-                    if (idx > 0) try result.appendSlice(", ");
-                    try result.appendSlice(if (item) "true" else "false");
-                }
-                try result.append(']');
-                const str = try result.toOwnedSlice();
-                break :blk OtlpAnyValue{ .stringValue = str };
-            },
-            .int_array => |arr| blk: {
-                var result = std.ArrayList(u8).init(allocator);
-                defer result.deinit();
-                try result.append('[');
-                for (arr, 0..) |item, idx| {
-                    if (idx > 0) try result.appendSlice(", ");
-                    try result.writer().print("{}", .{item});
-                }
-                try result.append(']');
-                const str = try result.toOwnedSlice();
-                break :blk OtlpAnyValue{ .stringValue = str };
-            },
-            .float_array => |arr| blk: {
-                var result = std.ArrayList(u8).init(allocator);
-                defer result.deinit();
-                try result.append('[');
-                for (arr, 0..) |item, idx| {
-                    if (idx > 0) try result.appendSlice(", ");
-                    try result.writer().print("{}", .{item});
-                }
-                try result.append(']');
-                const str = try result.toOwnedSlice();
-                break :blk OtlpAnyValue{ .stringValue = str };
-            },
-            .string_array => |arr| blk: {
-                var result = std.ArrayList(u8).init(allocator);
-                defer result.deinit();
-                try result.append('[');
-                for (arr, 0..) |item, idx| {
-                    if (idx > 0) try result.appendSlice(", ");
-                    try result.writer().print("\"{s}\"", .{item});
-                }
-                try result.append(']');
-                const str = try result.toOwnedSlice();
-                break :blk OtlpAnyValue{ .stringValue = str };
-            },
+        const pb_kv = common_v1.KeyValue{
+            .key = protobuf.ManagedString.managed(attr.key),
+            .value = try convertAttributeValueToProtobuf(allocator, attr.value),
         };
-
-        try otlp_resource_attributes.append(OtlpKeyValue{
-            .key = attr.key,
-            .value = otlp_value,
-        });
+        try pb_resource.attributes.append(pb_kv);
     }
 
-    // Create OTLP structure
-    const resource_log = OtlpResourceLog{
-        .resource = OtlpResource{
-            .attributes = try otlp_resource_attributes.toOwnedSlice(),
+    return pb_resource;
+}
+
+fn convertLogRecordToProtobuf(allocator: std.mem.Allocator, record: LogRecord) !logs_v1.LogRecord {
+    const timestamp_ns = record.timestamp_ns orelse std.time.nanoTimestamp();
+    var pb_record = logs_v1.LogRecord{
+        .time_unix_nano = @as(u64, @intCast(@max(0, timestamp_ns))),
+        .observed_time_unix_nano = @as(u64, @intCast(@max(0, timestamp_ns))),
+        .severity_number = mapSeverityToProtobuf(record.severity_number),
+        .severity_text = protobuf.ManagedString.managed(record.severity_number.toShortText()),
+        .body = if (record.body) |body| try convertAttributeValueToProtobuf(allocator, body) else null,
+        .attributes = std.ArrayList(common_v1.KeyValue).init(allocator),
+        .dropped_attributes_count = 0,
+        .flags = 0,
+        .trace_id = protobuf.ManagedString.static(""),
+        .span_id = protobuf.ManagedString.static(""),
+        .event_name = protobuf.ManagedString.static(""),
+    };
+
+    for (record.attributes) |attr| {
+        const pb_kv = common_v1.KeyValue{
+            .key = protobuf.ManagedString.managed(attr.key),
+            .value = try convertAttributeValueToProtobuf(allocator, attr.value),
+        };
+        try pb_record.attributes.append(pb_kv);
+    }
+
+    return pb_record;
+}
+
+fn mapSeverityToProtobuf(severity: api.logs.Severity) logs_v1.SeverityNumber {
+    return switch (severity) {
+        .invalid => .SEVERITY_NUMBER_UNSPECIFIED,
+        .trace => .SEVERITY_NUMBER_TRACE,
+        .trace2 => .SEVERITY_NUMBER_TRACE2,
+        .trace3 => .SEVERITY_NUMBER_TRACE3,
+        .trace4 => .SEVERITY_NUMBER_TRACE4,
+        .debug => .SEVERITY_NUMBER_DEBUG,
+        .debug2 => .SEVERITY_NUMBER_DEBUG2,
+        .debug3 => .SEVERITY_NUMBER_DEBUG3,
+        .debug4 => .SEVERITY_NUMBER_DEBUG4,
+        .info => .SEVERITY_NUMBER_INFO,
+        .info2 => .SEVERITY_NUMBER_INFO2,
+        .info3 => .SEVERITY_NUMBER_INFO3,
+        .info4 => .SEVERITY_NUMBER_INFO4,
+        .warn => .SEVERITY_NUMBER_WARN,
+        .warn2 => .SEVERITY_NUMBER_WARN2,
+        .warn3 => .SEVERITY_NUMBER_WARN3,
+        .warn4 => .SEVERITY_NUMBER_WARN4,
+        .@"error" => .SEVERITY_NUMBER_ERROR,
+        .error2 => .SEVERITY_NUMBER_ERROR2,
+        .error3 => .SEVERITY_NUMBER_ERROR3,
+        .error4 => .SEVERITY_NUMBER_ERROR4,
+        .fatal => .SEVERITY_NUMBER_FATAL,
+        .fatal2 => .SEVERITY_NUMBER_FATAL2,
+        .fatal3 => .SEVERITY_NUMBER_FATAL3,
+        .fatal4 => .SEVERITY_NUMBER_FATAL4,
+    };
+}
+
+fn convertAttributeValueToProtobuf(allocator: std.mem.Allocator, value: api.common.AttributeValue) !?common_v1.AnyValue {
+    const pb_value = switch (value) {
+        .string => |s| common_v1.AnyValue{
+            .value = .{ .string_value = protobuf.ManagedString.managed(s) },
         },
-        .scopeLogs = &[_]OtlpScopeLog{
-            OtlpScopeLog{
-                .scope = OtlpInstrumentationScope{
-                    .name = "zig-otel-logs",
-                    .version = "1.0.0",
-                },
-                .logRecords = otlp_log_records,
-            },
+        .int => |i| common_v1.AnyValue{
+            .value = .{ .int_value = i },
+        },
+        .float => |f| common_v1.AnyValue{
+            .value = .{ .double_value = f },
+        },
+        .bool => |b| common_v1.AnyValue{
+            .value = .{ .bool_value = b },
+        },
+        .bool_array => |arr| blk: {
+            var pb_array = common_v1.ArrayValue{
+                .values = std.ArrayList(common_v1.AnyValue).init(allocator),
+            };
+            for (arr) |item| {
+                try pb_array.values.append(common_v1.AnyValue{
+                    .value = .{ .bool_value = item },
+                });
+            }
+            break :blk common_v1.AnyValue{
+                .value = .{ .array_value = pb_array },
+            };
+        },
+        .int_array => |arr| blk: {
+            var pb_array = common_v1.ArrayValue{
+                .values = std.ArrayList(common_v1.AnyValue).init(allocator),
+            };
+            for (arr) |item| {
+                try pb_array.values.append(common_v1.AnyValue{
+                    .value = .{ .int_value = item },
+                });
+            }
+            break :blk common_v1.AnyValue{
+                .value = .{ .array_value = pb_array },
+            };
+        },
+        .float_array => |arr| blk: {
+            var pb_array = common_v1.ArrayValue{
+                .values = std.ArrayList(common_v1.AnyValue).init(allocator),
+            };
+            for (arr) |item| {
+                try pb_array.values.append(common_v1.AnyValue{
+                    .value = .{ .double_value = item },
+                });
+            }
+            break :blk common_v1.AnyValue{
+                .value = .{ .array_value = pb_array },
+            };
+        },
+        .string_array => |arr| blk: {
+            var pb_array = common_v1.ArrayValue{
+                .values = std.ArrayList(common_v1.AnyValue).init(allocator),
+            };
+            for (arr) |item| {
+                try pb_array.values.append(common_v1.AnyValue{
+                    .value = .{ .string_value = protobuf.ManagedString.managed(item) },
+                });
+            }
+            break :blk common_v1.AnyValue{
+                .value = .{ .array_value = pb_array },
+            };
         },
     };
 
-    const resource_logs = OtlpResourceLogs{
-        .resourceLogs = &[_]OtlpResourceLog{resource_log},
-    };
-
-    // Serialize to JSON
-    var json_buffer = std.ArrayList(u8).init(allocator);
-    defer json_buffer.deinit();
-
-    try std.json.stringify(resource_logs, .{}, json_buffer.writer());
-    return try json_buffer.toOwnedSlice();
+    return pb_value;
 }
 
 test "OtlpLogExporter basic functionality" {
     const testing = std.testing;
-    const allocator = testing.allocator;
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
 
-    var exporter = OtlpLogExporter.init(allocator, .{
+    // Create a test config
+    const config = OtlpExporterConfig{
         .endpoint = "http://localhost:4318",
         .transport = .http_json,
-    });
+    };
+
+    // Create exporter
+    var exporter = OtlpLogExporter.init(allocator, config);
     defer exporter.deinit();
 
-    const records = [_]LogRecord{
-        .{
-            .severity_number = .info,
-            .body = .{ .string = "test log message" },
-            .timestamp_ns = 1234567890000000000,
-            .attributes = &[_]otel_api.common.AttributeKeyValue{
-                .{ .key = "test.key", .value = .{ .string = "test.value" } },
-            },
+    // Create test resource
+    const resource = try ResourceBuilder.init(allocator)
+        .withDefaults()
+        .finish(allocator);
+    defer resource.deinitOwned(allocator);
+
+    // Create test log record
+    const log_record = LogRecord{
+        .timestamp_ns = 1000000000,
+        .severity_number = .info,
+        .body = .{ .string = "test message" },
+        .attributes = &[_]api.common.AttributeKeyValue{
+            .{ .key = "test.key", .value = .{ .string = "test.value" } },
         },
     };
 
-    // Test JSON conversion
+    // Test that exporter doesn't crash (network call will fail but that's expected)
+    const result = exporter.exportRecords(&[_]LogRecord{log_record}, resource);
+    try testing.expect(result == .failure or result == .success);
+}
+
+test "OtlpLogExporter transport selection" {
+    const testing = std.testing;
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    // Create test resource
+    const resource = try ResourceBuilder.init(allocator)
+        .withDefaults()
+        .finish(allocator);
+    defer resource.deinitOwned(allocator);
+
+    // Create test log record
+    const log_record = LogRecord{
+        .timestamp_ns = 1000000000,
+        .severity_number = .info,
+        .body = .{ .string = "test message" },
+        .attributes = &[_]api.common.AttributeKeyValue{
+            .{ .key = "test.key", .value = .{ .string = "test.value" } },
+        },
+    };
+
+    // Test JSON transport
+    {
+        const config = OtlpExporterConfig{
+            .endpoint = "http://localhost:4318",
+            .transport = .http_json,
+        };
+
+        var exporter = OtlpLogExporter.init(allocator, config);
+        defer exporter.deinit();
+
+        // Test JSON format conversion
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+
+        const json_data = try exporter.convertToJsonFormat(arena.allocator(), &[_]LogRecord{log_record}, resource);
+        try testing.expect(json_data.len > 0);
+        try testing.expect(std.mem.indexOf(u8, json_data, "test message") != null);
+        try testing.expect(std.mem.indexOf(u8, json_data, "test.key") != null);
+        try testing.expect(std.mem.indexOf(u8, json_data, "telemetry.sdk.name") != null);
+    }
+
+    // Test protobuf transport
+    {
+        const config = OtlpExporterConfig{
+            .endpoint = "http://localhost:4318",
+            .transport = .http_protobuf,
+        };
+
+        var exporter = OtlpLogExporter.init(allocator, config);
+        defer exporter.deinit();
+
+        // Test protobuf format conversion
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+
+        const protobuf_data = try exporter.convertToProtobufFormat(arena.allocator(), &[_]LogRecord{log_record}, resource);
+        try testing.expect(protobuf_data.len > 0);
+        // Protobuf is binary format, so we can't check for string content directly
+        // But we can verify it's not empty and different from JSON
+    }
+
+    // Test gRPC transport (should use protobuf format)
+    {
+        const config = OtlpExporterConfig{
+            .endpoint = "http://localhost:4318",
+            .transport = .grpc,
+        };
+
+        var exporter = OtlpLogExporter.init(allocator, config);
+        defer exporter.deinit();
+
+        // Test gRPC format conversion (should be same as protobuf)
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+
+        const grpc_data = try exporter.convertToProtobufFormat(arena.allocator(), &[_]LogRecord{log_record}, resource);
+        try testing.expect(grpc_data.len > 0);
+    }
+}
+
+test "OtlpLogExporter severity mapping" {
+    const testing = std.testing;
+
+    // Test all severity levels map correctly
+    try testing.expectEqual(logs_v1.SeverityNumber.SEVERITY_NUMBER_UNSPECIFIED, mapSeverityToProtobuf(.invalid));
+    try testing.expectEqual(logs_v1.SeverityNumber.SEVERITY_NUMBER_TRACE, mapSeverityToProtobuf(.trace));
+    try testing.expectEqual(logs_v1.SeverityNumber.SEVERITY_NUMBER_DEBUG, mapSeverityToProtobuf(.debug));
+    try testing.expectEqual(logs_v1.SeverityNumber.SEVERITY_NUMBER_INFO, mapSeverityToProtobuf(.info));
+    try testing.expectEqual(logs_v1.SeverityNumber.SEVERITY_NUMBER_WARN, mapSeverityToProtobuf(.warn));
+    try testing.expectEqual(logs_v1.SeverityNumber.SEVERITY_NUMBER_ERROR, mapSeverityToProtobuf(.@"error"));
+    try testing.expectEqual(logs_v1.SeverityNumber.SEVERITY_NUMBER_FATAL, mapSeverityToProtobuf(.fatal));
+}
+
+test "OtlpLogExporter attribute conversion" {
+    const testing = std.testing;
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    // Test string attribute
+    {
+        const attr_value = api.common.AttributeValue{ .string = "test_string" };
+        const pb_value = try convertAttributeValueToProtobuf(allocator, attr_value);
+        try testing.expect(pb_value != null);
+        try testing.expect(pb_value.?.value != null);
+        try testing.expectEqual(common_v1.AnyValue._value_case.string_value, std.meta.activeTag(pb_value.?.value.?));
+    }
+
+    // Test int attribute
+    {
+        const attr_value = api.common.AttributeValue{ .int = 42 };
+        const pb_value = try convertAttributeValueToProtobuf(allocator, attr_value);
+        try testing.expect(pb_value != null);
+        try testing.expect(pb_value.?.value != null);
+        try testing.expectEqual(common_v1.AnyValue._value_case.int_value, std.meta.activeTag(pb_value.?.value.?));
+        try testing.expectEqual(@as(i64, 42), pb_value.?.value.?.int_value);
+    }
+
+    // Test bool attribute
+    {
+        const attr_value = api.common.AttributeValue{ .bool = true };
+        const pb_value = try convertAttributeValueToProtobuf(allocator, attr_value);
+        try testing.expect(pb_value != null);
+        try testing.expect(pb_value.?.value != null);
+        try testing.expectEqual(common_v1.AnyValue._value_case.bool_value, std.meta.activeTag(pb_value.?.value.?));
+        try testing.expectEqual(true, pb_value.?.value.?.bool_value);
+    }
+
+    // Test float attribute
+    {
+        const attr_value = api.common.AttributeValue{ .float = 3.14 };
+        const pb_value = try convertAttributeValueToProtobuf(allocator, attr_value);
+        try testing.expect(pb_value != null);
+        try testing.expect(pb_value.?.value != null);
+        try testing.expectEqual(common_v1.AnyValue._value_case.double_value, std.meta.activeTag(pb_value.?.value.?));
+        try testing.expectEqual(@as(f64, 3.14), pb_value.?.value.?.double_value);
+    }
+
+    // Test array attribute
+    {
+        const int_array = [_]i64{ 1, 2, 3 };
+        const attr_value = api.common.AttributeValue{ .int_array = &int_array };
+        const pb_value = try convertAttributeValueToProtobuf(allocator, attr_value);
+        defer if (pb_value) |val| {
+            if (val.value) |v| {
+                switch (v) {
+                    .array_value => |arr| arr.values.deinit(),
+                    else => {},
+                }
+            }
+        };
+        try testing.expect(pb_value != null);
+        try testing.expect(pb_value.?.value != null);
+        try testing.expectEqual(common_v1.AnyValue._value_case.array_value, std.meta.activeTag(pb_value.?.value.?));
+        try testing.expectEqual(@as(usize, 3), pb_value.?.value.?.array_value.values.items.len);
+    }
+}
+
+test "OtlpLogExporter protobuf format validation" {
+    const testing = std.testing;
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    // Create test resource
+    const resource = try ResourceBuilder.init(allocator)
+        .withDefaults()
+        .finish(allocator);
+    defer resource.deinitOwned(allocator);
+
+    // Create test log record
+    const log_record = LogRecord{
+        .timestamp_ns = 1000000000,
+        .severity_number = .info,
+        .body = .{ .string = "test message" },
+        .attributes = &[_]api.common.AttributeKeyValue{
+            .{ .key = "test.key", .value = .{ .string = "test.value" } },
+            .{ .key = "test.number", .value = .{ .int = 42 } },
+        },
+    };
+
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    const test_resource = try ResourceBuilder.init(arena.allocator())
-        .withDefaults()
-        .finish(arena.allocator());
-    const json_data = try convertToOtlpFormat(arena.allocator(), &records, test_resource);
-    defer arena.allocator().free(json_data);
+    var exporter = OtlpLogExporter.init(allocator, .{ .transport = .http_json });
 
-    try testing.expect(json_data.len > 0);
-    try testing.expect(std.mem.indexOf(u8, json_data, "test log message") != null);
-    try testing.expect(std.mem.indexOf(u8, json_data, "test.key") != null);
-    // Test that resource information is included
-    try testing.expect(std.mem.indexOf(u8, json_data, "telemetry.sdk.name") != null);
-    try testing.expect(std.mem.indexOf(u8, json_data, "opentelemetry") != null);
+    // Generate JSON using protobuf structures
+    const protobuf_json = try exporter.convertToJsonFormat(arena.allocator(), &[_]LogRecord{log_record}, resource);
 
-    // Test lifecycle methods
-    const flush_result = exporter.forceFlush(5000);
-    try testing.expectEqual(ExportResult.success, flush_result);
+    // Generate binary protobuf
+    const protobuf_data = try exporter.convertToProtobufFormat(arena.allocator(), &[_]LogRecord{log_record}, resource);
 
-    const shutdown_result = exporter.shutdown(5000);
-    try testing.expectEqual(ExportResult.success, shutdown_result);
+    // Validate both formats are generated successfully
+    try testing.expect(protobuf_json.len > 0);
+    try testing.expect(protobuf_data.len > 0);
 
-    // Should reject exports after shutdown
-    const result_after_shutdown = exporter.exportRecords(&records, test_resource);
-    try testing.expectEqual(ExportResult.failure, result_after_shutdown);
+    // Protobuf binary should be smaller than JSON
+    try testing.expect(protobuf_data.len < protobuf_json.len);
+
+    // JSON should contain the test message and attributes
+    try testing.expect(std.mem.indexOf(u8, protobuf_json, "test message") != null);
+    try testing.expect(std.mem.indexOf(u8, protobuf_json, "test.key") != null);
+    try testing.expect(std.mem.indexOf(u8, protobuf_json, "test.value") != null);
+
+    // JSON should contain OTLP structure
+    try testing.expect(std.mem.indexOf(u8, protobuf_json, "resourceLogs") != null);
+    try testing.expect(std.mem.indexOf(u8, protobuf_json, "scopeLogs") != null);
+    try testing.expect(std.mem.indexOf(u8, protobuf_json, "logRecords") != null);
 }

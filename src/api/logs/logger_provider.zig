@@ -19,7 +19,10 @@ pub const LoggerProvider = union(enum) {
     noop: void,
     bridge: LoggerProviderBridge, // SDK provider bridge
 
-    /// Get or create a logger with direct parameters (OpenTelemetry API specification compliant)
+    /// Get or create a logger with direct parameters.
+    ///
+    /// The provider must make an internal copy of the provided instrumentation scope
+    /// and will not take ownership of it.
     pub inline fn getLoggerWithScope(self: *const LoggerProvider, scope: InstrumentationScope) !Logger {
         return switch (self.*) {
             .noop => |_| Logger{ .noop = {} },

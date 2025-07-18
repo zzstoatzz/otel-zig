@@ -7,11 +7,11 @@
 //! See: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/logs/sdk.md#logrecordexporter
 
 const std = @import("std");
-const otel_api = @import("otel-api");
-
-const LogRecord = @import("log_record.zig").LogRecord;
-const Resource = @import("../resource/resource.zig").Resource;
-const ExportResult = @import("otel-api").common.ExportResult;
+const api = @import("otel-api");
+const sdk = struct {
+    const LogRecord = @import("log_record.zig").LogRecord;
+    const Resource = @import("../resource/resource.zig").Resource;
+};
 
 /// LogExporter interface using tagged union for polymorphism
 pub const LogExporter = union(enum) {
@@ -23,7 +23,7 @@ pub const LogExporter = union(enum) {
     /// The caller is required to manage `records`. The exporter must be finished with
     /// the memory when this function returns. That includes making deep copies if
     /// necessary for buffering.
-    pub fn exportRecords(self: *const LogExporter, records: []const LogRecord, resource: Resource) ExportResult {
+    pub fn exportRecords(self: *const LogExporter, records: []const sdk.LogRecord, resource: sdk.Resource) api.common.ExportResult {
         return switch (self.*) {
             .noop => .success,
             .bridge => |exporter| exporter.exportFn(exporter, records, resource),
@@ -31,7 +31,7 @@ pub const LogExporter = union(enum) {
     }
 
     /// Force flush any buffered data
-    pub fn forceFlush(self: *LogExporter, timeout_ms: ?u64) ExportResult {
+    pub fn forceFlush(self: *LogExporter, timeout_ms: ?u64) api.common.ExportResult {
         return switch (self.*) {
             .noop => .success,
             .bridge => |exporter| exporter.forceFlushFn(exporter, timeout_ms),
@@ -39,7 +39,7 @@ pub const LogExporter = union(enum) {
     }
 
     /// Shutdown the exporter
-    pub fn shutdown(self: *LogExporter, timeout_ms: ?u64) ExportResult {
+    pub fn shutdown(self: *LogExporter, timeout_ms: ?u64) api.common.ExportResult {
         return switch (self.*) {
             .noop => .success,
             .bridge => |exporter| exporter.shutdownFn(exporter, timeout_ms),
@@ -66,9 +66,9 @@ pub const LogExporter = union(enum) {
 /// Custom exporter with user-provided implementation
 pub const BridgeLogExporter = struct {
     exporter_ptr: *anyopaque,
-    exportFn: *const fn (self: BridgeLogExporter, records: []const LogRecord, resource: Resource) ExportResult,
-    forceFlushFn: *const fn (self: BridgeLogExporter, timeout_ms: ?u64) ExportResult,
-    shutdownFn: *const fn (self: BridgeLogExporter, timeout_ms: ?u64) ExportResult,
+    exportFn: *const fn (self: BridgeLogExporter, records: []const sdk.LogRecord, resource: sdk.Resource) api.common.ExportResult,
+    forceFlushFn: *const fn (self: BridgeLogExporter, timeout_ms: ?u64) api.common.ExportResult,
+    shutdownFn: *const fn (self: BridgeLogExporter, timeout_ms: ?u64) api.common.ExportResult,
     deinitFn: *const fn (self: BridgeLogExporter) void,
     destroyFn: *const fn (ptr: *anyopaque) void,
 
@@ -77,15 +77,15 @@ pub const BridgeLogExporter = struct {
         const ptr_info = @typeInfo(T);
 
         const VTable = struct {
-            pub fn exportRecords(self: BridgeLogExporter, records: []const LogRecord, resource: Resource) ExportResult {
+            pub fn exportRecords(self: BridgeLogExporter, records: []const sdk.LogRecord, resource: sdk.Resource) api.common.ExportResult {
                 const actual_self: T = @ptrCast(@alignCast(self.exporter_ptr));
                 return ptr_info.pointer.child.exportRecords(actual_self, records, resource);
             }
-            pub fn forceFlush(self: BridgeLogExporter, timeout_ms: ?u64) ExportResult {
+            pub fn forceFlush(self: BridgeLogExporter, timeout_ms: ?u64) api.common.ExportResult {
                 const actual_self: T = @ptrCast(@alignCast(self.exporter_ptr));
                 return ptr_info.pointer.child.forceFlush(actual_self, timeout_ms);
             }
-            pub fn shutdown(self: BridgeLogExporter, timeout_ms: ?u64) ExportResult {
+            pub fn shutdown(self: BridgeLogExporter, timeout_ms: ?u64) api.common.ExportResult {
                 const actual_self: T = @ptrCast(@alignCast(self.exporter_ptr));
                 return ptr_info.pointer.child.shutdown(actual_self, timeout_ms);
             }
@@ -128,15 +128,15 @@ pub const MockLogExporter = struct {
     }
 
     allocator: std.mem.Allocator,
-    exported_records: std.ArrayList(LogRecord),
-    export_result: ExportResult,
-    flush_result: ExportResult,
-    shutdown_result: ExportResult,
+    exported_records: std.ArrayList(sdk.LogRecord),
+    export_result: api.common.ExportResult,
+    flush_result: api.common.ExportResult,
+    shutdown_result: api.common.ExportResult,
 
     pub fn init(allocator: std.mem.Allocator) MockLogExporter {
         return .{
             .allocator = allocator,
-            .exported_records = std.ArrayList(LogRecord).init(allocator),
+            .exported_records = std.ArrayList(sdk.LogRecord).init(allocator),
             .export_result = .success,
             .flush_result = .success,
             .shutdown_result = .success,
@@ -151,7 +151,7 @@ pub const MockLogExporter = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn exportRecords(self: *MockLogExporter, records: []const LogRecord, resource: Resource) ExportResult {
+    pub fn exportRecords(self: *MockLogExporter, records: []const sdk.LogRecord, resource: sdk.Resource) api.common.ExportResult {
         _ = resource;
         for (records) |record| {
             // Deep copy the record since the exporter needs to own the data
@@ -160,12 +160,12 @@ pub const MockLogExporter = struct {
         return self.export_result;
     }
 
-    pub fn forceFlush(self: *MockLogExporter, timeout_ms: ?u64) ExportResult {
+    pub fn forceFlush(self: *MockLogExporter, timeout_ms: ?u64) api.common.ExportResult {
         _ = timeout_ms;
         return self.flush_result;
     }
 
-    pub fn shutdown(self: *MockLogExporter, timeout_ms: ?u64) ExportResult {
+    pub fn shutdown(self: *MockLogExporter, timeout_ms: ?u64) api.common.ExportResult {
         _ = timeout_ms;
         return self.shutdown_result;
     }
@@ -183,7 +183,7 @@ pub const MockLogExporter = struct {
         return self.exported_records.items.len;
     }
 
-    pub fn getRecord(self: *const MockLogExporter, index: usize) ?LogRecord {
+    pub fn getRecord(self: *const MockLogExporter, index: usize) ?sdk.LogRecord {
         if (index >= self.exported_records.items.len) return null;
         return self.exported_records.items[index];
     }

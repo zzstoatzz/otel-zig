@@ -4,12 +4,6 @@
 //! The SDK contains the actual implementation logic for telemetry collection, processing,
 //! and exporting.
 
-const std = @import("std");
-
-// ============================================================================
-// SDK MODULES
-// ============================================================================
-
 /// Logging SDK with processors and exporters
 pub const logs = @import("logs/root.zig");
 

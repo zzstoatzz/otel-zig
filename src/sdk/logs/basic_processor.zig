@@ -7,21 +7,15 @@
 //! See: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/logs/sdk.md#logrecordprocessor
 
 const std = @import("std");
-const otel_api = @import("otel-api");
+const api = @import("otel-api");
 
-const Context = otel_api.Context;
-const LogRecord = @import("log_record.zig").LogRecord;
-const LogExporter = @import("exporter.zig").LogExporter;
-const Resource = @import("../resource/resource.zig").Resource;
-const ProcessResult = @import("otel-api").common.ProcessResult;
-
-// Import error handler for structured error reporting
-const error_handler = otel_api.common;
-
-// Import the processor interface and bridge
-const processor_zig = @import("processor.zig");
-const LogProcessor = processor_zig.LogProcessor;
-const BridgeLogProcessor = processor_zig.BridgeLogProcessor;
+const sdk = struct {
+    const Resource = @import("../resource/resource.zig").Resource;
+    const LogRecord = @import("log_record.zig").LogRecord;
+    const LogExporter = @import("exporter.zig").LogExporter;
+    const LogProcessor = @import("processor.zig").LogProcessor;
+    const BridgeLogProcessor = @import("processor.zig").BridgeLogProcessor;
+};
 
 /// Basic log processor implementation.
 ///
@@ -29,7 +23,7 @@ const BridgeLogProcessor = processor_zig.BridgeLogProcessor;
 pub const BasicLogProcessor = struct {
     pub const PipelineStep = @import("../common/pipeline.zig").PipelineStepInstructions(
         BasicLogProcessor,
-        LogProcessor,
+        sdk.LogProcessor,
         void,
         logProcessor,
         _initFn,
@@ -40,11 +34,11 @@ pub const BasicLogProcessor = struct {
     }
 
     allocator: std.mem.Allocator,
-    exporter: ?LogExporter,
+    exporter: ?sdk.LogExporter,
     mutex: std.Thread.Mutex,
     is_shutdown: bool,
 
-    pub fn init(allocator: std.mem.Allocator, exporter: ?LogExporter) BasicLogProcessor {
+    pub fn init(allocator: std.mem.Allocator, exporter: ?sdk.LogExporter) BasicLogProcessor {
         return .{
             .allocator = allocator,
             .exporter = exporter,
@@ -64,7 +58,7 @@ pub const BasicLogProcessor = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn setExporter(self: *BasicLogProcessor, exporter: ?LogExporter) !void {
+    pub fn setExporter(self: *BasicLogProcessor, exporter: ?sdk.LogExporter) !void {
         if (self.exporter) |old_exporter| {
             old_exporter.deinit();
             old_exporter.destroy();
@@ -72,7 +66,7 @@ pub const BasicLogProcessor = struct {
         self.exporter = exporter;
     }
 
-    pub fn onEmit(self: *BasicLogProcessor, record: LogRecord, ctx: Context, resource: Resource) void {
+    pub fn onEmit(self: *BasicLogProcessor, record: sdk.LogRecord, ctx: api.Context, resource: sdk.Resource) void {
         _ = ctx;
 
         self.mutex.lock();
@@ -83,13 +77,13 @@ pub const BasicLogProcessor = struct {
         }
 
         // Export single record immediately
-        const records = [_]LogRecord{record};
+        const records = [_]sdk.LogRecord{record};
 
         if (self.exporter) |exporter| {
             const result = exporter.exportRecords(&records, resource);
             if (result != .success) {
                 const message_body = if (record.body) |body| body.string else "(no message)";
-                error_handler.reportError(.{
+                api.common.reportError(.{
                     .component = .processor,
                     .operation = "log_export",
                     .error_type = .network,
@@ -100,7 +94,7 @@ pub const BasicLogProcessor = struct {
         }
     }
 
-    pub fn forceFlush(self: *BasicLogProcessor, timeout_ms: ?u64) ProcessResult {
+    pub fn forceFlush(self: *BasicLogProcessor, timeout_ms: ?u64) api.common.ProcessResult {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -113,7 +107,7 @@ pub const BasicLogProcessor = struct {
         return if (result == .success) .success else .failure;
     }
 
-    pub fn shutdown(self: *BasicLogProcessor, timeout_ms: ?u64) ProcessResult {
+    pub fn shutdown(self: *BasicLogProcessor, timeout_ms: ?u64) api.common.ProcessResult {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -128,7 +122,7 @@ pub const BasicLogProcessor = struct {
         return if (result == .success) .success else .failure;
     }
 
-    pub fn logProcessor(self: *BasicLogProcessor) LogProcessor {
-        return LogProcessor{ .bridge = BridgeLogProcessor.init(self) };
+    pub fn logProcessor(self: *BasicLogProcessor) sdk.LogProcessor {
+        return sdk.LogProcessor{ .bridge = sdk.BridgeLogProcessor.init(self) };
     }
 };

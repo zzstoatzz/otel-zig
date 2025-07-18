@@ -2,7 +2,7 @@ const std = @import("std");
 const logs_api = @import("otel-api").logs;
 const provider_registry = @import("otel-api").provider_registry;
 const logs_processor = @import("processor.zig");
-const logs_provider = @import("basic_provider.zig");
+const logs_provider = @import("logger_provider.zig");
 const Resource = @import("../resource/resource.zig").Resource;
 const ResourceBuilder = @import("../resource/resource.zig").ResourceBuilder;
 const detectResource = @import("../resource/detector.zig").detectResource;
@@ -10,7 +10,7 @@ const LogExporter = @import("exporter.zig").LogExporter;
 const LogProcessor = @import("processor.zig").LogProcessor;
 const otel_api = @import("otel-api");
 
-const DefaultProvider = logs_provider.BasicLoggerProvider;
+const DefaultProvider = logs_provider.LoggerProvider;
 
 /// Create a default provider value with automatically detected resources.
 /// Returns provider by value - used internally by setupGlobalProvider.

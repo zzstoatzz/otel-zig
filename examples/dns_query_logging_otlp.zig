@@ -47,10 +47,12 @@ pub fn main() !void {
     // Setup global provider with pipeline configuration in one call
     const exporter_config = otel_exporters.otlp.OtlpExporterConfig{
         .endpoint = "http://localhost:4318",
-        .transport = .http_json,
+        .transport = .http_protobuf,
     };
-    const provider = try otel_sdk.logs.setupGlobalProvider(allocator, .{otel_sdk.logs.BasicLogProcessor.PipelineStep.init({})
-        .flowTo(otel_exporters.otlp.OtlpLogExporter.PipelineStep.init(exporter_config))});
+    const provider = try otel_sdk.logs.setupGlobalProvider(allocator, .{
+        otel_sdk.logs.BasicLogProcessor.PipelineStep.init({})
+            .flowTo(otel_exporters.otlp.OtlpLogExporter.PipelineStep.init(exporter_config)),
+    });
     defer {
         provider.deinit();
         provider.destroy();
@@ -142,12 +144,6 @@ pub fn main() !void {
 
     // Final status check
     std.log.info("DNS Query OTLP Example completed successfully.", .{});
-    std.log.info("Check your OTLP collector logs to verify log delivery.", .{});
-    std.log.info("If no logs appear in collector, check:", .{});
-    std.log.info("  - Collector is running on localhost:4318", .{});
-    std.log.info("  - Collector configuration accepts HTTP OTLP logs", .{});
-    std.log.info("  - No firewall blocking port 4318", .{});
-    std.log.info("", .{});
 }
 
 fn performDnsQuery(ctx: otel_api.Context, allocator: std.mem.Allocator) !void {

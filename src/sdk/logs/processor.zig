@@ -7,13 +7,12 @@
 //! See: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/logs/sdk.md#logrecordprocessor
 
 const std = @import("std");
-const otel_api = @import("otel-api");
-
-const Context = otel_api.Context;
-const LogRecord = @import("log_record.zig").LogRecord;
-const LogExporter = @import("exporter.zig").LogExporter;
-const Resource = @import("../resource/resource.zig").Resource;
-const ProcessResult = @import("otel-api").common.ProcessResult;
+const api = @import("otel-api");
+const sdk = struct {
+    const LogRecord = @import("log_record.zig").LogRecord;
+    const LogExporter = @import("exporter.zig").LogExporter;
+    const Resource = @import("../resource/resource.zig").Resource;
+};
 
 /// LogProcessor interface using tagged union for polymorphism
 pub const LogProcessor = union(enum) {
@@ -21,7 +20,7 @@ pub const LogProcessor = union(enum) {
     bridge: BridgeLogProcessor,
 
     /// Called when a log record is emitted
-    pub fn onEmit(self: *const LogProcessor, record: LogRecord, ctx: Context, resource: Resource) void {
+    pub fn onEmit(self: *const LogProcessor, record: sdk.LogRecord, ctx: api.Context, resource: sdk.Resource) void {
         switch (self.*) {
             .noop => {},
             .bridge => |processor| processor.onEmitFn(processor.processor_ptr, record, ctx, resource),
@@ -29,7 +28,7 @@ pub const LogProcessor = union(enum) {
     }
 
     /// Force flush any buffered log records
-    pub fn forceFlush(self: *LogProcessor, timeout_ms: ?u64) ProcessResult {
+    pub fn forceFlush(self: *LogProcessor, timeout_ms: ?u64) api.common.ProcessResult {
         return switch (self.*) {
             .noop => .success,
             .bridge => |processor| processor.forceFlushFn(processor.processor_ptr, timeout_ms),
@@ -37,7 +36,7 @@ pub const LogProcessor = union(enum) {
     }
 
     /// Shutdown the processor
-    pub fn shutdown(self: *LogProcessor, timeout_ms: ?u64) ProcessResult {
+    pub fn shutdown(self: *LogProcessor, timeout_ms: ?u64) api.common.ProcessResult {
         return switch (self.*) {
             .noop => .success,
             .bridge => |processor| processor.shutdownFn(processor.processor_ptr, timeout_ms),
@@ -63,9 +62,9 @@ pub const LogProcessor = union(enum) {
     /// Check if this processor would process a log record with given parameters
     pub fn enabled(
         self: *const LogProcessor,
-        ctx: Context,
-        scope: otel_api.common.InstrumentationScope,
-        severity: ?otel_api.logs.Severity,
+        ctx: api.Context,
+        scope: api.InstrumentationScope,
+        severity: ?api.logs.Severity,
         event_name: ?[]const u8,
     ) bool {
         return switch (self.*) {
@@ -84,16 +83,16 @@ pub const LogProcessor = union(enum) {
 /// Interface for bridging to a more complex processor.
 pub const BridgeLogProcessor = struct {
     processor_ptr: *anyopaque,
-    onEmitFn: *const fn (processor_ptr: *anyopaque, record: LogRecord, ctx: Context, resource: Resource) void,
-    forceFlushFn: *const fn (processor_ptr: *anyopaque, timeout_ms: ?u64) ProcessResult,
-    shutdownFn: *const fn (processor_ptr: *anyopaque, timeout_ms: ?u64) ProcessResult,
+    onEmitFn: *const fn (processor_ptr: *anyopaque, record: sdk.LogRecord, ctx: api.Context, resource: sdk.Resource) void,
+    forceFlushFn: *const fn (processor_ptr: *anyopaque, timeout_ms: ?u64) api.common.ProcessResult,
+    shutdownFn: *const fn (processor_ptr: *anyopaque, timeout_ms: ?u64) api.common.ProcessResult,
     deinitFn: *const fn (processor_ptr: *anyopaque) void,
     destroyFn: *const fn (processor_ptr: *anyopaque) void,
     enabledFn: *const fn (
         processor_ptr: *anyopaque,
-        ctx: Context,
-        scope: otel_api.common.InstrumentationScope,
-        severity: ?otel_api.logs.Severity,
+        ctx: api.Context,
+        scope: api.InstrumentationScope,
+        severity: ?api.logs.Severity,
         event_name: ?[]const u8,
     ) bool,
 
@@ -102,15 +101,15 @@ pub const BridgeLogProcessor = struct {
         const ptr_info = @typeInfo(T);
 
         const VTable = struct {
-            pub fn onEmit(pointer: *anyopaque, record: LogRecord, ctx: Context, resource: Resource) void {
+            pub fn onEmit(pointer: *anyopaque, record: sdk.LogRecord, ctx: api.Context, resource: sdk.Resource) void {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.onEmit(self, record, ctx, resource);
             }
-            pub fn forceFlush(pointer: *anyopaque, timeout_ms: ?u64) ProcessResult {
+            pub fn forceFlush(pointer: *anyopaque, timeout_ms: ?u64) api.common.ProcessResult {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.forceFlush(self, timeout_ms);
             }
-            pub fn shutdown(pointer: *anyopaque, timeout_ms: ?u64) ProcessResult {
+            pub fn shutdown(pointer: *anyopaque, timeout_ms: ?u64) api.common.ProcessResult {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.shutdown(self, timeout_ms);
             }
@@ -124,9 +123,9 @@ pub const BridgeLogProcessor = struct {
             }
             pub fn enabled(
                 pointer: *anyopaque,
-                ctx: Context,
-                scope: otel_api.common.InstrumentationScope,
-                severity: ?otel_api.logs.Severity,
+                ctx: api.Context,
+                scope: api.InstrumentationScope,
+                severity: ?api.logs.Severity,
                 event_name: ?[]const u8,
             ) bool {
                 const self: T = @ptrCast(@alignCast(pointer));

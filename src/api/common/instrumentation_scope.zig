@@ -69,6 +69,14 @@ pub const InstrumentationScope = struct {
         };
     }
 
+    /// Creates an owning deep copy of an InstrumentationScope.
+    ///
+    /// This function allocates new memory for all of the scope's fields, creating a
+    /// self-contained, owning instance. This contrasts with a regular
+    /// `InstrumentationScope`, which only holds non-owning references to its data.
+    ///
+    /// The caller is responsible for freeing the allocated memory by calling
+    /// `deinitOwned` on the returned scope when it is no longer needed.
     pub fn initOwned(allocator: std.mem.Allocator, unowned: InstrumentationScope) !InstrumentationScope {
         const owned_name = try allocator.dupe(u8, unowned.name);
         errdefer allocator.free(owned_name);
@@ -96,6 +104,15 @@ pub const InstrumentationScope = struct {
         return init(name, null, null, &[_]AttributeKeyValue{});
     }
 
+    /// Deinitializes an owning `InstrumentationScope` created by `initOwned`.
+    ///
+    /// This function frees all memory allocated for the scope's fields (name,
+    /// version, schema_url, and attributes). It is the counterpart to `initOwned`
+    /// and must be called to prevent memory leaks.
+    ///
+    /// The caller must ensure this is only called on an `InstrumentationScope`
+    /// instance whose fields are all owned values, using the same allocator
+    /// that created it.
     pub fn deinitOwned(self: InstrumentationScope, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
         if (self.version) |v| allocator.free(v);

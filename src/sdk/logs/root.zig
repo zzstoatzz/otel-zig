@@ -5,53 +5,41 @@
 //! In the future, this will be refactored to properly separate API and SDK concerns.
 //!
 //! ## Components
-//! - `BasicLogger` - Concrete logger implementation with filtering and handlers
-//! - `BasicLoggerProvider` - Provider with caching and configuration
+//! - `Logger` - Concrete logger implementation with filtering and handlers
+//! - `LoggerProvider` - Provider with caching and configuration
 //! - `LogProcessor` - Interface for processing log records
-//! - `BasicLogProcessor` - Immediately exports each log record
+//! - `BasicLogProcessor` - Immediately exports each log record async.
+//! - 'BridgeLogProcessor' - VTable adaptor for implementing other Processors.
 //! - `LogExporter` - Interface for exporting log records
-//!
-//! ## Usage
-//! ```zig
-//! const otel_sdk = @import("otel-sdk");
-//!
-//! // Create a logging pipeline
-//! const exporter = otel_sdk.logs.createConsoleExporter();
-//! const processor = otel_sdk.logs.createSimpleProcessor(.{
-//!     .exporter = exporter,
-//! });
-//!
-//! var provider = otel_sdk.logs.createProvider(allocator, .{
-//!     .processor = processor,
-//! });
-//! ```
+//! - `BridgeLogExporter` - VTable adaptor for implementing other processors.\
+//! - `MockLogExporter` - Captures exported records for testing.
+//! - `setupGlobalProvider` - Uses a pipeline to build a configured LoggerProvider and set it as the global provider.
 
 const std = @import("std");
 
-// Core log data types
+// Core log data type, for processors and exporters.
 pub const LogRecord = @import("log_record.zig").LogRecord;
 
-// SDK Logger Provider types
-pub const BasicLoggerProvider = @import("basic_provider.zig").BasicLoggerProvider;
+// SDK Logger types for integrations.
+pub const LoggerProvider = @import("logger_provider.zig").LoggerProvider;
+pub const Logger = @import("logger.zig").Logger;
 
-// Re-export processor types
+// SDK Processor Types.
 const processor_zig = @import("processor.zig");
 pub const LogProcessor = processor_zig.LogProcessor;
 pub const BridgeLogProcessor = processor_zig.BridgeLogProcessor;
+pub const BasicLogProcessor = @import("basic_processor.zig").BasicLogProcessor;
 
-// Re-export basic processor types
-const basic_processor_zig = @import("basic_processor.zig");
-pub const BasicLogProcessor = basic_processor_zig.BasicLogProcessor;
-
-// Re-export exporter interface
+// SDK Exporter Types.
 const exporter_zig = @import("exporter.zig");
 pub const LogExporter = exporter_zig.LogExporter;
 pub const BridgeLogExporter = exporter_zig.BridgeLogExporter;
+pub const MockLogExporter = exporter_zig.MockLogExporter;
 
 // Re-export the setup helper functions
-const setup_zig = @import("setup.zig");
-pub const setupGlobalProvider = setup_zig.setupGlobalProvider;
+pub const setupGlobalProvider = @import("setup.zig").setupGlobalProvider;
 
 test "logs sdk module compilation" {
+    _ = @import("tests.zig");
     std.testing.refAllDecls(@This());
 }
