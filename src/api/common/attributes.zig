@@ -153,6 +153,42 @@ pub const AttributeValue = union(enum) {
             },
         }
     }
+
+    /// Deep copy an AttributeValue. Must call `deinitOwned` on the return instance.
+    pub fn initOwned(self: AttributeValue, allocator: std.mem.Allocator) !AttributeValue {
+        return switch (self) {
+            .bool, .int, .float => self,
+            .string => |s| .{ .string = try allocator.dupe(u8, s) },
+            .bool_array => |s| .{ .bool_array = try allocator.dupe(bool, s) },
+            .int_array => |s| .{ .int_array = try allocator.dupe(i64, s) },
+            .float_array => |s| .{ .float_array = try allocator.dupe(f64, s) },
+            .string_array => |arr| blk: {
+                var owned_strings = try allocator.alloc([]const u8, arr.len);
+                errdefer allocator.free(owned_strings);
+
+                for (arr, 0..) |str, i| {
+                    errdefer for (0..i) |h| allocator.free(owned_strings[h]);
+                    owned_strings[i] = try allocator.dupe(u8, str);
+                }
+                break :blk .{ .string_array = owned_strings };
+            },
+        };
+    }
+
+    /// Destroy a deep copied AttributeValue.
+    pub fn deinitOwned(self: AttributeValue, allocator: std.mem.Allocator) void {
+        switch (self) {
+            .bool, .int, .float => {},
+            .string => |s| allocator.free(s),
+            .bool_array => |s| allocator.free(s),
+            .int_array => |s| allocator.free(s),
+            .float_array => |s| allocator.free(s),
+            .string_array => |s| {
+                for (s) |str| allocator.free(str);
+                allocator.free(s);
+            },
+        }
+    }
 };
 
 // Tests
@@ -286,23 +322,7 @@ pub const AttributeKeyValue = struct {
     pub fn initOwned(allocator: std.mem.Allocator, key: []const u8, value: AttributeValue) !AttributeKeyValue {
         const owned_key = try allocator.dupe(u8, key);
         errdefer allocator.free(owned_key);
-        const owned_value: AttributeValue = switch (value) {
-            .bool, .int, .float => value,
-            .string => |s| .{ .string = try allocator.dupe(u8, s) },
-            .bool_array => |s| .{ .bool_array = try allocator.dupe(bool, s) },
-            .int_array => |s| .{ .int_array = try allocator.dupe(i64, s) },
-            .float_array => |s| .{ .float_array = try allocator.dupe(f64, s) },
-            .string_array => |arr| blk: {
-                var owned_strings = try allocator.alloc([]const u8, arr.len);
-                errdefer allocator.free(owned_strings);
-
-                for (arr, 0..) |str, i| {
-                    errdefer for (0..i) |h| allocator.free(owned_strings[h]);
-                    owned_strings[i] = try allocator.dupe(u8, str);
-                }
-                break :blk .{ .string_array = owned_strings };
-            },
-        };
+        const owned_value = try value.initOwned(allocator);
         return .{
             .key = owned_key,
             .value = owned_value,
@@ -321,17 +341,7 @@ pub const AttributeKeyValue = struct {
     /// Destroy a deep copied AttributeKeyValue.
     pub fn deinitOwned(self: AttributeKeyValue, allocator: std.mem.Allocator) void {
         allocator.free(self.key);
-        switch (self.value) {
-            .bool, .int, .float => {},
-            .string => |s| allocator.free(s),
-            .bool_array => |s| allocator.free(s),
-            .int_array => |s| allocator.free(s),
-            .float_array => |s| allocator.free(s),
-            .string_array => |s| {
-                for (s) |str| allocator.free(str);
-                allocator.free(s);
-            },
-        }
+        self.value.deinitOwned(allocator);
     }
 
     /// Destroy a deep copied slice of AttributeKeyValue.
@@ -1138,6 +1148,102 @@ test "AttributeBuilder duplicate key handling - all same key" {
     try testing.expectEqual(@as(usize, 1), attrs.len);
     try testing.expectEqualStrings("service.name", attrs[0].key);
     try testing.expectEqualStrings("final", attrs[0].value.string);
+}
+
+test "AttributeValue initOwned and deinitOwned - primitive types" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // Test bool (should be copied by value)
+    const bool_val = AttributeValue{ .bool = true };
+    const owned_bool = try bool_val.initOwned(allocator);
+    defer owned_bool.deinitOwned(allocator);
+    try testing.expectEqual(true, owned_bool.bool);
+
+    // Test int (should be copied by value)
+    const int_val = AttributeValue{ .int = 42 };
+    const owned_int = try int_val.initOwned(allocator);
+    defer owned_int.deinitOwned(allocator);
+    try testing.expectEqual(@as(i64, 42), owned_int.int);
+
+    // Test float (should be copied by value)
+    const float_val = AttributeValue{ .float = 3.14 };
+    const owned_float = try float_val.initOwned(allocator);
+    defer owned_float.deinitOwned(allocator);
+    try testing.expectEqual(3.14, owned_float.float);
+}
+
+test "AttributeValue initOwned and deinitOwned - string" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const original_str = "test string";
+    const string_val = AttributeValue{ .string = original_str };
+    const owned_string = try string_val.initOwned(allocator);
+    defer owned_string.deinitOwned(allocator);
+
+    // Should be equal in content
+    try testing.expectEqualStrings(original_str, owned_string.string);
+    // Should have different memory addresses (deep copy)
+    try testing.expect(original_str.ptr != owned_string.string.ptr);
+}
+
+test "AttributeValue initOwned and deinitOwned - arrays" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // Test bool_array
+    const bool_array = [_]bool{ true, false, true };
+    const bool_array_val = AttributeValue{ .bool_array = &bool_array };
+    const owned_bool_array = try bool_array_val.initOwned(allocator);
+    defer owned_bool_array.deinitOwned(allocator);
+
+    try testing.expectEqual(@as(usize, 3), owned_bool_array.bool_array.len);
+    try testing.expectEqual(true, owned_bool_array.bool_array[0]);
+    try testing.expectEqual(false, owned_bool_array.bool_array[1]);
+    try testing.expectEqual(true, owned_bool_array.bool_array[2]);
+    // Content verification is sufficient - no need to check pointer addresses
+
+    // Test int_array
+    const int_array = [_]i64{ 1, 2, 3 };
+    const int_array_val = AttributeValue{ .int_array = &int_array };
+    const owned_int_array = try int_array_val.initOwned(allocator);
+    defer owned_int_array.deinitOwned(allocator);
+
+    try testing.expectEqual(@as(usize, 3), owned_int_array.int_array.len);
+    try testing.expectEqual(@as(i64, 1), owned_int_array.int_array[0]);
+    try testing.expectEqual(@as(i64, 2), owned_int_array.int_array[1]);
+    try testing.expectEqual(@as(i64, 3), owned_int_array.int_array[2]);
+    // Content verification is sufficient - no need to check pointer addresses
+
+    // Test float_array
+    const float_array = [_]f64{ 1.1, 2.2, 3.3 };
+    const float_array_val = AttributeValue{ .float_array = &float_array };
+    const owned_float_array = try float_array_val.initOwned(allocator);
+    defer owned_float_array.deinitOwned(allocator);
+
+    try testing.expectEqual(@as(usize, 3), owned_float_array.float_array.len);
+    try testing.expectEqual(1.1, owned_float_array.float_array[0]);
+    try testing.expectEqual(2.2, owned_float_array.float_array[1]);
+    try testing.expectEqual(3.3, owned_float_array.float_array[2]);
+    // Content verification is sufficient - no need to check pointer addresses
+}
+
+test "AttributeValue initOwned and deinitOwned - string_array" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const string_array = [_][]const u8{ "first", "second", "third" };
+    const string_array_val = AttributeValue{ .string_array = &string_array };
+    const owned_string_array = try string_array_val.initOwned(allocator);
+    defer owned_string_array.deinitOwned(allocator);
+
+    try testing.expectEqual(@as(usize, 3), owned_string_array.string_array.len);
+    try testing.expectEqualStrings("first", owned_string_array.string_array[0]);
+    try testing.expectEqualStrings("second", owned_string_array.string_array[1]);
+    try testing.expectEqualStrings("third", owned_string_array.string_array[2]);
+
+    // Content verification is sufficient - the strings are properly cloned
 }
 
 test "AttributeBuilder duplicate key handling - different value types" {

@@ -10,6 +10,14 @@ pub const ExportResult = enum {
     pub fn isFailure(self: ExportResult) bool {
         return self == .failure;
     }
+
+    /// Convert ExportResult to ProcessResult
+    pub fn asProcessResult(self: ExportResult) ProcessResult {
+        return switch (self) {
+            .success => .success,
+            .failure => .failure,
+        };
+    }
 };
 
 pub const ProcessResult = enum {

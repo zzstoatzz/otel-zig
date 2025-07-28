@@ -27,14 +27,6 @@ const processor_zig = @import("processor.zig");
 const SpanProcessor = processor_zig.SpanProcessor;
 const BridgeSpanProcessor = processor_zig.BridgeSpanProcessor;
 
-/// Convert ExportResult to ProcessResult
-fn exportResultToProcessResult(result: ExportResult) ProcessResult {
-    return switch (result) {
-        .success => .success,
-        .failure => .failure,
-    };
-}
-
 /// Noop exporter for initial BatchSpanProcessor state
 const NoopExporter = struct {
     pub fn exportSpans(self: *NoopExporter, spans: []const *RecordingSpan, resource: Resource) ExportResult {
@@ -360,7 +352,7 @@ pub const BatchSpanProcessor = struct {
         const flush_result = self.exporter.forceFlush(timeout_ms);
         self.mutex.lock();
 
-        return exportResultToProcessResult(flush_result);
+        return flush_result.asProcessResult();
     }
 
     /// Shutdown the processor
@@ -377,7 +369,7 @@ pub const BatchSpanProcessor = struct {
 
         // Shutdown the exporter
         const result = self.exporter.shutdown(timeout_ms);
-        return exportResultToProcessResult(result);
+        return result.asProcessResult();
     }
 
     /// Export all queued spans (must be called with mutex held)

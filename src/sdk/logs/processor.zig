@@ -1,6 +1,6 @@
 //! OpenTelemetry Log Processor Interface
 //!
-//! This module defines the LogProcessor interface for processing log records
+//! This module defines the LogRecordProcessor interface for processing log records
 //! in the OpenTelemetry SDK. Processors receive log records from loggers
 //! and are responsible for batching, filtering, and forwarding them to exporters.
 //!
@@ -14,13 +14,13 @@ const sdk = struct {
     const Resource = @import("../resource/resource.zig").Resource;
 };
 
-/// LogProcessor interface using tagged union for polymorphism
-pub const LogProcessor = union(enum) {
+/// LogRecordProcessor interface using tagged union for polymorphism
+pub const LogRecordProcessor = union(enum) {
     noop: void,
-    bridge: BridgeLogProcessor,
+    bridge: BridgeLogRecordProcessor,
 
     /// Called when a log record is emitted
-    pub fn onEmit(self: *const LogProcessor, record: sdk.LogRecord, ctx: api.Context, resource: sdk.Resource) void {
+    pub fn onEmit(self: *const LogRecordProcessor, record: sdk.LogRecord, ctx: api.Context, resource: sdk.Resource) void {
         switch (self.*) {
             .noop => {},
             .bridge => |processor| processor.onEmitFn(processor.processor_ptr, record, ctx, resource),
@@ -28,7 +28,7 @@ pub const LogProcessor = union(enum) {
     }
 
     /// Force flush any buffered log records
-    pub fn forceFlush(self: *LogProcessor, timeout_ms: ?u64) api.common.ProcessResult {
+    pub fn forceFlush(self: *LogRecordProcessor, timeout_ms: ?u64) api.common.ProcessResult {
         return switch (self.*) {
             .noop => .success,
             .bridge => |processor| processor.forceFlushFn(processor.processor_ptr, timeout_ms),
@@ -36,7 +36,7 @@ pub const LogProcessor = union(enum) {
     }
 
     /// Shutdown the processor
-    pub fn shutdown(self: *LogProcessor, timeout_ms: ?u64) api.common.ProcessResult {
+    pub fn shutdown(self: *LogRecordProcessor, timeout_ms: ?u64) api.common.ProcessResult {
         return switch (self.*) {
             .noop => .success,
             .bridge => |processor| processor.shutdownFn(processor.processor_ptr, timeout_ms),
@@ -44,7 +44,7 @@ pub const LogProcessor = union(enum) {
     }
 
     /// Clean up processor resources
-    pub fn deinit(self: *const LogProcessor) void {
+    pub fn deinit(self: *const LogRecordProcessor) void {
         switch (self.*) {
             .noop => {},
             .bridge => |processor| processor.deinitFn(processor.processor_ptr),
@@ -52,7 +52,7 @@ pub const LogProcessor = union(enum) {
     }
 
     /// Destroy processor memory
-    pub fn destroy(self: *const LogProcessor) void {
+    pub fn destroy(self: *const LogRecordProcessor) void {
         switch (self.*) {
             .noop => {},
             .bridge => |processor| processor.destroyFn(processor.processor_ptr),
@@ -61,7 +61,7 @@ pub const LogProcessor = union(enum) {
 
     /// Check if this processor would process a log record with given parameters
     pub fn enabled(
-        self: *const LogProcessor,
+        self: *const LogRecordProcessor,
         ctx: api.Context,
         scope: api.InstrumentationScope,
         severity: ?api.logs.Severity,
@@ -81,7 +81,7 @@ pub const LogProcessor = union(enum) {
 };
 
 /// Interface for bridging to a more complex processor.
-pub const BridgeLogProcessor = struct {
+pub const BridgeLogRecordProcessor = struct {
     processor_ptr: *anyopaque,
     onEmitFn: *const fn (processor_ptr: *anyopaque, record: sdk.LogRecord, ctx: api.Context, resource: sdk.Resource) void,
     forceFlushFn: *const fn (processor_ptr: *anyopaque, timeout_ms: ?u64) api.common.ProcessResult,
@@ -96,7 +96,7 @@ pub const BridgeLogProcessor = struct {
         event_name: ?[]const u8,
     ) bool,
 
-    pub fn init(ptr: anytype) BridgeLogProcessor {
+    pub fn init(ptr: anytype) BridgeLogRecordProcessor {
         const T = @TypeOf(ptr);
         const ptr_info = @typeInfo(T);
 

@@ -39,7 +39,7 @@ pub fn main() !void {
     // Set up logging provider
     const log_provider = try otel_sdk.logs.setupGlobalProvider(
         allocator,
-        .{otel_sdk.logs.BasicLogProcessor.PipelineStep.init({})
+        .{otel_sdk.logs.SimpleLogRecordProcessor.PipelineStep.init({})
             .flowTo(otel_exporters.console.StreamLogExporter(std.fs.File.Writer).PipelineStep.init(.{}))},
     );
     defer {

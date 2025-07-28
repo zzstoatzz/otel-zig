@@ -7,7 +7,7 @@ const Resource = @import("../resource/resource.zig").Resource;
 const ResourceBuilder = @import("../resource/resource.zig").ResourceBuilder;
 const detectResource = @import("../resource/detector.zig").detectResource;
 const LogExporter = @import("exporter.zig").LogExporter;
-const LogProcessor = @import("processor.zig").LogProcessor;
+const LogRecordProcessor = @import("processor.zig").LogRecordProcessor;
 const otel_api = @import("otel-api");
 
 const DefaultProvider = logs_provider.LoggerProvider;

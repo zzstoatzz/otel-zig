@@ -260,6 +260,22 @@ pub fn build(b: *std.Build) void {
     const dns_query_otlp_step = b.step("example-dns-query-otlp", "Run DNS query logging OTLP example");
     dns_query_otlp_step.dependOn(&run_dns_query_otlp.step);
 
+    // Logs Batch Example
+    const logs_batch_example = b.addExecutable(.{
+        .name = "logs_batch",
+        .root_source_file = b.path("examples/logs_batch_example.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    logs_batch_example.root_module.addImport("otel-api", otel_api_mod);
+    logs_batch_example.root_module.addImport("otel-sdk", otel_sdk_mod);
+    logs_batch_example.root_module.addImport("otel-exporters", otel_exporters_mod);
+    b.installArtifact(logs_batch_example);
+
+    const run_logs_batch = b.addRunArtifact(logs_batch_example);
+    const logs_batch_step = b.step("example-logs-batch", "Run logs batch processor example");
+    logs_batch_step.dependOn(&run_logs_batch.step);
+
     // Metrics Demo Example
     const metrics_demo_example = b.addExecutable(.{
         .name = "metrics_demo",
@@ -547,6 +563,7 @@ pub fn build(b: *std.Build) void {
     const examples_step = b.step("examples", "Run all examples");
     examples_step.dependOn(&run_dns_query.step);
     examples_step.dependOn(&run_dns_query_otlp.step);
+    examples_step.dependOn(&run_logs_batch.step);
     examples_step.dependOn(&run_metrics_demo.step);
     examples_step.dependOn(&run_metrics_histogram.step);
     examples_step.dependOn(&run_metrics_comprehensive_otlp.step);

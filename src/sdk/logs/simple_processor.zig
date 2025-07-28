@@ -1,7 +1,7 @@
-//! Basic Log Processor Implementation
+//! Simple Log Record Processor Implementation
 //!
-//! This module provides the BasicLogProcessor implementation for processing log records
-//! in the OpenTelemetry SDK. The BasicLogProcessor immediately forwards each log record
+//! This module provides the SimpleLogRecordProcessor implementation for processing log records
+//! in the OpenTelemetry SDK. The SimpleLogRecordProcessor immediately forwards each log record
 //! to the configured exporter without any batching or filtering.
 //!
 //! See: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/logs/sdk.md#logrecordprocessor
@@ -13,23 +13,23 @@ const sdk = struct {
     const Resource = @import("../resource/resource.zig").Resource;
     const LogRecord = @import("log_record.zig").LogRecord;
     const LogExporter = @import("exporter.zig").LogExporter;
-    const LogProcessor = @import("processor.zig").LogProcessor;
-    const BridgeLogProcessor = @import("processor.zig").BridgeLogProcessor;
+    const LogRecordProcessor = @import("processor.zig").LogRecordProcessor;
+    const BridgeLogRecordProcessor = @import("processor.zig").BridgeLogRecordProcessor;
 };
 
-/// Basic log processor implementation.
+/// Simple log record processor implementation.
 ///
 /// Implementation is a pass through to the exporter.
-pub const BasicLogProcessor = struct {
+pub const SimpleLogRecordProcessor = struct {
     pub const PipelineStep = @import("../common/pipeline.zig").PipelineStepInstructions(
-        BasicLogProcessor,
-        sdk.LogProcessor,
+        SimpleLogRecordProcessor,
+        sdk.LogRecordProcessor,
         void,
         logProcessor,
         _initFn,
         setExporter,
     );
-    pub fn _initFn(self: *BasicLogProcessor, _: void, allocator: std.mem.Allocator) !void {
+    pub fn _initFn(self: *SimpleLogRecordProcessor, _: void, allocator: std.mem.Allocator) !void {
         self.* = init(allocator, null);
     }
 
@@ -38,7 +38,7 @@ pub const BasicLogProcessor = struct {
     mutex: std.Thread.Mutex,
     is_shutdown: bool,
 
-    pub fn init(allocator: std.mem.Allocator, exporter: ?sdk.LogExporter) BasicLogProcessor {
+    pub fn init(allocator: std.mem.Allocator, exporter: ?sdk.LogExporter) SimpleLogRecordProcessor {
         return .{
             .allocator = allocator,
             .exporter = exporter,
@@ -47,18 +47,18 @@ pub const BasicLogProcessor = struct {
         };
     }
 
-    pub fn deinit(self: *BasicLogProcessor) void {
+    pub fn deinit(self: *SimpleLogRecordProcessor) void {
         if (self.exporter) |exporter| {
             exporter.deinit();
             exporter.destroy();
         }
     }
 
-    pub fn destroy(self: *BasicLogProcessor) void {
+    pub fn destroy(self: *SimpleLogRecordProcessor) void {
         self.allocator.destroy(self);
     }
 
-    pub fn setExporter(self: *BasicLogProcessor, exporter: ?sdk.LogExporter) !void {
+    pub fn setExporter(self: *SimpleLogRecordProcessor, exporter: ?sdk.LogExporter) !void {
         if (self.exporter) |old_exporter| {
             old_exporter.deinit();
             old_exporter.destroy();
@@ -66,7 +66,7 @@ pub const BasicLogProcessor = struct {
         self.exporter = exporter;
     }
 
-    pub fn onEmit(self: *BasicLogProcessor, record: sdk.LogRecord, ctx: api.Context, resource: sdk.Resource) void {
+    pub fn onEmit(self: *SimpleLogRecordProcessor, record: sdk.LogRecord, ctx: api.Context, resource: sdk.Resource) void {
         _ = ctx;
 
         self.mutex.lock();
@@ -94,7 +94,7 @@ pub const BasicLogProcessor = struct {
         }
     }
 
-    pub fn forceFlush(self: *BasicLogProcessor, timeout_ms: ?u64) api.common.ProcessResult {
+    pub fn forceFlush(self: *SimpleLogRecordProcessor, timeout_ms: ?u64) api.common.ProcessResult {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -107,7 +107,7 @@ pub const BasicLogProcessor = struct {
         return if (result == .success) .success else .failure;
     }
 
-    pub fn shutdown(self: *BasicLogProcessor, timeout_ms: ?u64) api.common.ProcessResult {
+    pub fn shutdown(self: *SimpleLogRecordProcessor, timeout_ms: ?u64) api.common.ProcessResult {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -122,7 +122,7 @@ pub const BasicLogProcessor = struct {
         return if (result == .success) .success else .failure;
     }
 
-    pub fn logProcessor(self: *BasicLogProcessor) sdk.LogProcessor {
-        return sdk.LogProcessor{ .bridge = sdk.BridgeLogProcessor.init(self) };
+    pub fn logProcessor(self: *SimpleLogRecordProcessor) sdk.LogRecordProcessor {
+        return sdk.LogRecordProcessor{ .bridge = sdk.BridgeLogRecordProcessor.init(self) };
     }
 };

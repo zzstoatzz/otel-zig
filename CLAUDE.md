@@ -220,7 +220,7 @@ const allocator = gpa.allocator();
 // Logs setup
 const log_provider = try otel_sdk.logs.setupGlobalProvider(
     allocator,
-    .{otel_sdk.logs.BasicLogProcessor.PipelineStep.init({})
+    .{otel_sdk.logs.SimpleLogRecordProcessor.PipelineStep.init({})
         .flowTo(otel_exporters.console.ConsoleLogExporter.PipelineStep.init(.{}))},
 );
 defer {

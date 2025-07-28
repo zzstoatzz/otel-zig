@@ -98,4 +98,116 @@ pub const LogRecord = struct {
         }
         return null;
     }
+
+    /// Deep copy a LogRecord. Must call `deinitOwned` on the return instance.
+    /// Only clones the fields that reference external memory: severity_text, body, event_name, and attributes.
+    /// All other fields are copied by value.
+    pub fn initOwned(allocator: std.mem.Allocator, record: LogRecord) !LogRecord {
+        var owned = LogRecord{
+            .timestamp_ns = record.timestamp_ns,
+            .observed_timestamp_ns = record.observed_timestamp_ns,
+            .severity_number = record.severity_number,
+            .severity_text = null,
+            .body = null,
+            .event_name = null,
+            .attributes = &[_]api.AttributeKeyValue{},
+            .trace_id = record.trace_id,
+            .span_id = record.span_id,
+            .flags = record.flags,
+            .instrumentation_scope = record.instrumentation_scope,
+        };
+
+        // Clone severity_text if present
+        if (record.severity_text) |text| {
+            owned.severity_text = try allocator.dupe(u8, text);
+        }
+
+        // Clone event_name if present
+        if (record.event_name) |name| {
+            owned.event_name = try allocator.dupe(u8, name);
+        }
+
+        // Clone body if present
+        if (record.body) |body| {
+            owned.body = try body.initOwned(allocator);
+        }
+
+        // Clone attributes
+        if (record.attributes.len > 0) {
+            owned.attributes = try api.AttributeKeyValue.initOwnedSlice(allocator, record.attributes);
+        }
+
+        return owned;
+    }
+
+    /// Destroy a deep copied LogRecord.
+    pub fn deinitOwned(self: LogRecord, allocator: std.mem.Allocator) void {
+        if (self.severity_text) |text| {
+            allocator.free(text);
+        }
+        if (self.event_name) |name| {
+            allocator.free(name);
+        }
+        if (self.body) |body| {
+            body.deinitOwned(allocator);
+        }
+        if (self.attributes.len > 0) {
+            api.AttributeKeyValue.deinitOwnedSlice(allocator, self.attributes);
+        }
+    }
 };
+
+test "LogRecord initOwned and deinitOwned" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // Create attributes for testing
+    const attributes = try api.common.AttributeBuilder.init(allocator)
+        .addString("test.key", "test.value")
+        .addInt("count", 42)
+        .finish(allocator);
+    defer api.AttributeKeyValue.deinitOwnedSlice(allocator, attributes);
+
+    // Create original log record with all possible fields
+    const original = LogRecord{
+        .timestamp_ns = 1234567890,
+        .observed_timestamp_ns = 1234567891,
+        .severity_number = .info,
+        .severity_text = "INFO",
+        .body = .{ .string = "Test message" },
+        .event_name = "test.event",
+        .attributes = attributes,
+        .trace_id = api.common.TraceId.fromBytes([_]u8{1} ++ [_]u8{0} ** 15),
+        .span_id = api.common.SpanId.fromBytes([_]u8{2} ++ [_]u8{0} ** 7),
+        .flags = 0x01,
+    };
+
+    // Create owned copy
+    const owned = try LogRecord.initOwned(allocator, original);
+    defer owned.deinitOwned(allocator);
+
+    // Verify all fields are copied correctly
+    try testing.expectEqual(original.timestamp_ns, owned.timestamp_ns);
+    try testing.expectEqual(original.observed_timestamp_ns, owned.observed_timestamp_ns);
+    try testing.expectEqual(original.severity_number, owned.severity_number);
+    try testing.expectEqual(original.trace_id, owned.trace_id);
+    try testing.expectEqual(original.span_id, owned.span_id);
+    try testing.expectEqual(original.flags, owned.flags);
+
+    // Verify string fields are deep copied
+    try testing.expectEqualStrings("INFO", owned.severity_text.?);
+    try testing.expectEqualStrings("test.event", owned.event_name.?);
+    try testing.expectEqualStrings("Test message", owned.body.?.string);
+
+    // Verify attributes are deep copied
+    try testing.expectEqual(@as(usize, 2), owned.attributes.len);
+    try testing.expectEqualStrings("test.key", owned.attributes[0].key);
+    try testing.expectEqualStrings("test.value", owned.attributes[0].value.string);
+    try testing.expectEqualStrings("count", owned.attributes[1].key);
+    try testing.expectEqual(@as(i64, 42), owned.attributes[1].value.int);
+
+    // Verify that the owned copy has different memory addresses for strings
+    try testing.expect(original.severity_text.?.ptr != owned.severity_text.?.ptr);
+    try testing.expect(original.event_name.?.ptr != owned.event_name.?.ptr);
+    try testing.expect(original.body.?.string.ptr != owned.body.?.string.ptr);
+}

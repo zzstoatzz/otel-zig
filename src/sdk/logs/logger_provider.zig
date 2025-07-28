@@ -2,7 +2,7 @@ const std = @import("std");
 const api = @import("otel-api");
 const sdk = struct {
     const InstrumentationScopeMapContext = @import("../common/scope_context.zig").InstrumentationScopeMapContext;
-    const LogProcessor = @import("processor.zig").LogProcessor;
+    const LogRecordProcessor = @import("processor.zig").LogRecordProcessor;
     const Logger = @import("logger.zig").Logger;
     const PipelineBuilder = @import("../common/pipeline.zig").PipelineBuilder;
     const Resource = @import("../resource/resource.zig").Resource;
@@ -15,7 +15,7 @@ pub const LoggerProvider = struct {
     allocator: std.mem.Allocator,
     resource: sdk.Resource,
     cache: std.HashMapUnmanaged(api.InstrumentationScope, *sdk.Logger, sdk.InstrumentationScopeMapContext, 80),
-    processors: std.ArrayListUnmanaged(sdk.LogProcessor),
+    processors: std.ArrayListUnmanaged(sdk.LogRecordProcessor),
     mutex: std.Thread.Mutex,
 
     pub fn init(
@@ -129,7 +129,7 @@ pub const LoggerProvider = struct {
     /// Attach a processor to this provider.
     ///
     /// This method is not thread-safe and should only be called during initialization.
-    pub fn registerProcessor(self: *LoggerProvider, processor: sdk.LogProcessor) !void {
+    pub fn registerProcessor(self: *LoggerProvider, processor: sdk.LogRecordProcessor) !void {
         try self.processors.append(self.allocator, processor);
     }
 
@@ -172,7 +172,7 @@ test "LoggerProvider logger caching" {
 }
 
 test "LoggerProvider processor registration using pipeline builder" {
-    const BasicLogProcessor = @import("basic_processor.zig").BasicLogProcessor;
+    const SimpleLogRecordProcessor = @import("simple_processor.zig").SimpleLogRecordProcessor;
     const MockLogExporter = @import("exporter.zig").MockLogExporter;
 
     const testing = std.testing;
@@ -186,7 +186,7 @@ test "LoggerProvider processor registration using pipeline builder" {
     defer provider.deinit();
 
     try sdk.PipelineBuilder(*LoggerProvider).init(&provider)
-        .with(BasicLogProcessor.PipelineStep.init({}).flowTo(MockLogExporter.PipelineStep.init({})))
+        .with(SimpleLogRecordProcessor.PipelineStep.init({}).flowTo(MockLogExporter.PipelineStep.init({})))
         .done();
 
     try testing.expectEqual(@as(usize, 1), provider.processors.items.len);

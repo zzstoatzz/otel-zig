@@ -7,9 +7,9 @@
 //! ## Components
 //! - `Logger` - Concrete logger implementation with filtering and handlers
 //! - `LoggerProvider` - Provider with caching and configuration
-//! - `LogProcessor` - Interface for processing log records
-//! - `BasicLogProcessor` - Immediately exports each log record async.
-//! - 'BridgeLogProcessor' - VTable adaptor for implementing other Processors.
+//! - `LogRecordProcessor` - Interface for processing log records
+//! - `SimpleLogRecordProcessor` - Immediately exports each log record async.
+//! - 'BridgeLogRecordProcessor' - VTable adaptor for implementing other Processors.
 //! - `LogExporter` - Interface for exporting log records
 //! - `BridgeLogExporter` - VTable adaptor for implementing other processors.\
 //! - `MockLogExporter` - Captures exported records for testing.
@@ -26,9 +26,10 @@ pub const Logger = @import("logger.zig").Logger;
 
 // SDK Processor Types.
 const processor_zig = @import("processor.zig");
-pub const LogProcessor = processor_zig.LogProcessor;
-pub const BridgeLogProcessor = processor_zig.BridgeLogProcessor;
-pub const BasicLogProcessor = @import("basic_processor.zig").BasicLogProcessor;
+pub const LogRecordProcessor = processor_zig.LogRecordProcessor;
+pub const BridgeLogRecordProcessor = processor_zig.BridgeLogRecordProcessor;
+pub const SimpleLogRecordProcessor = @import("simple_processor.zig").SimpleLogRecordProcessor;
+pub const BatchLogRecordProcessor = @import("batch_processor.zig").BatchLogRecordProcessor;
 
 // SDK Exporter Types.
 const exporter_zig = @import("exporter.zig");
