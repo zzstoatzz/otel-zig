@@ -16,6 +16,8 @@ The code targets zig version 0.14.1. Because zig prefers structs instead of indi
 - `zig build examples` - Build and run all examples
 - `zig build example-dns-query` - Run DNS query logging example
 - `zig build example-dns-query-otlp` - Run DNS query OTLP example
+- `zig build example-dns-query-std-log-console` - Run DNS query std.log bridge console example
+- `zig build example-dns-query-std-log-otlp` - Run DNS query std.log bridge OTLP example
 - `zig build example-metrics` - Run metrics demo
 - `zig build example-metrics-histogram` - Run metrics histogram example.
 - `zig build example-metrics-otlp` - Run metrics OTLP example

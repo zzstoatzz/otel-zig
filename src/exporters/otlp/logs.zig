@@ -126,7 +126,6 @@ pub const OtlpLogExporter = struct {
 
         // Parse endpoint URL with detailed error context
         const uri = std.Uri.parse(self.config.endpoint) catch |err| {
-            std.log.err("OTLP URL Parsing Error: {s} - {s}", .{ self.config.endpoint, @errorName(err) });
             return err;
         };
 
@@ -144,8 +143,6 @@ pub const OtlpLogExporter = struct {
             .http_json => "application/json",
             .http_protobuf, .grpc => "application/x-protobuf",
         };
-
-        std.log.debug("OTLP Request Details. URL:{s} Method:{s} content-type:{s} content-length:{} transport:{s}", .{ full_url, "POST", content_type, data.len, @tagName(self.config.transport) });
 
         // Create HTTP request
         const full_uri = try std.Uri.parse(full_url);
@@ -178,11 +175,9 @@ pub const OtlpLogExporter = struct {
         switch (req.response.status) {
             .ok => return .success,
             .bad_request, .unauthorized, .forbidden, .not_found => {
-                std.log.err("OTLP export failed with status: {}", .{req.response.status});
                 return .failure;
             },
             else => {
-                std.log.warn("OTLP export got unexpected status: {}", .{req.response.status});
                 return .failure;
             },
         }

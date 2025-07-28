@@ -220,7 +220,6 @@ pub const OtlpTraceExporter = struct {
         const scheme_str = if (uri.scheme.len > 0) uri.scheme else "http";
         const full_url = try std.fmt.allocPrint(allocator, "{s}://{s}:{d}{s}", .{ scheme_str, host_str, uri.port orelse 4318, self.config.protocol_config.traces_path });
         defer allocator.free(full_url);
-        std.log.debug("OTLP Trace Request Details. URL:{s} Method:{s} content-type:{s} content-length:{} data:{s}", .{ full_url, "POST", "application/json", data.len, data });
 
         // Create HTTP request
         const full_uri = try std.Uri.parse(full_url);
@@ -263,7 +262,6 @@ pub const OtlpTraceExporter = struct {
                 return .failure;
             },
             else => {
-                std.log.warn("OTLP trace export got unexpected status: {}", .{req.response.status});
                 return .failure;
             },
         }

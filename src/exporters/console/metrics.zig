@@ -608,14 +608,12 @@ pub const ConsoleMetricExporter = struct {
         };
 
         // Write the JSON to console
-        self.writer.writeAll(json_buffer.items) catch |err| {
-            std.log.err("Failed to write to console: {}", .{err});
+        self.writer.writeAll(json_buffer.items) catch {
             return .failure;
         };
 
         // Add a newline for better readability
-        self.writer.writeByte('\n') catch |err| {
-            std.log.err("Failed to write newline: {}", .{err});
+        self.writer.writeByte('\n') catch {
             return .failure;
         };
 

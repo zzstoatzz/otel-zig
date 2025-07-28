@@ -260,6 +260,36 @@ pub fn build(b: *std.Build) void {
     const dns_query_otlp_step = b.step("example-dns-query-otlp", "Run DNS query logging OTLP example");
     dns_query_otlp_step.dependOn(&run_dns_query_otlp.step);
 
+    // DNS Query std.log Bridge Example
+    const dns_query_std_log_console_example = b.addExecutable(.{
+        .name = "dns_query_std_log_console",
+        .root_source_file = b.path("examples/dns_query_std_log_console.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    dns_query_std_log_console_example.root_module.addImport("otel-api", otel_api_mod);
+    dns_query_std_log_console_example.root_module.addImport("otel-sdk", otel_sdk_mod);
+    dns_query_std_log_console_example.root_module.addImport("otel-exporters", otel_exporters_mod);
+
+    const run_dns_query_std_log_console = b.addRunArtifact(dns_query_std_log_console_example);
+    const dns_query_std_log_console_step = b.step("example-dns-query-std-log-console", "Run DNS query std.log bridge console example");
+    dns_query_std_log_console_step.dependOn(&run_dns_query_std_log_console.step);
+
+    // DNS Query std.log Bridge OTLP Example
+    const dns_query_std_log_otlp_example = b.addExecutable(.{
+        .name = "dns_query_std_log_otlp",
+        .root_source_file = b.path("examples/dns_query_std_log_otlp.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    dns_query_std_log_otlp_example.root_module.addImport("otel-api", otel_api_mod);
+    dns_query_std_log_otlp_example.root_module.addImport("otel-sdk", otel_sdk_mod);
+    dns_query_std_log_otlp_example.root_module.addImport("otel-exporters", otel_exporters_mod);
+
+    const run_dns_query_std_log_otlp = b.addRunArtifact(dns_query_std_log_otlp_example);
+    const dns_query_std_log_otlp_step = b.step("example-dns-query-std-log-otlp", "Run DNS query std.log bridge OTLP example");
+    dns_query_std_log_otlp_step.dependOn(&run_dns_query_std_log_otlp.step);
+
     // Logs Batch Example
     const logs_batch_example = b.addExecutable(.{
         .name = "logs_batch",
@@ -563,6 +593,8 @@ pub fn build(b: *std.Build) void {
     const examples_step = b.step("examples", "Run all examples");
     examples_step.dependOn(&run_dns_query.step);
     examples_step.dependOn(&run_dns_query_otlp.step);
+    examples_step.dependOn(&run_dns_query_std_log_console.step);
+    examples_step.dependOn(&run_dns_query_std_log_otlp.step);
     examples_step.dependOn(&run_logs_batch.step);
     examples_step.dependOn(&run_metrics_demo.step);
     examples_step.dependOn(&run_metrics_histogram.step);

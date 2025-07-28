@@ -40,6 +40,9 @@ pub const MockLogExporter = exporter_zig.MockLogExporter;
 // Re-export the setup helper functions
 pub const setupGlobalProvider = @import("setup.zig").setupGlobalProvider;
 
+// std.log bridge for integrating Zig's standard logging with OpenTelemetry
+pub const std_log_bridge = @import("std_log_bridge.zig");
+
 test "logs sdk module compilation" {
     _ = @import("tests.zig");
     std.testing.refAllDecls(@This());

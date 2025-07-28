@@ -230,7 +230,6 @@ pub fn SdkObservableCounter(comptime T: type) type {
                     switch (self.config.error_policy) {
                         .fail_fast => return err,
                         .log_continue => {
-                            std.log.err("Callback error in {s}: {s}", .{ self.name, error_message });
                             continue;
                         },
                         .silent_ignore => continue,
@@ -262,7 +261,7 @@ pub fn SdkObservableCounter(comptime T: type) type {
 
                 // Warn if no measurements were produced
                 if (self.config.warn_on_no_measurements and measurements.len == 0) {
-                    std.log.warn("Callback for {s} produced no measurements", .{self.name});
+                    // Warning already reported via reportCallbackError
                 }
             }
 
@@ -297,7 +296,7 @@ pub fn SdkObservableCounter(comptime T: type) type {
             if (self.config.max_measurements_per_callback) |limit| {
                 if (result.measurements.items.len > limit) {
                     const warn_msg = "Callback produced too many measurements";
-                    std.log.warn("Callback for {s} produced {} measurements, limit is {}", .{ self.name, result.measurements.items.len, limit });
+                    // Warning already reported via reportCallbackError
                     if (self.config.track_callback_metrics) {
                         entry.metrics.recordError(allocator, warn_msg, entry.id, self.name);
                     }
@@ -310,7 +309,7 @@ pub fn SdkObservableCounter(comptime T: type) type {
             // Warn if no measurements were produced and policy requires it
             if (self.config.warn_on_no_measurements and result.measurements.items.len == 0) {
                 const warn_msg = "Callback produced no measurements";
-                std.log.warn("Callback for {s} produced no measurements", .{self.name});
+                // Warning already reported via reportCallbackError
                 if (self.config.track_callback_metrics) {
                     entry.metrics.recordError(allocator, warn_msg, entry.id, self.name);
                 }
@@ -545,7 +544,6 @@ pub fn SdkObservableGauge(comptime T: type) type {
                     switch (self.config.error_policy) {
                         .fail_fast => return err,
                         .log_continue => {
-                            std.log.err("Callback error in {s}: {s}", .{ self.name, error_message });
                             continue;
                         },
                         .silent_ignore => continue,
@@ -577,7 +575,7 @@ pub fn SdkObservableGauge(comptime T: type) type {
 
                 // Warn if no measurements were produced
                 if (self.config.warn_on_no_measurements and measurements.len == 0) {
-                    std.log.warn("Callback for {s} produced no measurements", .{self.name});
+                    // Warning already reported via reportCallbackError
                 }
             }
 
@@ -612,7 +610,7 @@ pub fn SdkObservableGauge(comptime T: type) type {
             if (self.config.max_measurements_per_callback) |limit| {
                 if (result.measurements.items.len > limit) {
                     const warn_msg = "Callback produced too many measurements";
-                    std.log.warn("Callback for {s} produced {} measurements, limit is {}", .{ self.name, result.measurements.items.len, limit });
+                    // Warning already reported via reportCallbackError
                     if (self.config.track_callback_metrics) {
                         entry.metrics.recordError(allocator, warn_msg, entry.id, self.name);
                     }
@@ -625,7 +623,7 @@ pub fn SdkObservableGauge(comptime T: type) type {
             // Warn if no measurements were produced and policy requires it
             if (self.config.warn_on_no_measurements and result.measurements.items.len == 0) {
                 const warn_msg = "Callback produced no measurements";
-                std.log.warn("Callback for {s} produced no measurements", .{self.name});
+                // Warning already reported via reportCallbackError
                 if (self.config.track_callback_metrics) {
                     entry.metrics.recordError(allocator, warn_msg, entry.id, self.name);
                 }
@@ -860,7 +858,6 @@ pub fn SdkObservableUpDownCounter(comptime T: type) type {
                     switch (self.config.error_policy) {
                         .fail_fast => return err,
                         .log_continue => {
-                            std.log.err("Callback error in {s}: {s}", .{ self.name, error_message });
                             continue;
                         },
                         .silent_ignore => continue,
@@ -892,7 +889,7 @@ pub fn SdkObservableUpDownCounter(comptime T: type) type {
 
                 // Warn if no measurements were produced
                 if (self.config.warn_on_no_measurements and measurements.len == 0) {
-                    std.log.warn("Callback for {s} produced no measurements", .{self.name});
+                    // Warning already reported via reportCallbackError
                 }
             }
 
@@ -927,7 +924,7 @@ pub fn SdkObservableUpDownCounter(comptime T: type) type {
             if (self.config.max_measurements_per_callback) |limit| {
                 if (result.measurements.items.len > limit) {
                     const warn_msg = "Callback produced too many measurements";
-                    std.log.warn("Callback for {s} produced {} measurements, limit is {}", .{ self.name, result.measurements.items.len, limit });
+                    // Warning already reported via reportCallbackError
                     if (self.config.track_callback_metrics) {
                         entry.metrics.recordError(allocator, warn_msg, entry.id, self.name);
                     }
@@ -940,7 +937,7 @@ pub fn SdkObservableUpDownCounter(comptime T: type) type {
             // Warn if no measurements were produced and policy requires it
             if (self.config.warn_on_no_measurements and result.measurements.items.len == 0) {
                 const warn_msg = "Callback produced no measurements";
-                std.log.warn("Callback for {s} produced no measurements", .{self.name});
+                // Warning already reported via reportCallbackError
                 if (self.config.track_callback_metrics) {
                     entry.metrics.recordError(allocator, warn_msg, entry.id, self.name);
                 }
