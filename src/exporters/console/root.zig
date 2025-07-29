@@ -59,9 +59,9 @@ pub const ConsoleExporterConfig = struct {
 // Factory functions
 pub const LogPipelineConfig = struct {
     pub const ConcreteType = StreamLogExporter(std.fs.File.Writer);
-    pub const InterfaceType = otel_sdk.logs.LogExporter;
+    pub const InterfaceType = otel_sdk.logs.LogRecordExporter;
     pub const ContextType = ConsoleExporterConfig;
-    pub const converterFn = StreamLogExporter(std.fs.File.Writer).logExporter;
+    pub const converterFn = StreamLogExporter(std.fs.File.Writer).logRecordExporter;
     pub const initFn = init;
 
     ctx: ContextType,

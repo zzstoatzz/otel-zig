@@ -10,7 +10,7 @@ const std = @import("std");
 const api = @import("otel-api");
 const sdk = struct {
     const LogRecord = @import("log_record.zig").LogRecord;
-    const LogExporter = @import("exporter.zig").LogExporter;
+    const LogRecordExporter = @import("exporter.zig").LogRecordExporter;
     const Resource = @import("../resource/resource.zig").Resource;
 };
 

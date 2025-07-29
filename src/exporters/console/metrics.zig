@@ -537,7 +537,7 @@ fn writeAnyValue(jw: anytype, value: common_v1.AnyValue) JsonError!void {
 pub const ConsoleMetricExporter = struct {
     pub const PipelineStep = otel_sdk.common.PipelineStepInstructions(
         Self,
-        otel_sdk.logs.LogExporter,
+        otel_sdk.metrics.MetricExporter,
         ConsoleExporterConfig,
         metricsExporter,
         _init,

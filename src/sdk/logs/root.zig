@@ -10,9 +10,9 @@
 //! - `LogRecordProcessor` - Interface for processing log records
 //! - `SimpleLogRecordProcessor` - Immediately exports each log record async.
 //! - 'BridgeLogRecordProcessor' - VTable adaptor for implementing other Processors.
-//! - `LogExporter` - Interface for exporting log records
-//! - `BridgeLogExporter` - VTable adaptor for implementing other processors.\
-//! - `MockLogExporter` - Captures exported records for testing.
+//! - `LogRecordExporter` - Interface for exporting log records
+//! - `BridgeLogRecordExporter` - VTable adaptor for implementing other processors.\
+//! - `MockLogRecordExporter` - Captures exported records for testing.
 //! - `setupGlobalProvider` - Uses a pipeline to build a configured LoggerProvider and set it as the global provider.
 
 const std = @import("std");
@@ -33,9 +33,9 @@ pub const BatchLogRecordProcessor = @import("batch_processor.zig").BatchLogRecor
 
 // SDK Exporter Types.
 const exporter_zig = @import("exporter.zig");
-pub const LogExporter = exporter_zig.LogExporter;
-pub const BridgeLogExporter = exporter_zig.BridgeLogExporter;
-pub const MockLogExporter = exporter_zig.MockLogExporter;
+pub const LogRecordExporter = exporter_zig.LogRecordExporter;
+pub const BridgeLogRecordExporter = exporter_zig.BridgeLogRecordExporter;
+pub const MockLogRecordExporter = exporter_zig.MockLogRecordExporter;
 
 // Re-export the setup helper functions
 pub const setupGlobalProvider = @import("setup.zig").setupGlobalProvider;

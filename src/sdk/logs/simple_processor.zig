@@ -12,7 +12,7 @@ const api = @import("otel-api");
 const sdk = struct {
     const Resource = @import("../resource/resource.zig").Resource;
     const LogRecord = @import("log_record.zig").LogRecord;
-    const LogExporter = @import("exporter.zig").LogExporter;
+    const LogRecordExporter = @import("exporter.zig").LogRecordExporter;
     const LogRecordProcessor = @import("processor.zig").LogRecordProcessor;
     const BridgeLogRecordProcessor = @import("processor.zig").BridgeLogRecordProcessor;
 };
@@ -34,11 +34,11 @@ pub const SimpleLogRecordProcessor = struct {
     }
 
     allocator: std.mem.Allocator,
-    exporter: ?sdk.LogExporter,
+    exporter: ?sdk.LogRecordExporter,
     mutex: std.Thread.Mutex,
     is_shutdown: bool,
 
-    pub fn init(allocator: std.mem.Allocator, exporter: ?sdk.LogExporter) SimpleLogRecordProcessor {
+    pub fn init(allocator: std.mem.Allocator, exporter: ?sdk.LogRecordExporter) SimpleLogRecordProcessor {
         return .{
             .allocator = allocator,
             .exporter = exporter,
@@ -58,7 +58,7 @@ pub const SimpleLogRecordProcessor = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn setExporter(self: *SimpleLogRecordProcessor, exporter: ?sdk.LogExporter) !void {
+    pub fn setExporter(self: *SimpleLogRecordProcessor, exporter: ?sdk.LogRecordExporter) !void {
         if (self.exporter) |old_exporter| {
             old_exporter.deinit();
             old_exporter.destroy();

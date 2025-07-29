@@ -21,7 +21,7 @@ const resource_v1 = @import("proto/opentelemetry/proto/resource/v1.pb.zig");
 pub const OtlpMetricExporter = struct {
     pub const PipelineStep = otel_sdk.common.PipelineStepInstructions(
         Self,
-        otel_sdk.logs.LogExporter,
+        otel_sdk.metrics.MetricExporter,
         OtlpExporterConfig,
         metricsExporter,
         _init,

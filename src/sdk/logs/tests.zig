@@ -23,7 +23,7 @@ const reportValidationError = api.common.reportValidationError;
 // TESTS
 // ============================================================================
 
-const MockLogExporter = @import("exporter.zig").MockLogExporter;
+const MockLogRecordExporter = @import("exporter.zig").MockLogRecordExporter;
 const SimpleLogRecordProcessor = @import("simple_processor.zig").SimpleLogRecordProcessor;
 const BatchLogRecordProcessor = @import("batch_processor.zig").BatchLogRecordProcessor;
 
@@ -39,13 +39,13 @@ test "BatchLogRecordProcessor basic functionality" {
     defer provider.deinit();
 
     // Create mock exporter (heap-allocated, processor takes ownership)
-    const mock_exporter = try allocator.create(MockLogExporter);
-    mock_exporter.* = MockLogExporter.init(allocator);
+    const mock_exporter = try allocator.create(MockLogRecordExporter);
+    mock_exporter.* = MockLogRecordExporter.init(allocator);
 
     // Create batch processor (heap-allocated, provider takes ownership)
     const processor = try BatchLogRecordProcessor.init(
         allocator,
-        mock_exporter.logExporter(),
+        mock_exporter.logRecordExporter(),
         100, // short export_interval_ms for test
         10, // max_queue_size
     );
@@ -101,13 +101,13 @@ test "BasicLogger log emission through pipeline" {
     defer provider.deinit();
 
     // Create mock exporter
-    const mock_exporter = try allocator.create(MockLogExporter);
-    mock_exporter.* = MockLogExporter.init(allocator);
+    const mock_exporter = try allocator.create(MockLogRecordExporter);
+    mock_exporter.* = MockLogRecordExporter.init(allocator);
     // Processor takes ownership of this memory.
 
     // Create processor (heap-allocated)
     const processor = try allocator.create(SimpleLogRecordProcessor);
-    processor.* = SimpleLogRecordProcessor.init(allocator, mock_exporter.logExporter());
+    processor.* = SimpleLogRecordProcessor.init(allocator, mock_exporter.logRecordExporter());
 
     // Register processor (provider takes ownership)
     try provider.registerProcessor(processor.logProcessor());
@@ -175,11 +175,11 @@ test "BasicLogger severity filtering" {
     defer provider.deinit();
 
     // Add a processor so enabled() can return true per spec
-    const mock_exporter = try allocator.create(MockLogExporter);
-    mock_exporter.* = MockLogExporter.init(allocator);
+    const mock_exporter = try allocator.create(MockLogRecordExporter);
+    mock_exporter.* = MockLogRecordExporter.init(allocator);
 
     const processor = try allocator.create(SimpleLogRecordProcessor);
-    processor.* = SimpleLogRecordProcessor.init(allocator, mock_exporter.logExporter());
+    processor.* = SimpleLogRecordProcessor.init(allocator, mock_exporter.logRecordExporter());
 
     try provider.registerProcessor(processor.logProcessor());
 
@@ -216,11 +216,11 @@ test "BasicLogger processor enabled() integration" {
     try testing.expect(!logger.enabledWithEvent(ctx, .info, "test.event"));
 
     // Test 2: Add processor without enabled() method - should return true (default behavior)
-    const mock_exporter = try allocator.create(MockLogExporter);
-    mock_exporter.* = MockLogExporter.init(allocator);
+    const mock_exporter = try allocator.create(MockLogRecordExporter);
+    mock_exporter.* = MockLogRecordExporter.init(allocator);
 
     const basic_processor = try allocator.create(SimpleLogRecordProcessor);
-    basic_processor.* = SimpleLogRecordProcessor.init(allocator, mock_exporter.logExporter());
+    basic_processor.* = SimpleLogRecordProcessor.init(allocator, mock_exporter.logRecordExporter());
 
     try provider.registerProcessor(basic_processor.logProcessor());
 
@@ -246,11 +246,11 @@ test "BasicLogger shutdown behavior" {
     var provider = sdk.LoggerProvider.init(allocator, resource);
     defer provider.deinit();
 
-    const mock_exporter = try allocator.create(MockLogExporter);
-    mock_exporter.* = MockLogExporter.init(allocator);
+    const mock_exporter = try allocator.create(MockLogRecordExporter);
+    mock_exporter.* = MockLogRecordExporter.init(allocator);
 
     const processor = try allocator.create(SimpleLogRecordProcessor);
-    processor.* = SimpleLogRecordProcessor.init(allocator, mock_exporter.logExporter());
+    processor.* = SimpleLogRecordProcessor.init(allocator, mock_exporter.logRecordExporter());
 
     try provider.registerProcessor(processor.logProcessor());
 
@@ -284,11 +284,11 @@ test "BasicLoggerProvider flush behavior" {
     var provider = sdk.LoggerProvider.init(allocator, resource);
     defer provider.deinit();
 
-    const mock_exporter = try allocator.create(MockLogExporter);
-    mock_exporter.* = MockLogExporter.init(allocator);
+    const mock_exporter = try allocator.create(MockLogRecordExporter);
+    mock_exporter.* = MockLogRecordExporter.init(allocator);
 
     const processor = try allocator.create(SimpleLogRecordProcessor);
-    processor.* = SimpleLogRecordProcessor.init(allocator, mock_exporter.logExporter());
+    processor.* = SimpleLogRecordProcessor.init(allocator, mock_exporter.logRecordExporter());
 
     try provider.registerProcessor(processor.logProcessor());
 
@@ -313,11 +313,11 @@ test "BasicLogger with attributes and timestamps" {
     var provider = sdk.LoggerProvider.init(allocator, resource);
     defer provider.deinit();
 
-    const mock_exporter = try allocator.create(MockLogExporter);
-    mock_exporter.* = MockLogExporter.init(allocator);
+    const mock_exporter = try allocator.create(MockLogRecordExporter);
+    mock_exporter.* = MockLogRecordExporter.init(allocator);
 
     const processor = try allocator.create(SimpleLogRecordProcessor);
-    processor.* = SimpleLogRecordProcessor.init(allocator, mock_exporter.logExporter());
+    processor.* = SimpleLogRecordProcessor.init(allocator, mock_exporter.logRecordExporter());
     try provider.registerProcessor(processor.logProcessor());
 
     const scope = try api.InstrumentationScope.initSimple("test.logger", "1.0.0");

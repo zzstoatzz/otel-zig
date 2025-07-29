@@ -19,9 +19,9 @@ const error_handler = api.common;
 pub const OtlpLogExporter = struct {
     pub const PipelineStep = sdk.common.PipelineStepInstructions(
         OtlpLogExporter,
-        sdk.logs.LogExporter,
+        sdk.logs.LogRecordExporter,
         OtlpExporterConfig,
-        logExporter,
+        logRecordExporter,
         _init,
         sdk.common.PipelineDeinitConnection,
     );
@@ -183,8 +183,8 @@ pub const OtlpLogExporter = struct {
         }
     }
 
-    pub fn logExporter(self: *OtlpLogExporter) sdk.logs.LogExporter {
-        return sdk.logs.LogExporter{ .bridge = sdk.logs.BridgeLogExporter.init(self) };
+    pub fn logRecordExporter(self: *OtlpLogExporter) sdk.logs.LogRecordExporter {
+        return sdk.logs.LogRecordExporter{ .bridge = sdk.logs.BridgeLogRecordExporter.init(self) };
     }
 
     fn convertToJsonFormat(self: *OtlpLogExporter, allocator: std.mem.Allocator, records: []const LogRecord, resource: Resource) ![]u8 {

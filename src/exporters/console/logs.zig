@@ -38,9 +38,9 @@ pub fn StreamLogExporter(comptime WriterType: type) type {
     return struct {
         pub const PipelineStep = otel_sdk.common.PipelineStepInstructions(
             Self,
-            otel_sdk.logs.LogExporter,
+            otel_sdk.logs.LogRecordExporter,
             StreamLogExporterConfig,
-            logExporter,
+            logRecordExporter,
             _init,
             otel_sdk.common.PipelineDeinitConnection,
         );
@@ -258,8 +258,8 @@ pub fn StreamLogExporter(comptime WriterType: type) type {
             }
         }
 
-        pub fn logExporter(self: *Self) otel_sdk.logs.LogExporter {
-            return .{ .bridge = otel_sdk.logs.BridgeLogExporter.init(self) };
+        pub fn logRecordExporter(self: *Self) otel_sdk.logs.LogRecordExporter {
+            return .{ .bridge = otel_sdk.logs.BridgeLogRecordExporter.init(self) };
         }
     };
 }

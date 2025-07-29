@@ -173,7 +173,7 @@ test "LoggerProvider logger caching" {
 
 test "LoggerProvider processor registration using pipeline builder" {
     const SimpleLogRecordProcessor = @import("simple_processor.zig").SimpleLogRecordProcessor;
-    const MockLogExporter = @import("exporter.zig").MockLogExporter;
+    const MockLogRecordExporter = @import("exporter.zig").MockLogRecordExporter;
 
     const testing = std.testing;
     const allocator = testing.allocator;
@@ -186,7 +186,7 @@ test "LoggerProvider processor registration using pipeline builder" {
     defer provider.deinit();
 
     try sdk.PipelineBuilder(*LoggerProvider).init(&provider)
-        .with(SimpleLogRecordProcessor.PipelineStep.init({}).flowTo(MockLogExporter.PipelineStep.init({})))
+        .with(SimpleLogRecordProcessor.PipelineStep.init({}).flowTo(MockLogRecordExporter.PipelineStep.init({})))
         .done();
 
     try testing.expectEqual(@as(usize, 1), provider.processors.items.len);

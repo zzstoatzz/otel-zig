@@ -12,7 +12,7 @@ const api = @import("otel-api");
 const sdk = struct {
     const Resource = @import("../resource/resource.zig").Resource;
     const LogRecord = @import("log_record.zig").LogRecord;
-    const LogExporter = @import("exporter.zig").LogExporter;
+    const LogRecordExporter = @import("exporter.zig").LogRecordExporter;
     const LogRecordProcessor = @import("processor.zig").LogRecordProcessor;
     const BridgeLogRecordProcessor = @import("processor.zig").BridgeLogRecordProcessor;
 };
@@ -37,7 +37,7 @@ pub const BatchLogRecordProcessor = struct {
     pub fn _initFn(self: *BatchLogRecordProcessor, config: BatchConfig, allocator: std.mem.Allocator) !void {
         self.* = .{
             .allocator = allocator,
-            .exporter = sdk.LogExporter{ .noop = {} },
+            .exporter = sdk.LogRecordExporter{ .noop = {} },
             .mutex = .{},
             .condition = .{},
             .is_shutdown = std.atomic.Value(bool).init(false),
@@ -55,7 +55,7 @@ pub const BatchLogRecordProcessor = struct {
     }
 
     allocator: std.mem.Allocator,
-    exporter: sdk.LogExporter,
+    exporter: sdk.LogRecordExporter,
     mutex: std.Thread.Mutex,
     condition: std.Thread.Condition,
     is_shutdown: std.atomic.Value(bool),
@@ -76,7 +76,7 @@ pub const BatchLogRecordProcessor = struct {
     /// Owner of the processor must destroy the memory.
     pub fn init(
         allocator: std.mem.Allocator,
-        exporter: sdk.LogExporter,
+        exporter: sdk.LogRecordExporter,
         export_interval_ms: ?u32,
         max_queue_size: ?usize,
     ) !*BatchLogRecordProcessor {
@@ -103,10 +103,10 @@ pub const BatchLogRecordProcessor = struct {
         return self;
     }
 
-    pub fn setExporter(self: *BatchLogRecordProcessor, exporter: ?sdk.LogExporter) !void {
+    pub fn setExporter(self: *BatchLogRecordProcessor, exporter: ?sdk.LogRecordExporter) !void {
         self.exporter.deinit();
         self.exporter.destroy();
-        self.exporter = exporter orelse sdk.LogExporter{ .noop = {} };
+        self.exporter = exporter orelse sdk.LogRecordExporter{ .noop = {} };
     }
 
     /// Start the background export thread
