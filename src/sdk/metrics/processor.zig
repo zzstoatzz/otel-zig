@@ -7,17 +7,11 @@
 //! See: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/metrics/sdk.md#metricreader
 
 const std = @import("std");
-const otel_api = @import("otel-api");
+const api = @import("otel-api");
 
-const Context = otel_api.Context;
-const AttributeKeyValue = otel_api.AttributeKeyValue;
-const InstrumentationScope = otel_api.InstrumentationScope;
-
-const MetricDataPoint = @import("data.zig").MetricDataPoint;
-const MetricData = @import("data.zig").MetricData;
-const ProcessResult = @import("otel-api").common.ProcessResult;
-const MetricExporter = @import("exporter.zig").MetricExporter;
-const BasicMeter = @import("basic_provider.zig").BasicMeter;
+const sdk = struct {
+    const BasicMeter = @import("basic_provider.zig").BasicMeter;
+};
 
 /// Metric processor interface
 pub const MetricProcessor = union(enum) {
@@ -31,28 +25,28 @@ pub const MetricProcessor = union(enum) {
         }
     }
 
-    pub fn registerMeter(self: *MetricProcessor, meter: *BasicMeter) void {
+    pub fn registerMeter(self: *MetricProcessor, meter: *sdk.BasicMeter) void {
         switch (self.*) {
             .noop => {},
             .bridge => |processor| processor.registerMeterFn(processor.processor_ptr, meter),
         }
     }
 
-    pub fn unregisterMeter(self: *MetricProcessor, meter: *BasicMeter) void {
+    pub fn unregisterMeter(self: *MetricProcessor, meter: *sdk.BasicMeter) void {
         switch (self.*) {
             .noop => {},
             .bridge => |processor| processor.unregisterMeterFn(processor.processor_ptr, meter),
         }
     }
 
-    pub fn forceFlush(self: *MetricProcessor, timeout_ms: ?u64) ProcessResult {
+    pub fn forceFlush(self: *MetricProcessor, timeout_ms: ?u64) api.common.ProcessResult {
         return switch (self.*) {
             .noop => .success,
             .bridge => |processor| processor.forceFlushFn(processor.processor_ptr, timeout_ms),
         };
     }
 
-    pub fn shutdown(self: *MetricProcessor, timeout_ms: ?u64) ProcessResult {
+    pub fn shutdown(self: *MetricProcessor, timeout_ms: ?u64) api.common.ProcessResult {
         return switch (self.*) {
             .noop => .success,
             .bridge => |processor| processor.shutdownFn(processor.processor_ptr, timeout_ms),
@@ -80,12 +74,12 @@ pub const MetricProcessor = union(enum) {
 pub const BridgeMetricProcessor = struct {
     processor_ptr: *anyopaque,
     collectFn: *const fn (processor_ptr: *anyopaque) void,
-    forceFlushFn: *const fn (processor_ptr: *anyopaque, timeout_ms: ?u64) ProcessResult,
-    shutdownFn: *const fn (processor_ptr: *anyopaque, timeout_ms: ?u64) ProcessResult,
+    forceFlushFn: *const fn (processor_ptr: *anyopaque, timeout_ms: ?u64) api.common.ProcessResult,
+    shutdownFn: *const fn (processor_ptr: *anyopaque, timeout_ms: ?u64) api.common.ProcessResult,
     deinitFn: *const fn (processor_ptr: *anyopaque) void,
     destroyFn: *const fn (processor_ptr: *anyopaque) void,
-    registerMeterFn: *const fn (processor_ptr: *anyopaque, meter: *BasicMeter) void,
-    unregisterMeterFn: *const fn (processor_ptr: *anyopaque, meter: *BasicMeter) void,
+    registerMeterFn: *const fn (processor_ptr: *anyopaque, meter: *sdk.BasicMeter) void,
+    unregisterMeterFn: *const fn (processor_ptr: *anyopaque, meter: *sdk.BasicMeter) void,
 
     pub fn init(ptr: anytype) BridgeMetricProcessor {
         const T = @TypeOf(ptr);
@@ -96,11 +90,11 @@ pub const BridgeMetricProcessor = struct {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.collect(self);
             }
-            pub fn forceFlush(pointer: *anyopaque, timeout_ms: ?u64) ProcessResult {
+            pub fn forceFlush(pointer: *anyopaque, timeout_ms: ?u64) api.common.ProcessResult {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.forceFlush(self, timeout_ms);
             }
-            pub fn shutdown(pointer: *anyopaque, timeout_ms: ?u64) ProcessResult {
+            pub fn shutdown(pointer: *anyopaque, timeout_ms: ?u64) api.common.ProcessResult {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.shutdown(self, timeout_ms);
             }
@@ -112,11 +106,11 @@ pub const BridgeMetricProcessor = struct {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.destroy(self);
             }
-            pub fn registerMeter(pointer: *anyopaque, meter: *BasicMeter) void {
+            pub fn registerMeter(pointer: *anyopaque, meter: *sdk.BasicMeter) void {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.registerMeter(self, meter);
             }
-            pub fn unregisterMeter(pointer: *anyopaque, meter: *BasicMeter) void {
+            pub fn unregisterMeter(pointer: *anyopaque, meter: *sdk.BasicMeter) void {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.unregisterMeter(self, meter);
             }
