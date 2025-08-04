@@ -6,46 +6,39 @@
 //! See: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/metrics/sdk.md#metricreader
 
 const std = @import("std");
-const otel_api = @import("otel-api");
+const api = @import("otel-api");
 
-const Context = otel_api.Context;
-const AttributeKeyValue = otel_api.AttributeKeyValue;
-const InstrumentationScope = otel_api.InstrumentationScope;
-
-const MetricDataPoint = @import("data.zig").MetricDataPoint;
-const MetricData = @import("data.zig").MetricData;
-const ProcessResult = @import("otel-api").common.ProcessResult;
-const MetricExporter = @import("exporter.zig").MetricExporter;
-const MetricProcessor = @import("processor.zig").MetricProcessor;
-const BridgeMetricProcessor = @import("processor.zig").BridgeMetricProcessor;
-const BasicMeter = @import("basic_provider.zig").BasicMeter;
-
-// Import error handler for structured error reporting
-const error_handler = otel_api.common;
+const sdk = struct {
+    const BridgeMetricReader = @import("reader.zig").BridgeReader;
+    const Meter = @import("meter.zig").Meter;
+    const MetricExporter = @import("exporter.zig").MetricExporter;
+    const Reader = @import("reader.zig").Reader;
+    const MetricData = @import("data.zig").MetricData;
+};
 
 /// Basic log processor implementation.
 ///
 /// Simple processor that exports metrics manually. Users must invoke `forceFlush`.
-pub const BasicMetricProcessor = struct {
+pub const ManualReader = struct {
     pub const PipelineStep = @import("../common/pipeline.zig").PipelineStepInstructions(
-        BasicMetricProcessor,
-        MetricProcessor,
+        ManualReader,
+        sdk.Reader,
         void,
-        metricProcessor,
+        reader,
         _initFn,
         setExporter,
     );
-    pub fn _initFn(self: *BasicMetricProcessor, _: void, allocator: std.mem.Allocator) !void {
+    pub fn _initFn(self: *ManualReader, _: void, allocator: std.mem.Allocator) !void {
         self.* = init(allocator, null);
     }
 
     allocator: std.mem.Allocator,
-    exporter: ?MetricExporter,
+    exporter: ?sdk.MetricExporter,
     mutex: std.Thread.Mutex,
     is_shutdown: bool,
-    registered_meters: std.ArrayListUnmanaged(*BasicMeter),
+    registered_meters: std.ArrayListUnmanaged(*sdk.Meter),
 
-    pub fn init(allocator: std.mem.Allocator, exporter: ?MetricExporter) BasicMetricProcessor {
+    pub fn init(allocator: std.mem.Allocator, exporter: ?sdk.MetricExporter) ManualReader {
         return .{
             .allocator = allocator,
             .exporter = exporter,
@@ -55,7 +48,7 @@ pub const BasicMetricProcessor = struct {
         };
     }
 
-    pub fn deinit(self: *BasicMetricProcessor) void {
+    pub fn deinit(self: *ManualReader) void {
         self.registered_meters.deinit(self.allocator);
         if (self.exporter) |exporter| {
             exporter.deinit();
@@ -63,11 +56,11 @@ pub const BasicMetricProcessor = struct {
         }
     }
 
-    pub fn destroy(self: *BasicMetricProcessor) void {
+    pub fn destroy(self: *ManualReader) void {
         self.allocator.destroy(self);
     }
 
-    pub fn setExporter(self: *BasicMetricProcessor, exporter: ?MetricExporter) !void {
+    pub fn setExporter(self: *ManualReader, exporter: ?sdk.MetricExporter) !void {
         if (self.exporter) |old_exporter| {
             old_exporter.deinit();
             old_exporter.destroy();
@@ -75,7 +68,7 @@ pub const BasicMetricProcessor = struct {
         self.exporter = exporter;
     }
 
-    pub fn collect(self: *BasicMetricProcessor) void {
+    pub fn collect(self: *ManualReader) void {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const arena_allocator = arena.allocator();
@@ -84,7 +77,7 @@ pub const BasicMetricProcessor = struct {
         defer self.mutex.unlock();
 
         // Initialize collection data structure
-        var collected_metrics = std.ArrayList(MetricData).init(arena_allocator);
+        var collected_metrics = std.ArrayList(sdk.MetricData).init(arena_allocator);
 
         // Iterate through registered meters
         for (self.registered_meters.items) |meter| {
@@ -106,7 +99,7 @@ pub const BasicMetricProcessor = struct {
         if (self.exporter) |*exporter| {
             const result = exporter.exportMetrics(collected_metrics.items);
             if (result != .success) {
-                error_handler.reportError(.{
+                api.common.reportError(.{
                     .component = .processor,
                     .operation = "metric_export",
                     .error_type = .network,
@@ -118,7 +111,7 @@ pub const BasicMetricProcessor = struct {
         // Arena cleans up all the memory.
     }
 
-    pub fn forceFlush(self: *BasicMetricProcessor, timeout_ms: ?u64) ProcessResult {
+    pub fn forceFlush(self: *ManualReader, timeout_ms: ?u64) api.common.ProcessResult {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -128,10 +121,10 @@ pub const BasicMetricProcessor = struct {
 
         // Flush the exporter
         const result = if (self.exporter) |*exporter| exporter.forceFlush(timeout_ms) else .success;
-        return if (result == .success) .success else .failure;
+        return result.asProcessResult();
     }
 
-    pub fn shutdown(self: *BasicMetricProcessor, timeout_ms: ?u64) ProcessResult {
+    pub fn shutdown(self: *ManualReader, timeout_ms: ?u64) api.common.ProcessResult {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -143,10 +136,10 @@ pub const BasicMetricProcessor = struct {
 
         // Shutdown the exporter
         const result = if (self.exporter) |*exporter| exporter.shutdown(timeout_ms) else .success;
-        return if (result == .success) .success else .failure;
+        return result.asProcessResult();
     }
 
-    pub fn registerMeter(self: *BasicMetricProcessor, meter: *BasicMeter) void {
+    pub fn registerMeter(self: *ManualReader, meter: *sdk.Meter) void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -158,7 +151,7 @@ pub const BasicMetricProcessor = struct {
         };
     }
 
-    pub fn unregisterMeter(self: *BasicMetricProcessor, meter: *BasicMeter) void {
+    pub fn unregisterMeter(self: *ManualReader, meter: *sdk.Meter) void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -172,7 +165,7 @@ pub const BasicMetricProcessor = struct {
         }
     }
 
-    pub fn metricProcessor(self: *BasicMetricProcessor) MetricProcessor {
-        return MetricProcessor{ .bridge = BridgeMetricProcessor.init(self) };
+    pub fn reader(self: *ManualReader) sdk.Reader {
+        return .{ .bridge = sdk.BridgeMetricReader.init(self) };
     }
 };

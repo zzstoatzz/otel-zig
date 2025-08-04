@@ -15,7 +15,7 @@ pub fn main() !void {
 
     const concrete_provider = try otel_sdk.metrics.setupGlobalProvider(
         allocator,
-        .{otel_sdk.metrics.BasicMetricProcessor.PipelineStep.init({})
+        .{otel_sdk.metrics.ManualReader.PipelineStep.init({})
             .flowTo(otel_exporters.console.ConsoleMetricExporter.PipelineStep.init(.{}))},
     );
     defer {

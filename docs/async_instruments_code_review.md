@@ -8,13 +8,13 @@ This code review covers the implementation of Observable/Async Instruments for t
 
 ### Core Implementation Files
 - `src/api/metrics/observable_instrument.zig` - New API definitions
-- `src/sdk/metrics/observable_instrument_sdk.zig` - New SDK implementation
+- `src/sdk/metrics/async_instrument.zig` - New SDK implementation
 - `src/sdk/metrics/async_instrument_config.zig` - New configuration module
 - `src/api/metrics/meter.zig` - Added observable instrument creation methods
 - `src/api/metrics/root.zig` - Added exports for observable instruments
 - `src/api/common/error_handler.zig` - Added callback error handling
 - `src/api/common/root.zig` - Added error handler exports
-- `src/sdk/metrics/basic_provider.zig` - Added observable instrument support
+- `src/sdk/metrics/meter_provider.zig` - Added observable instrument support
 - `src/sdk/metrics/root.zig` - Added observable instrument exports
 - `build.zig` - Added new example targets
 
@@ -76,7 +76,7 @@ comptime switch (T) {
 .callback_fn = @ptrCast(callback),
 ```
 
-### SDK Layer (`src/sdk/metrics/observable_instrument_sdk.zig`)
+### SDK Layer (`src/sdk/metrics/async_instrument.zig`)
 
 **Strengths:**
 - Comprehensive implementation with proper callback management
@@ -217,7 +217,7 @@ However, some examples have issues:
 
 2. **Type Safety**: The type erasure in callbacks relies on `@ptrCast()` which could be improved with more type-safe alternatives.
 
-3. **File Size**: The `observable_instrument_sdk.zig` file is quite large and could benefit from being split into multiple modules.
+3. **File Size**: The `async_instrument.zig` file is quite large and could benefit from being split into multiple modules.
 
 4. **Test Dependencies**: Some tests have module dependency issues when run individually, suggesting the dependency structure needs refinement.
 

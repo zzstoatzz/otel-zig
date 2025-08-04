@@ -31,10 +31,7 @@ pub const AsyncInstrumentConfig = struct {
     /// Whether to track callback performance metrics
     track_callback_metrics: bool = true,
 
-    /// Default configuration with reasonable defaults
-    pub fn default() AsyncInstrumentConfig {
-        return AsyncInstrumentConfig{};
-    }
+    pub const default: AsyncInstrumentConfig = .{};
 
     /// Configuration for production use (minimal overhead)
     pub fn production() AsyncInstrumentConfig {
@@ -61,7 +58,7 @@ test "async instrument config creation" {
     const testing = std.testing;
 
     // Test default config
-    const default_config = AsyncInstrumentConfig.default();
+    const default_config: AsyncInstrumentConfig = .default;
     try testing.expectEqual(CallbackErrorPolicy.log_continue, default_config.error_policy);
     try testing.expectEqual(@as(?usize, null), default_config.max_measurements_per_callback);
     try testing.expectEqual(false, default_config.warn_on_no_measurements);

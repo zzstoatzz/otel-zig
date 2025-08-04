@@ -56,7 +56,7 @@ pub fn main() !void {
     std.log.info("Setting up OpenTelemetry with console exporter...", .{});
     const provider = try otel_sdk.metrics.setupGlobalProvider(
         allocator,
-        .{otel_sdk.metrics.BasicMetricProcessor.PipelineStep.init({})
+        .{otel_sdk.metrics.BasicMetricReader.PipelineStep.init({})
             .flowTo(otel_exporters.console.ConsoleMetricExporter.PipelineStep.init(.{}))},
     );
     defer {

@@ -94,7 +94,7 @@ pub fn main() !void {
     // Setup global metric provider
     const metric_provider = try otel_sdk.metrics.setupGlobalProvider(
         allocator,
-        .{otel_sdk.metrics.BasicMetricProcessor.PipelineStep.init({})
+        .{otel_sdk.metrics.BasicMetricReader.PipelineStep.init({})
             .flowTo(otel_exporters.console.ConsoleMetricExporter.PipelineStep.init(.{}))},
     );
     defer {

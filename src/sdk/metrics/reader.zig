@@ -10,78 +10,78 @@ const std = @import("std");
 const api = @import("otel-api");
 
 const sdk = struct {
-    const BasicMeter = @import("basic_provider.zig").BasicMeter;
+    const BasicMeter = @import("meter.zig").Meter;
 };
 
-/// Metric processor interface
-pub const MetricProcessor = union(enum) {
+/// Metric reader interface
+pub const Reader = union(enum) {
     noop: void,
-    bridge: BridgeMetricProcessor,
+    bridge: BridgeReader,
 
-    pub fn collect(self: *MetricProcessor) void {
+    pub fn collect(self: *Reader) void {
         switch (self.*) {
             .noop => {},
-            .bridge => |processor| processor.collectFn(processor.processor_ptr),
+            .bridge => |reader| reader.collectFn(reader.reader_ptr),
         }
     }
 
-    pub fn registerMeter(self: *MetricProcessor, meter: *sdk.BasicMeter) void {
+    pub fn registerMeter(self: *Reader, meter: *sdk.BasicMeter) void {
         switch (self.*) {
             .noop => {},
-            .bridge => |processor| processor.registerMeterFn(processor.processor_ptr, meter),
+            .bridge => |reader| reader.registerMeterFn(reader.reader_ptr, meter),
         }
     }
 
-    pub fn unregisterMeter(self: *MetricProcessor, meter: *sdk.BasicMeter) void {
+    pub fn unregisterMeter(self: *Reader, meter: *sdk.BasicMeter) void {
         switch (self.*) {
             .noop => {},
-            .bridge => |processor| processor.unregisterMeterFn(processor.processor_ptr, meter),
+            .bridge => |reader| reader.unregisterMeterFn(reader.reader_ptr, meter),
         }
     }
 
-    pub fn forceFlush(self: *MetricProcessor, timeout_ms: ?u64) api.common.ProcessResult {
+    pub fn forceFlush(self: *Reader, timeout_ms: ?u64) api.common.ProcessResult {
         return switch (self.*) {
             .noop => .success,
-            .bridge => |processor| processor.forceFlushFn(processor.processor_ptr, timeout_ms),
+            .bridge => |reader| reader.forceFlushFn(reader.reader_ptr, timeout_ms),
         };
     }
 
-    pub fn shutdown(self: *MetricProcessor, timeout_ms: ?u64) api.common.ProcessResult {
+    pub fn shutdown(self: *Reader, timeout_ms: ?u64) api.common.ProcessResult {
         return switch (self.*) {
             .noop => .success,
-            .bridge => |processor| processor.shutdownFn(processor.processor_ptr, timeout_ms),
+            .bridge => |reader| reader.shutdownFn(reader.reader_ptr, timeout_ms),
         };
     }
 
-    /// Clean up processor resources
-    pub fn deinit(self: *const MetricProcessor) void {
+    /// Clean up reader resources
+    pub fn deinit(self: *const Reader) void {
         switch (self.*) {
             .noop => {},
-            .bridge => |processor| processor.deinitFn(processor.processor_ptr),
+            .bridge => |reader| reader.deinitFn(reader.reader_ptr),
         }
     }
 
-    /// Destroy processor memory
-    pub fn destroy(self: *const MetricProcessor) void {
+    /// Destroy reader memory
+    pub fn destroy(self: *const Reader) void {
         switch (self.*) {
             .noop => {},
-            .bridge => |processor| processor.destroyFn(processor.processor_ptr),
+            .bridge => |reader| reader.destroyFn(reader.reader_ptr),
         }
     }
 };
 
-/// Interface for bridging to a more complex processor.
-pub const BridgeMetricProcessor = struct {
-    processor_ptr: *anyopaque,
-    collectFn: *const fn (processor_ptr: *anyopaque) void,
-    forceFlushFn: *const fn (processor_ptr: *anyopaque, timeout_ms: ?u64) api.common.ProcessResult,
-    shutdownFn: *const fn (processor_ptr: *anyopaque, timeout_ms: ?u64) api.common.ProcessResult,
-    deinitFn: *const fn (processor_ptr: *anyopaque) void,
-    destroyFn: *const fn (processor_ptr: *anyopaque) void,
-    registerMeterFn: *const fn (processor_ptr: *anyopaque, meter: *sdk.BasicMeter) void,
-    unregisterMeterFn: *const fn (processor_ptr: *anyopaque, meter: *sdk.BasicMeter) void,
+/// Interface for bridging to a more complex reader.
+pub const BridgeReader = struct {
+    reader_ptr: *anyopaque,
+    collectFn: *const fn (reader_ptr: *anyopaque) void,
+    forceFlushFn: *const fn (reader_ptr: *anyopaque, timeout_ms: ?u64) api.common.ProcessResult,
+    shutdownFn: *const fn (reader_ptr: *anyopaque, timeout_ms: ?u64) api.common.ProcessResult,
+    deinitFn: *const fn (reader_ptr: *anyopaque) void,
+    destroyFn: *const fn (reader_ptr: *anyopaque) void,
+    registerMeterFn: *const fn (reader_ptr: *anyopaque, meter: *sdk.BasicMeter) void,
+    unregisterMeterFn: *const fn (reader_ptr: *anyopaque, meter: *sdk.BasicMeter) void,
 
-    pub fn init(ptr: anytype) BridgeMetricProcessor {
+    pub fn init(ptr: anytype) BridgeReader {
         const T = @TypeOf(ptr);
         const ptr_info = @typeInfo(T);
 
@@ -117,7 +117,7 @@ pub const BridgeMetricProcessor = struct {
         };
 
         return .{
-            .processor_ptr = ptr,
+            .reader_ptr = ptr,
             .collectFn = VTable.collect,
             .forceFlushFn = VTable.forceFlush,
             .shutdownFn = VTable.shutdown,

@@ -8,33 +8,34 @@
 //! metrics from all registered meters and export them via the configured exporter.
 
 const std = @import("std");
+const api = @import("otel-api");
 const c = std.c;
-const otel_api = @import("otel-api");
 
-const ProcessResult = otel_api.common.ProcessResult;
-const ExportResult = otel_api.common.ExportResult;
-const MetricData = @import("data.zig").MetricData;
-const MetricExporter = @import("exporter.zig").MetricExporter;
-const BasicMeter = @import("basic_provider.zig").BasicMeter;
-const MetricProcessor = @import("processor.zig").MetricProcessor;
+const sdk = struct {
+    const BridgeReader = @import("reader.zig").BridgeReader;
+    const Meter = @import("meter.zig").Meter;
+    const MetricData = @import("data.zig").MetricData;
+    const Reader = @import("reader.zig").Reader;
+    const MetricExporter = @import("exporter.zig").MetricExporter;
+};
 
 /// Basic periodic metrics processor that collects metrics at regular intervals
-pub const BasicPeriodicProcessor = struct {
+pub const PeriodicReader = struct {
     pub const PipelineStep = @import("../common/pipeline.zig").PipelineStepInstructions(
-        BasicPeriodicProcessor,
-        MetricProcessor,
+        PeriodicReader,
+        sdk.Reader,
         ?u32,
-        metricProcessor,
+        reader,
         _initFn,
         setExporter,
     );
-    pub fn _initFn(self: *BasicPeriodicProcessor, interval: ?u32, allocator: std.mem.Allocator) !void {
+    pub fn _initFn(self: *PeriodicReader, interval: ?u32, allocator: std.mem.Allocator) !void {
         self.* = init(allocator, null, interval);
         try self.start();
     }
 
     allocator: std.mem.Allocator,
-    exporter: ?MetricExporter,
+    exporter: ?sdk.MetricExporter,
     mutex: std.Thread.Mutex,
     condition: std.Thread.Condition,
     is_shutdown: std.atomic.Value(bool),
@@ -46,15 +47,15 @@ pub const BasicPeriodicProcessor = struct {
     last_collection_time: std.atomic.Value(i64),
     thread: ?std.Thread,
     collection_interval_ms: u32,
-    registered_meters: std.ArrayListUnmanaged(*BasicMeter),
+    registered_meters: std.ArrayListUnmanaged(*sdk.Meter),
 
     /// Initialize a new basic periodic metrics processor
     /// collection_interval_ms: How often to collect metrics (default: 60000ms = 60s)
     pub fn init(
         allocator: std.mem.Allocator,
-        exporter: ?MetricExporter,
+        exporter: ?sdk.MetricExporter,
         collection_interval_ms: ?u32,
-    ) BasicPeriodicProcessor {
+    ) PeriodicReader {
         return .{
             .allocator = allocator,
             .exporter = exporter,
@@ -74,7 +75,7 @@ pub const BasicPeriodicProcessor = struct {
     }
 
     /// Start the background collection thread
-    pub fn start(self: *BasicPeriodicProcessor) !void {
+    pub fn start(self: *PeriodicReader) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -87,7 +88,7 @@ pub const BasicPeriodicProcessor = struct {
     }
 
     /// Stop the background collection thread and clean up resources
-    pub fn deinit(self: *BasicPeriodicProcessor) void {
+    pub fn deinit(self: *PeriodicReader) void {
         // Signal shutdown
         self.is_shutdown.store(true, .release);
         self.is_running.store(false, .release);
@@ -110,12 +111,12 @@ pub const BasicPeriodicProcessor = struct {
     }
 
     /// Destroy the processor and free its memory
-    pub fn destroy(self: *BasicPeriodicProcessor) void {
+    pub fn destroy(self: *PeriodicReader) void {
         self.allocator.destroy(self);
     }
 
     /// Collect metrics from all registered meters (called by background thread)
-    pub fn collect(self: *BasicPeriodicProcessor) void {
+    pub fn collect(self: *PeriodicReader) void {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const arena_allocator = arena.allocator();
@@ -126,7 +127,7 @@ pub const BasicPeriodicProcessor = struct {
         if (self.is_shutdown.load(.acquire)) return;
 
         // Initialize collection data structure
-        var collected_metrics = std.ArrayList(MetricData).init(arena_allocator);
+        var collected_metrics = std.ArrayList(sdk.MetricData).init(arena_allocator);
 
         // Iterate through registered meters
         for (self.registered_meters.items) |meter| {
@@ -150,7 +151,7 @@ pub const BasicPeriodicProcessor = struct {
     }
 
     /// Force flush the exporter
-    pub fn forceFlush(self: *BasicPeriodicProcessor, timeout_ms: ?u64) ProcessResult {
+    pub fn forceFlush(self: *PeriodicReader, timeout_ms: ?u64) api.common.ProcessResult {
         // Quick check without mutex
         if (self.is_shutdown.load(.acquire)) {
             return .failure;
@@ -220,7 +221,7 @@ pub const BasicPeriodicProcessor = struct {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
 
-        var collected_metrics = std.ArrayList(MetricData).init(arena.allocator());
+        var collected_metrics = std.ArrayList(sdk.MetricData).init(arena.allocator());
 
         // Collect from all meters
         for (self.registered_meters.items) |meter| {
@@ -256,7 +257,7 @@ pub const BasicPeriodicProcessor = struct {
     }
 
     /// Shutdown the processor
-    pub fn shutdown(self: *BasicPeriodicProcessor, timeout_ms: ?u64) ProcessResult {
+    pub fn shutdown(self: *PeriodicReader, timeout_ms: ?u64) api.common.ProcessResult {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -273,7 +274,7 @@ pub const BasicPeriodicProcessor = struct {
     }
 
     /// Register a meter for periodic collection
-    pub fn registerMeter(self: *BasicPeriodicProcessor, meter: *BasicMeter) void {
+    pub fn registerMeter(self: *PeriodicReader, meter: *sdk.Meter) void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -286,7 +287,7 @@ pub const BasicPeriodicProcessor = struct {
     }
 
     /// Unregister a meter from periodic collection
-    pub fn unregisterMeter(self: *BasicPeriodicProcessor, meter: *BasicMeter) void {
+    pub fn unregisterMeter(self: *PeriodicReader, meter: *sdk.Meter) void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -301,7 +302,7 @@ pub const BasicPeriodicProcessor = struct {
     }
 
     /// Set the exporter for this processor
-    pub fn setExporter(self: *BasicPeriodicProcessor, exporter: ?MetricExporter) !void {
+    pub fn setExporter(self: *PeriodicReader, exporter: ?sdk.MetricExporter) !void {
         if (self.exporter) |old_exporter| {
             old_exporter.deinit();
             old_exporter.destroy();
@@ -310,14 +311,12 @@ pub const BasicPeriodicProcessor = struct {
     }
 
     /// Get the processor as a MetricProcessor union
-    pub fn metricProcessor(self: *BasicPeriodicProcessor) MetricProcessor {
-        return MetricProcessor{
-            .bridge = @import("processor.zig").BridgeMetricProcessor.init(self),
-        };
+    pub fn reader(self: *PeriodicReader) sdk.Reader {
+        return .{ .bridge = sdk.BridgeReader.init(self) };
     }
 
     /// Background thread function that periodically collects metrics
-    fn collectionThreadFn(self: *BasicPeriodicProcessor) void {
+    fn collectionThreadFn(self: *PeriodicReader) void {
         while (true) {
             // Fast path check without mutex
             if (self.is_shutdown.load(.acquire)) {
@@ -370,49 +369,15 @@ pub const BasicPeriodicProcessor = struct {
 test "BasicPeriodicProcessor - direct init vs pipeline init thread behavior" {
     const testing = std.testing;
     const allocator = testing.allocator;
-
-    // Mock exporter to track exports
-    const MockExporter = struct {
-        export_count: std.atomic.Value(u32),
-        allocator: std.mem.Allocator,
-
-        pub fn init(alloc: std.mem.Allocator) @This() {
-            return .{
-                .export_count = std.atomic.Value(u32).init(0),
-                .allocator = alloc,
-            };
-        }
-
-        pub fn deinit(_: *@This()) void {}
-
-        pub fn exportMetrics(self: *@This(), _: []const MetricData) ExportResult {
-            _ = self.export_count.fetchAdd(1, .monotonic);
-            return .success;
-        }
-
-        pub fn forceFlush(_: *@This(), _: ?u64) ExportResult {
-            return .success;
-        }
-
-        pub fn shutdown(_: *@This(), _: ?u64) ExportResult {
-            return .success;
-        }
-
-        pub fn destroy(self: *@This()) void {
-            self.allocator.destroy(self);
-        }
-
-        pub fn metricExporter(self: *@This()) MetricExporter {
-            return MetricExporter{ .bridge = @import("exporter.zig").BridgeMetricExporter.init(self) };
-        }
-    };
+    const MockExporter = @import("exporter.zig").MockMetricExporter;
+    const Resource = @import("../resource/resource.zig").Resource;
 
     // Create mock exporter
     const mock_exporter = try allocator.create(MockExporter);
     mock_exporter.* = MockExporter.init(allocator);
 
     // Create processor with very short interval for testing (direct init)
-    var processor = BasicPeriodicProcessor.init(allocator, mock_exporter.metricExporter(), 100); // 100ms
+    var processor = PeriodicReader.init(allocator, mock_exporter.metricExporter(), 100); // 100ms
     defer processor.deinit();
 
     // Verify thread is not running when created via direct init()
@@ -420,10 +385,10 @@ test "BasicPeriodicProcessor - direct init vs pipeline init thread behavior" {
     try testing.expect(processor.thread == null);
 
     // Create a basic meter for testing
-    const scope = try otel_api.InstrumentationScope.initSimple("test.meter", "1.0.0");
-    const resource = @import("../resource/resource.zig").Resource.empty;
-    const basic_meter = try allocator.create(@import("basic_provider.zig").BasicMeter);
-    basic_meter.* = try @import("basic_provider.zig").BasicMeter.init(allocator, scope, resource);
+    const scope = try api.InstrumentationScope.initSimple("test.meter", "1.0.0");
+    const resource = Resource.empty;
+    const basic_meter = try allocator.create(sdk.Meter);
+    basic_meter.* = try sdk.Meter.init(allocator, scope, resource);
     defer {
         basic_meter.deinit();
         allocator.destroy(basic_meter);
@@ -440,9 +405,9 @@ test "BasicPeriodicProcessor - direct init vs pipeline init thread behavior" {
     processor.registerMeter(basic_meter);
 
     // Create a second meter
-    const scope2 = try otel_api.InstrumentationScope.initSimple("test.meter2", "1.0.0");
-    const basic_meter2 = try allocator.create(@import("basic_provider.zig").BasicMeter);
-    basic_meter2.* = try @import("basic_provider.zig").BasicMeter.init(allocator, scope2, resource);
+    const scope2 = try api.InstrumentationScope.initSimple("test.meter2", "1.0.0");
+    const basic_meter2 = try allocator.create(sdk.Meter);
+    basic_meter2.* = try sdk.Meter.init(allocator, scope2, resource);
     defer {
         basic_meter2.deinit();
         allocator.destroy(basic_meter2);
@@ -460,7 +425,7 @@ test "BasicPeriodicProcessor - direct init vs pipeline init thread behavior" {
     std.time.sleep(250 * std.time.ns_per_ms);
 
     // Verify some exports happened (thread is working)
-    const export_count = mock_exporter.export_count.load(.monotonic);
+    const export_count = mock_exporter.exportCount();
     try testing.expect(export_count > 0);
 
     // Test shutdown - should stop the thread
@@ -476,7 +441,7 @@ test "BasicPeriodicProcessor - no thread start without meters" {
     const allocator = testing.allocator;
 
     // Create processor
-    var processor = BasicPeriodicProcessor.init(allocator, null, 100);
+    var processor = PeriodicReader.init(allocator, null, 100);
     defer processor.deinit();
 
     // Verify thread is not running

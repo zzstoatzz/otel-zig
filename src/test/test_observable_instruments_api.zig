@@ -77,7 +77,7 @@ test "noop observable instruments" {
 }
 
 test "callback handle noop functionality" {
-    var handle = CallbackHandle.noop();
+    var handle = CallbackHandle.noop;
     try testing.expect(handle.instrument_ptr == null);
     try testing.expect(handle.unregister_fn == null);
     try testing.expectEqual(@as(u64, 0), handle.callback_id);

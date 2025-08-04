@@ -8,16 +8,15 @@
 const std = @import("std");
 
 // MeterProvider exports
-pub const BasicMeterProvider = @import("basic_provider.zig").BasicMeterProvider;
+pub const MeterProvider = @import("meter_provider.zig").MeterProvider;
+pub const Meter = @import("meter.zig").Meter;
 
 // Processor and exporter types
-pub const processor = @import("processor.zig");
-pub const MetricProcessor = processor.MetricProcessor;
-pub const BasicMetricProcessor = @import("basic_processor.zig").BasicMetricProcessor;
-pub const BridgeMetricProcessor = processor.BridgeMetricProcessor;
-
-const basic_periodic_processor_zig = @import("basic_periodic_processor.zig");
-pub const BasicPeriodicProcessor = basic_periodic_processor_zig.BasicPeriodicProcessor;
+pub const reader = @import("reader.zig");
+pub const Reader = reader.Reader;
+pub const BridgeReader = reader.BridgeReader;
+pub const ManualReader = @import("manual_reader.zig").ManualReader;
+pub const PeriodicReader = @import("periodic_reader.zig").PeriodicReader;
 
 const data_zig = @import("data.zig");
 pub const MetricData = data_zig.MetricData;
@@ -27,6 +26,7 @@ pub const MetricValue = data_zig.MetricValue;
 pub const I64HistogramData = data_zig.I64HistogramData;
 pub const F64HistogramData = data_zig.F64HistogramData;
 
+// Exporter types.
 const exporter_zig = @import("exporter.zig");
 pub const MetricExporter = exporter_zig.MetricExporter;
 pub const BridgeMetricExporter = exporter_zig.BridgeMetricExporter;
@@ -36,15 +36,16 @@ const async_instrument_config_zig = @import("async_instrument_config.zig");
 pub const AsyncInstrumentConfig = async_instrument_config_zig.AsyncInstrumentConfig;
 pub const CallbackErrorPolicy = async_instrument_config_zig.CallbackErrorPolicy;
 
-const observable_instrument_sdk_zig = @import("observable_instrument_sdk.zig");
-pub const SdkObservableCounter = observable_instrument_sdk_zig.SdkObservableCounter;
-pub const SdkObservableGauge = observable_instrument_sdk_zig.SdkObservableGauge;
-pub const SdkObservableUpDownCounter = observable_instrument_sdk_zig.SdkObservableUpDownCounter;
-pub const CallbackMetrics = observable_instrument_sdk_zig.CallbackMetrics;
+const async_instrument_zig = @import("async_instruments.zig");
+pub const ObservableCounter = async_instrument_zig.ObservableCounter;
+pub const ObservableGauge = async_instrument_zig.ObservableGauge;
+pub const ObservableUpDownCounter = async_instrument_zig.ObservableUpDownCounter;
+pub const CallbackMetrics = async_instrument_zig.CallbackMetrics;
 
 // Re-export the setup helper functions
 pub const setupGlobalProvider = @import("setup.zig").setupGlobalProvider;
 
 test {
+    _ = @import("test.zig");
     std.testing.refAllDecls(@This());
 }

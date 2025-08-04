@@ -1,6 +1,7 @@
-const AttributeKeyValue = @import("otel-api").AttributeKeyValue;
-const InstrumentationScope = @import("otel-api").InstrumentationScope;
-const Resource = @import("../resource/resource.zig").Resource;
+const api = @import("otel-api");
+const sdk = struct {
+    const Resource = @import("../resource/resource.zig").Resource;
+};
 
 /// Metric data point representing a single measurement
 pub const MetricDataPoint = struct {
@@ -9,7 +10,7 @@ pub const MetricDataPoint = struct {
     /// Start timestamp for monotonic counters (null for gauges)
     start_timestamp_ns: ?u64,
     /// Attributes associated with this data point
-    attributes: []const AttributeKeyValue,
+    attributes: []const api.AttributeKeyValue,
     /// The actual value
     value: MetricValue,
 };
@@ -57,9 +58,9 @@ pub const MetricData = struct {
     /// Aggregated data points
     data_points: []const MetricDataPoint,
     /// Instrumentation scope that created this metric
-    scope: InstrumentationScope,
+    scope: api.InstrumentationScope,
     /// Resource associated with this metric
-    resource: Resource,
+    resource: sdk.Resource,
 };
 
 pub const MetricType = enum {

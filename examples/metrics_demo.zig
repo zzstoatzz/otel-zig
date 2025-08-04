@@ -22,7 +22,7 @@ pub fn main() !void {
 pub fn basicProcessorDemo(allocator: std.mem.Allocator) !void {
     const concrete_provider = try otel_sdk.metrics.setupGlobalProvider(
         allocator,
-        .{otel_sdk.metrics.BasicMetricProcessor.PipelineStep.init({})
+        .{otel_sdk.metrics.ManualReader.PipelineStep.init({})
             .flowTo(otel_exporters.otlp.OtlpMetricExporter.PipelineStep.init(.{}))},
     );
     defer {
@@ -157,7 +157,7 @@ pub fn basicProcessorDemo(allocator: std.mem.Allocator) !void {
 pub fn advancedProcessorDemo(allocator: std.mem.Allocator) !void {
     const concrete_provider = try otel_sdk.metrics.setupGlobalProvider(
         allocator,
-        .{otel_sdk.metrics.BasicPeriodicProcessor.PipelineStep.init(5000)
+        .{otel_sdk.metrics.PeriodicReader.PipelineStep.init(5000)
             .flowTo(otel_exporters.otlp.OtlpMetricExporter.PipelineStep.init(.{}))},
     );
     defer {

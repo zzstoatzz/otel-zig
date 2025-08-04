@@ -126,7 +126,7 @@ pub fn ObservableCounter(comptime T: type) type {
             state: *StateType,
         ) !CallbackHandle {
             return switch (self.*) {
-                .noop => CallbackHandle.noop(),
+                .noop => CallbackHandle.noop,
                 .bridge => |bridge| {
                     const type_erased = createTypeErasedCallback(T, StateType, callback, state);
                     return bridge.registerCallback(type_erased);
@@ -140,7 +140,7 @@ pub fn ObservableCounter(comptime T: type) type {
             callback: ObservableCallbackNoState(T),
         ) !CallbackHandle {
             return switch (self.*) {
-                .noop => CallbackHandle.noop(),
+                .noop => CallbackHandle.noop,
                 .bridge => |bridge| {
                     const type_erased = createTypeErasedCallbackNoState(T, callback);
                     return bridge.registerCallback(type_erased);
@@ -185,7 +185,7 @@ pub fn ObservableGauge(comptime T: type) type {
             state: *StateType,
         ) !CallbackHandle {
             return switch (self.*) {
-                .noop => CallbackHandle.noop(),
+                .noop => CallbackHandle.noop,
                 .bridge => |bridge| {
                     const type_erased = createTypeErasedCallback(T, StateType, callback, state);
                     return bridge.registerCallback(type_erased);
@@ -199,7 +199,7 @@ pub fn ObservableGauge(comptime T: type) type {
             callback: ObservableCallbackNoState(T),
         ) !CallbackHandle {
             return switch (self.*) {
-                .noop => CallbackHandle.noop(),
+                .noop => CallbackHandle.noop,
                 .bridge => |bridge| {
                     const type_erased = createTypeErasedCallbackNoState(T, callback);
                     return bridge.registerCallback(type_erased);
@@ -244,7 +244,7 @@ pub fn ObservableUpDownCounter(comptime T: type) type {
             state: *StateType,
         ) !CallbackHandle {
             return switch (self.*) {
-                .noop => CallbackHandle.noop(),
+                .noop => CallbackHandle.noop,
                 .bridge => |bridge| {
                     const type_erased = createTypeErasedCallback(T, StateType, callback, state);
                     return bridge.registerCallback(type_erased);
@@ -258,7 +258,7 @@ pub fn ObservableUpDownCounter(comptime T: type) type {
             callback: ObservableCallbackNoState(T),
         ) !CallbackHandle {
             return switch (self.*) {
-                .noop => CallbackHandle.noop(),
+                .noop => CallbackHandle.noop,
                 .bridge => |bridge| {
                     const type_erased = createTypeErasedCallbackNoState(T, callback);
                     return bridge.registerCallback(type_erased);
@@ -277,13 +277,11 @@ pub const CallbackHandle = struct {
     callback_id: u64,
 
     /// Create a no-op callback handle
-    pub fn noop() Self {
-        return Self{
-            .instrument_ptr = null,
-            .unregister_fn = null,
-            .callback_id = 0,
-        };
-    }
+    pub const noop: Self = .{
+        .instrument_ptr = null,
+        .unregister_fn = null,
+        .callback_id = 0,
+    };
 
     /// Initialize a callback handle
     pub fn init(
@@ -423,7 +421,7 @@ test "observable instruments enabled method" {
 test "callback handle noop functionality" {
     const testing = std.testing;
 
-    var handle = CallbackHandle.noop();
+    var handle = CallbackHandle.noop;
     try testing.expect(handle.instrument_ptr == null);
     try testing.expect(handle.unregister_fn == null);
     try testing.expectEqual(@as(u64, 0), handle.callback_id);

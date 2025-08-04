@@ -5,27 +5,13 @@
 
 const std = @import("std");
 const api = @import("otel-api");
-const metrics_data = @import("data.zig");
 
-// API imports
-const ObservableResult = api.metrics.ObservableResult;
-const TypeErasedCallback = api.metrics.TypeErasedCallback;
-const CallbackHandle = api.metrics.CallbackHandle;
-const AsyncInstrumentBridge = api.metrics.AsyncInstrumentBridge;
-const AttributeKeyValue = api.common.AttributeKeyValue;
-
-// Error handling imports
-const reportCallbackError = api.common.reportCallbackError;
-const reportCallbackErrorWithSource = api.common.reportCallbackErrorWithSource;
-
-// SDK imports
-const AsyncInstrumentConfig = @import("async_instrument_config.zig").AsyncInstrumentConfig;
-const CallbackErrorPolicy = @import("async_instrument_config.zig").CallbackErrorPolicy;
-const MetricData = metrics_data.MetricData;
-const MetricDataPoint = metrics_data.MetricDataPoint;
-const MetricType = metrics_data.MetricType;
-const MetricValue = metrics_data.MetricValue;
-const Resource = @import("../resource/resource.zig").Resource;
+const sdk = struct {
+    const AsyncInstrumentConfig = @import("async_instrument_config.zig").AsyncInstrumentConfig;
+    const Resource = @import("../resource/resource.zig").Resource;
+    const MetricData = @import("data.zig").MetricData;
+    const MetricDataPoint = @import("data.zig").MetricDataPoint;
+};
 
 /// Metrics for tracking callback performance
 pub const CallbackMetrics = struct {
@@ -76,7 +62,7 @@ pub const CallbackMetrics = struct {
         else
             "callback_error";
 
-        reportCallbackError(.meter, "executeCallback", error_message, context);
+        api.common.reportCallbackError(.meter, "executeCallback", error_message, context);
     }
 
     /// Get average execution time in nanoseconds
@@ -95,13 +81,13 @@ pub const CallbackMetrics = struct {
 };
 
 /// SDK implementation of ObservableCounter
-pub fn SdkObservableCounter(comptime T: type) type {
+pub fn ObservableCounter(comptime T: type) type {
     return struct {
         const Self = @This();
 
         /// Entry for a registered callback
         const CallbackEntry = struct {
-            callback: TypeErasedCallback,
+            callback: api.metrics.TypeErasedCallback,
             id: u64,
             metrics: CallbackMetrics,
         };
@@ -118,7 +104,7 @@ pub fn SdkObservableCounter(comptime T: type) type {
         /// Configuration and state
         allocator: std.mem.Allocator,
         mutex: std.Thread.Mutex,
-        config: AsyncInstrumentConfig,
+        config: sdk.AsyncInstrumentConfig,
         instrument_metrics: CallbackMetrics,
 
         /// Initialize the observable counter
@@ -127,7 +113,7 @@ pub fn SdkObservableCounter(comptime T: type) type {
             name: []const u8,
             description: ?[]const u8,
             unit: ?[]const u8,
-            config: AsyncInstrumentConfig,
+            config: sdk.AsyncInstrumentConfig,
         ) Self {
             return Self{
                 .name = name,
@@ -167,7 +153,7 @@ pub fn SdkObservableCounter(comptime T: type) type {
         }
 
         /// Register a callback
-        pub fn registerCallback(self: *Self, callback: TypeErasedCallback) CallbackHandle {
+        pub fn registerCallback(self: *Self, callback: api.metrics.TypeErasedCallback) api.metrics.CallbackHandle {
             self.mutex.lock();
             defer self.mutex.unlock();
 
@@ -182,10 +168,10 @@ pub fn SdkObservableCounter(comptime T: type) type {
 
             self.callbacks.append(entry) catch {
                 // Return noop handle on allocation failure
-                return CallbackHandle.noop();
+                return .noop;
             };
 
-            return CallbackHandle.init(self, unregisterCallback, callback_id);
+            return .init(self, unregisterCallback, callback_id);
         }
 
         /// Unregister a callback (internal method)
@@ -205,11 +191,11 @@ pub fn SdkObservableCounter(comptime T: type) type {
         }
 
         /// Collect measurements from all callbacks
-        pub fn collect(self: *Self, allocator: std.mem.Allocator) ![]MetricDataPoint {
+        pub fn collect(self: *Self, allocator: std.mem.Allocator) ![]sdk.MetricDataPoint {
             self.mutex.lock();
             defer self.mutex.unlock();
 
-            var data_points = std.ArrayList(MetricDataPoint).init(allocator);
+            var data_points = std.ArrayList(sdk.MetricDataPoint).init(allocator);
             defer data_points.deinit();
 
             const collection_start = std.time.nanoTimestamp();
@@ -246,10 +232,10 @@ pub fn SdkObservableCounter(comptime T: type) type {
 
                 // Convert measurements to data points
                 for (measurements) |measurement| {
-                    const data_point = MetricDataPoint{
+                    const data_point = sdk.MetricDataPoint{
                         .value = switch (T) {
-                            i64 => MetricValue{ .i64_sum = measurement.value },
-                            f64 => MetricValue{ .f64_sum = measurement.value },
+                            i64 => .{ .i64_sum = measurement.value },
+                            f64 => .{ .f64_sum = measurement.value },
                             else => unreachable,
                         },
                         .attributes = measurement.attributes,
@@ -276,10 +262,10 @@ pub fn SdkObservableCounter(comptime T: type) type {
         }
 
         /// Execute a single callback with proper error handling and timing
-        fn executeCallback(self: *Self, allocator: std.mem.Allocator, entry: *CallbackEntry) ![]ObservableResult(T).Measurement {
+        fn executeCallback(self: *Self, allocator: std.mem.Allocator, entry: *CallbackEntry) ![]api.metrics.ObservableResult(T).Measurement {
             const start_time = if (self.config.track_callback_metrics) std.time.nanoTimestamp() else 0;
 
-            var result = ObservableResult(T).init(allocator, null);
+            var result = api.metrics.ObservableResult(T).init(allocator, null);
             defer result.deinit();
 
             // Execute the callback - callbacks are void functions, so we detect errors by observing behavior
@@ -300,7 +286,7 @@ pub fn SdkObservableCounter(comptime T: type) type {
                     if (self.config.track_callback_metrics) {
                         entry.metrics.recordError(allocator, warn_msg, entry.id, self.name);
                     }
-                    reportCallbackError(.meter, "executeCallback", warn_msg, self.name);
+                    api.common.reportCallbackError(.meter, "executeCallback", warn_msg, self.name);
                     // Truncate to limit
                     result.measurements.shrinkRetainingCapacity(limit);
                 }
@@ -313,17 +299,17 @@ pub fn SdkObservableCounter(comptime T: type) type {
                 if (self.config.track_callback_metrics) {
                     entry.metrics.recordError(allocator, warn_msg, entry.id, self.name);
                 }
-                reportCallbackError(.meter, "executeCallback", warn_msg, self.name);
+                api.common.reportCallbackError(.meter, "executeCallback", warn_msg, self.name);
             }
 
             return result.measurements.toOwnedSlice();
         }
 
         /// Create MetricData from collected measurements
-        pub fn createMetricData(self: *Self, allocator: std.mem.Allocator, scope: api.common.InstrumentationScope, resource: Resource) !MetricData {
+        pub fn createMetricData(self: *Self, allocator: std.mem.Allocator, scope: api.common.InstrumentationScope, resource: sdk.Resource) !sdk.MetricData {
             const data_points = try self.collect(allocator);
 
-            return MetricData{
+            return .{
                 .name = self.name,
                 .description = self.description,
                 .unit = self.unit,
@@ -372,29 +358,29 @@ pub fn SdkObservableCounter(comptime T: type) type {
         }
 
         /// Export callback performance metrics as MetricData
-        pub fn exportCallbackMetrics(self: *Self, allocator: std.mem.Allocator) ![]MetricData {
+        pub fn exportCallbackMetrics(self: *Self, allocator: std.mem.Allocator) ![]sdk.MetricData {
             if (!self.config.track_callback_metrics) {
-                return &[_]MetricData{};
+                return &[_]sdk.MetricData{};
             }
 
-            var metrics = std.ArrayList(MetricData).init(allocator);
+            var metrics = std.ArrayList(sdk.MetricData).init(allocator);
 
             // Overall instrument metrics
             const instrument_metrics = self.getInstrumentMetrics();
 
             // Execution count metric
             if (instrument_metrics.total_executions > 0) {
-                const exec_count_points = try allocator.alloc(MetricDataPoint, 1);
-                exec_count_points[0] = MetricDataPoint{
+                const exec_count_points = try allocator.alloc(sdk.MetricDataPoint, 1);
+                exec_count_points[0] = .{
                     .value = .{ .i64_sum = @intCast(instrument_metrics.total_executions) },
-                    .attributes = &[_]AttributeKeyValue{
+                    .attributes = &[_]api.AttributeKeyValue{
                         .{ .key = "instrument", .value = .{ .string = self.name } },
                     },
                     .timestamp_ns = @intCast(std.time.nanoTimestamp()),
                     .start_timestamp_ns = null,
                 };
 
-                try metrics.append(MetricData{
+                try metrics.append(sdk.MetricData{
                     .name = "otel.async_instrument.callback.executions",
                     .description = "Total number of callback executions",
                     .unit = "1",
@@ -409,13 +395,13 @@ pub fn SdkObservableCounter(comptime T: type) type {
 }
 
 /// SDK implementation of ObservableGauge (identical to ObservableCounter)
-pub fn SdkObservableGauge(comptime T: type) type {
+pub fn ObservableGauge(comptime T: type) type {
     return struct {
         const Self = @This();
 
         /// Entry for a registered callback
         const CallbackEntry = struct {
-            callback: TypeErasedCallback,
+            callback: api.metrics.TypeErasedCallback,
             id: u64,
             metrics: CallbackMetrics,
         };
@@ -432,7 +418,7 @@ pub fn SdkObservableGauge(comptime T: type) type {
         /// Configuration and state
         allocator: std.mem.Allocator,
         mutex: std.Thread.Mutex,
-        config: AsyncInstrumentConfig,
+        config: sdk.AsyncInstrumentConfig,
         instrument_metrics: CallbackMetrics,
 
         /// Initialize the observable gauge
@@ -441,7 +427,7 @@ pub fn SdkObservableGauge(comptime T: type) type {
             name: []const u8,
             description: ?[]const u8,
             unit: ?[]const u8,
-            config: AsyncInstrumentConfig,
+            config: sdk.AsyncInstrumentConfig,
         ) Self {
             return Self{
                 .name = name,
@@ -481,7 +467,7 @@ pub fn SdkObservableGauge(comptime T: type) type {
         }
 
         /// Register a callback
-        pub fn registerCallback(self: *Self, callback: TypeErasedCallback) CallbackHandle {
+        pub fn registerCallback(self: *Self, callback: api.metrics.TypeErasedCallback) api.metrics.CallbackHandle {
             self.mutex.lock();
             defer self.mutex.unlock();
 
@@ -496,10 +482,10 @@ pub fn SdkObservableGauge(comptime T: type) type {
 
             self.callbacks.append(entry) catch {
                 // Return noop handle on allocation failure
-                return CallbackHandle.noop();
+                return .noop;
             };
 
-            return CallbackHandle.init(self, unregisterCallback, callback_id);
+            return .init(self, unregisterCallback, callback_id);
         }
 
         /// Unregister a callback (internal method)
@@ -519,11 +505,11 @@ pub fn SdkObservableGauge(comptime T: type) type {
         }
 
         /// Collect measurements from all callbacks
-        pub fn collect(self: *Self, allocator: std.mem.Allocator) ![]MetricDataPoint {
+        pub fn collect(self: *Self, allocator: std.mem.Allocator) ![]sdk.MetricDataPoint {
             self.mutex.lock();
             defer self.mutex.unlock();
 
-            var data_points = std.ArrayList(MetricDataPoint).init(allocator);
+            var data_points = std.ArrayList(sdk.MetricDataPoint).init(allocator);
             defer data_points.deinit();
 
             const collection_start = std.time.nanoTimestamp();
@@ -560,10 +546,10 @@ pub fn SdkObservableGauge(comptime T: type) type {
 
                 // Convert measurements to data points (gauges use current timestamp, no start timestamp)
                 for (measurements) |measurement| {
-                    const data_point = MetricDataPoint{
+                    const data_point = sdk.MetricDataPoint{
                         .value = switch (T) {
-                            i64 => MetricValue{ .i64_gauge = measurement.value },
-                            f64 => MetricValue{ .f64_gauge = measurement.value },
+                            i64 => .{ .i64_gauge = measurement.value },
+                            f64 => .{ .f64_gauge = measurement.value },
                             else => unreachable,
                         },
                         .attributes = measurement.attributes,
@@ -590,10 +576,10 @@ pub fn SdkObservableGauge(comptime T: type) type {
         }
 
         /// Execute a single callback with proper error handling and timing
-        fn executeCallback(self: *Self, allocator: std.mem.Allocator, entry: *CallbackEntry) ![]ObservableResult(T).Measurement {
+        fn executeCallback(self: *Self, allocator: std.mem.Allocator, entry: *CallbackEntry) ![]api.metrics.ObservableResult(T).Measurement {
             const start_time = if (self.config.track_callback_metrics) std.time.nanoTimestamp() else 0;
 
-            var result = ObservableResult(T).init(allocator, null);
+            var result = api.metrics.ObservableResult(T).init(allocator, null);
             defer result.deinit();
 
             // Execute the callback - callbacks are void functions, so we detect errors by observing behavior
@@ -614,7 +600,7 @@ pub fn SdkObservableGauge(comptime T: type) type {
                     if (self.config.track_callback_metrics) {
                         entry.metrics.recordError(allocator, warn_msg, entry.id, self.name);
                     }
-                    reportCallbackError(.meter, "executeCallback", warn_msg, self.name);
+                    api.common.reportCallbackError(.meter, "executeCallback", warn_msg, self.name);
                     // Truncate to limit
                     result.measurements.shrinkRetainingCapacity(limit);
                 }
@@ -627,17 +613,17 @@ pub fn SdkObservableGauge(comptime T: type) type {
                 if (self.config.track_callback_metrics) {
                     entry.metrics.recordError(allocator, warn_msg, entry.id, self.name);
                 }
-                reportCallbackError(.meter, "executeCallback", warn_msg, self.name);
+                api.common.reportCallbackError(.meter, "executeCallback", warn_msg, self.name);
             }
 
             return result.measurements.toOwnedSlice();
         }
 
         /// Create MetricData from collected measurements
-        pub fn createMetricData(self: *Self, allocator: std.mem.Allocator, scope: api.common.InstrumentationScope, resource: Resource) !MetricData {
+        pub fn createMetricData(self: *Self, allocator: std.mem.Allocator, scope: api.common.InstrumentationScope, resource: sdk.Resource) !sdk.MetricData {
             const data_points = try self.collect(allocator);
 
-            return MetricData{
+            return .{
                 .name = self.name,
                 .description = self.description,
                 .unit = self.unit,
@@ -686,29 +672,29 @@ pub fn SdkObservableGauge(comptime T: type) type {
         }
 
         /// Export callback performance metrics as MetricData
-        pub fn exportCallbackMetrics(self: *Self, allocator: std.mem.Allocator) ![]MetricData {
+        pub fn exportCallbackMetrics(self: *Self, allocator: std.mem.Allocator) ![]sdk.MetricData {
             if (!self.config.track_callback_metrics) {
-                return &[_]MetricData{};
+                return &[_]sdk.MetricData{};
             }
 
-            var metrics = std.ArrayList(MetricData).init(allocator);
+            var metrics = std.ArrayList(sdk.MetricData).init(allocator);
 
             // Overall instrument metrics
             const instrument_metrics = self.getInstrumentMetrics();
 
             // Execution count metric
             if (instrument_metrics.total_executions > 0) {
-                const exec_count_points = try allocator.alloc(MetricDataPoint, 1);
-                exec_count_points[0] = MetricDataPoint{
+                const exec_count_points = try allocator.alloc(sdk.MetricDataPoint, 1);
+                exec_count_points[0] = .{
                     .value = .{ .i64_sum = @intCast(instrument_metrics.total_executions) },
-                    .attributes = &[_]AttributeKeyValue{
+                    .attributes = &[_]api.AttributeKeyValue{
                         .{ .key = "instrument", .value = .{ .string = self.name } },
                     },
                     .timestamp_ns = @intCast(std.time.nanoTimestamp()),
                     .start_timestamp_ns = null,
                 };
 
-                try metrics.append(MetricData{
+                try metrics.append(sdk.MetricData{
                     .name = "otel.async_instrument.callback.executions",
                     .description = "Total number of callback executions",
                     .unit = "1",
@@ -723,13 +709,13 @@ pub fn SdkObservableGauge(comptime T: type) type {
 }
 
 /// SDK implementation of ObservableUpDownCounter
-pub fn SdkObservableUpDownCounter(comptime T: type) type {
+pub fn ObservableUpDownCounter(comptime T: type) type {
     return struct {
         const Self = @This();
 
         /// Entry for a registered callback
         const CallbackEntry = struct {
-            callback: TypeErasedCallback,
+            callback: api.metrics.TypeErasedCallback,
             id: u64,
             metrics: CallbackMetrics,
         };
@@ -746,7 +732,7 @@ pub fn SdkObservableUpDownCounter(comptime T: type) type {
         /// Configuration and state
         allocator: std.mem.Allocator,
         mutex: std.Thread.Mutex,
-        config: AsyncInstrumentConfig,
+        config: sdk.AsyncInstrumentConfig,
         instrument_metrics: CallbackMetrics,
 
         /// Initialize the observable up-down counter
@@ -755,7 +741,7 @@ pub fn SdkObservableUpDownCounter(comptime T: type) type {
             name: []const u8,
             description: ?[]const u8,
             unit: ?[]const u8,
-            config: AsyncInstrumentConfig,
+            config: sdk.AsyncInstrumentConfig,
         ) Self {
             return Self{
                 .name = name,
@@ -795,7 +781,7 @@ pub fn SdkObservableUpDownCounter(comptime T: type) type {
         }
 
         /// Register a callback
-        pub fn registerCallback(self: *Self, callback: TypeErasedCallback) CallbackHandle {
+        pub fn registerCallback(self: *Self, callback: api.metrics.TypeErasedCallback) api.metrics.CallbackHandle {
             self.mutex.lock();
             defer self.mutex.unlock();
 
@@ -810,10 +796,10 @@ pub fn SdkObservableUpDownCounter(comptime T: type) type {
 
             self.callbacks.append(entry) catch {
                 // Return noop handle on allocation failure
-                return CallbackHandle.noop();
+                return .noop;
             };
 
-            return CallbackHandle.init(self, unregisterCallback, callback_id);
+            return .init(self, unregisterCallback, callback_id);
         }
 
         /// Unregister a callback (internal method)
@@ -833,11 +819,11 @@ pub fn SdkObservableUpDownCounter(comptime T: type) type {
         }
 
         /// Collect measurements from all callbacks
-        pub fn collect(self: *Self, allocator: std.mem.Allocator) ![]MetricDataPoint {
+        pub fn collect(self: *Self, allocator: std.mem.Allocator) ![]sdk.MetricDataPoint {
             self.mutex.lock();
             defer self.mutex.unlock();
 
-            var data_points = std.ArrayList(MetricDataPoint).init(allocator);
+            var data_points = std.ArrayList(sdk.MetricDataPoint).init(allocator);
             defer data_points.deinit();
 
             const collection_start = std.time.nanoTimestamp();
@@ -874,10 +860,10 @@ pub fn SdkObservableUpDownCounter(comptime T: type) type {
 
                 // Convert measurements to data points (up-down counters use sum values)
                 for (measurements) |measurement| {
-                    const data_point = MetricDataPoint{
+                    const data_point = sdk.MetricDataPoint{
                         .value = switch (T) {
-                            i64 => MetricValue{ .i64_sum = measurement.value },
-                            f64 => MetricValue{ .f64_sum = measurement.value },
+                            i64 => .{ .i64_sum = measurement.value },
+                            f64 => .{ .f64_sum = measurement.value },
                             else => unreachable,
                         },
                         .attributes = measurement.attributes,
@@ -904,10 +890,10 @@ pub fn SdkObservableUpDownCounter(comptime T: type) type {
         }
 
         /// Execute a single callback with proper error handling and timing
-        fn executeCallback(self: *Self, allocator: std.mem.Allocator, entry: *CallbackEntry) ![]ObservableResult(T).Measurement {
+        fn executeCallback(self: *Self, allocator: std.mem.Allocator, entry: *CallbackEntry) ![]api.metrics.ObservableResult(T).Measurement {
             const start_time = if (self.config.track_callback_metrics) std.time.nanoTimestamp() else 0;
 
-            var result = ObservableResult(T).init(allocator, null);
+            var result = api.metrics.ObservableResult(T).init(allocator, null);
             defer result.deinit();
 
             // Execute the callback - callbacks are void functions, so we detect errors by observing behavior
@@ -928,7 +914,7 @@ pub fn SdkObservableUpDownCounter(comptime T: type) type {
                     if (self.config.track_callback_metrics) {
                         entry.metrics.recordError(allocator, warn_msg, entry.id, self.name);
                     }
-                    reportCallbackError(.meter, "executeCallback", warn_msg, self.name);
+                    api.common.reportCallbackError(.meter, "executeCallback", warn_msg, self.name);
                     // Truncate to limit
                     result.measurements.shrinkRetainingCapacity(limit);
                 }
@@ -941,17 +927,17 @@ pub fn SdkObservableUpDownCounter(comptime T: type) type {
                 if (self.config.track_callback_metrics) {
                     entry.metrics.recordError(allocator, warn_msg, entry.id, self.name);
                 }
-                reportCallbackError(.meter, "executeCallback", warn_msg, self.name);
+                api.common.reportCallbackError(.meter, "executeCallback", warn_msg, self.name);
             }
 
             return result.measurements.toOwnedSlice();
         }
 
         /// Create MetricData from collected measurements
-        pub fn createMetricData(self: *Self, allocator: std.mem.Allocator, scope: api.common.InstrumentationScope, resource: Resource) !MetricData {
+        pub fn createMetricData(self: *Self, allocator: std.mem.Allocator, scope: api.common.InstrumentationScope, resource: sdk.Resource) !sdk.MetricData {
             const data_points = try self.collect(allocator);
 
-            return MetricData{
+            return .{
                 .name = self.name,
                 .description = self.description,
                 .unit = self.unit,
@@ -1000,29 +986,29 @@ pub fn SdkObservableUpDownCounter(comptime T: type) type {
         }
 
         /// Export callback performance metrics as MetricData
-        pub fn exportCallbackMetrics(self: *Self, allocator: std.mem.Allocator) ![]MetricData {
+        pub fn exportCallbackMetrics(self: *Self, allocator: std.mem.Allocator) ![]sdk.MetricData {
             if (!self.config.track_callback_metrics) {
-                return &[_]MetricData{};
+                return &[_]sdk.MetricData{};
             }
 
-            var metrics = std.ArrayList(MetricData).init(allocator);
+            var metrics = std.ArrayList(sdk.MetricData).init(allocator);
 
             // Overall instrument metrics
             const instrument_metrics = self.getInstrumentMetrics();
 
             // Execution count metric
             if (instrument_metrics.total_executions > 0) {
-                const exec_count_points = try allocator.alloc(MetricDataPoint, 1);
-                exec_count_points[0] = MetricDataPoint{
+                const exec_count_points = try allocator.alloc(sdk.MetricDataPoint, 1);
+                exec_count_points[0] = .{
                     .value = .{ .i64_sum = @intCast(instrument_metrics.total_executions) },
-                    .attributes = &[_]AttributeKeyValue{
+                    .attributes = &[_]api.AttributeKeyValue{
                         .{ .key = "instrument", .value = .{ .string = self.name } },
                     },
                     .timestamp_ns = @intCast(std.time.nanoTimestamp()),
                     .start_timestamp_ns = null,
                 };
 
-                try metrics.append(MetricData{
+                try metrics.append(sdk.MetricData{
                     .name = "otel.async_instrument.callback.executions",
                     .description = "Total number of callback executions",
                     .unit = "1",
@@ -1037,11 +1023,13 @@ pub fn SdkObservableUpDownCounter(comptime T: type) type {
 }
 
 test "observable instrument semantic differences" {
+    const MetricType = @import("data.zig").MetricType;
+
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const config = AsyncInstrumentConfig{
+    const config = sdk.AsyncInstrumentConfig{
         .error_policy = .log_continue,
         .max_measurements_per_callback = null,
         .warn_on_no_measurements = false,
@@ -1061,7 +1049,7 @@ test "observable instrument semantic differences" {
     };
 
     // Test Counter (sum type)
-    var counter = SdkObservableCounter(i64).init(allocator, "test.counter", "A test counter", "1", config);
+    var counter = ObservableCounter(i64).init(allocator, "test.counter", "A test counter", "1", config);
     defer counter.deinit();
 
     const counter_data = try counter.createMetricData(allocator, scope, resource);
@@ -1071,7 +1059,7 @@ test "observable instrument semantic differences" {
     try std.testing.expectEqualStrings("test.counter", counter_data.name);
 
     // Test Gauge (gauge type)
-    var gauge = SdkObservableGauge(f64).init(allocator, "test.gauge", "A test gauge", "°C", config);
+    var gauge = ObservableGauge(f64).init(allocator, "test.gauge", "A test gauge", "°C", config);
     defer gauge.deinit();
 
     const gauge_data = try gauge.createMetricData(allocator, scope, resource);
@@ -1081,7 +1069,7 @@ test "observable instrument semantic differences" {
     try std.testing.expectEqualStrings("test.gauge", gauge_data.name);
 
     // Test UpDownCounter (sum type)
-    var updown = SdkObservableUpDownCounter(i64).init(allocator, "test.updown", "A test up-down counter", "bytes", config);
+    var updown = ObservableUpDownCounter(i64).init(allocator, "test.updown", "A test up-down counter", "bytes", config);
     defer updown.deinit();
 
     const updown_data = try updown.createMetricData(allocator, scope, resource);
@@ -1096,7 +1084,7 @@ test "observable instrument metric value types" {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const config = AsyncInstrumentConfig{
+    const config = sdk.AsyncInstrumentConfig{
         .error_policy = .log_continue,
         .max_measurements_per_callback = null,
         .warn_on_no_measurements = false,
@@ -1104,18 +1092,18 @@ test "observable instrument metric value types" {
     };
 
     // Test that Counter uses i64_sum/f64_sum
-    var counter_i64 = SdkObservableCounter(i64).init(allocator, "test.counter.i64", null, null, config);
+    var counter_i64 = ObservableCounter(i64).init(allocator, "test.counter.i64", null, null, config);
     defer counter_i64.deinit();
 
     const TestCallback = struct {
         fn callback(result_ptr: *anyopaque, state: ?*anyopaque) void {
             _ = state;
-            const result: *ObservableResult(i64) = @ptrCast(@alignCast(result_ptr));
-            result.observe(42, &[_]AttributeKeyValue{}, null) catch {};
+            const result: *api.metrics.ObservableResult(i64) = @ptrCast(@alignCast(result_ptr));
+            result.observe(42, &[_]api.AttributeKeyValue{}, null) catch {};
         }
     };
 
-    const test_callback = TypeErasedCallback{
+    const test_callback = api.metrics.TypeErasedCallback{
         .callback_fn = TestCallback.callback,
         .state = null,
         .has_state = false,
@@ -1130,18 +1118,18 @@ test "observable instrument metric value types" {
     try std.testing.expectEqual(@as(i64, 42), counter_points[0].value.i64_sum);
 
     // Test that Gauge uses i64_gauge/f64_gauge
-    var gauge_f64 = SdkObservableGauge(f64).init(allocator, "test.gauge.f64", null, null, config);
+    var gauge_f64 = ObservableGauge(f64).init(allocator, "test.gauge.f64", null, null, config);
     defer gauge_f64.deinit();
 
     const TestCallbackF64 = struct {
         fn gaugeCallback(result_ptr: *anyopaque, state: ?*anyopaque) void {
             _ = state;
-            const result: *ObservableResult(f64) = @ptrCast(@alignCast(result_ptr));
-            result.observe(3.14, &[_]AttributeKeyValue{}, null) catch {};
+            const result: *api.metrics.ObservableResult(f64) = @ptrCast(@alignCast(result_ptr));
+            result.observe(3.14, &[_]api.AttributeKeyValue{}, null) catch {};
         }
     };
 
-    const callback_f64 = TypeErasedCallback{
+    const callback_f64 = api.metrics.TypeErasedCallback{
         .callback_fn = TestCallbackF64.gaugeCallback,
         .state = null,
         .has_state = false,
@@ -1156,7 +1144,7 @@ test "observable instrument metric value types" {
     try std.testing.expectEqual(@as(f64, 3.14), gauge_points[0].value.f64_gauge);
 
     // Test that UpDownCounter uses i64_sum/f64_sum
-    var updown_i64 = SdkObservableUpDownCounter(i64).init(allocator, "test.updown.i64", null, null, config);
+    var updown_i64 = ObservableUpDownCounter(i64).init(allocator, "test.updown.i64", null, null, config);
     defer updown_i64.deinit();
 
     _ = updown_i64.registerCallback(test_callback);
@@ -1214,12 +1202,12 @@ test "observable counter basic functionality" {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var counter = SdkObservableCounter(i64).init(
+    var counter = ObservableCounter(i64).init(
         allocator,
         "test_counter",
         "Test counter",
         "1",
-        AsyncInstrumentConfig.default(),
+        .default,
     );
     defer counter.deinit();
 
@@ -1229,17 +1217,17 @@ test "observable counter basic functionality" {
 
     // Test callback registration
     const TestCallback = struct {
-        fn callback(result: *ObservableResult(i64), state: *i32) void {
+        fn callback(result: *api.metrics.ObservableResult(i64), state: *i32) void {
             const value = state.*;
             result.observeValue(value) catch {};
         }
     };
 
     var state: i32 = 42;
-    const callback = TypeErasedCallback{
+    const callback = api.metrics.TypeErasedCallback{
         .callback_fn = struct {
             fn call(result_ptr: *anyopaque, state_ptr: ?*anyopaque) void {
-                const result: *ObservableResult(i64) = @ptrCast(@alignCast(result_ptr));
+                const result: *api.metrics.ObservableResult(i64) = @ptrCast(@alignCast(result_ptr));
                 const typed_state: *i32 = @ptrCast(@alignCast(state_ptr.?));
                 TestCallback.callback(result, typed_state);
             }

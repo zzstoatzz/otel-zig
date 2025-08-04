@@ -50,7 +50,7 @@ pub fn main() !void {
     // Set up metrics provider
     const metric_provider = try otel_sdk.metrics.setupGlobalProvider(
         allocator,
-        .{otel_sdk.metrics.BasicMetricProcessor.PipelineStep.init({})
+        .{otel_sdk.metrics.ManualReader.PipelineStep.init({})
             .flowTo(otel_exporters.console.ConsoleMetricExporter.PipelineStep.init(.{}))},
     );
     defer {

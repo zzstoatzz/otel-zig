@@ -1,34 +1,29 @@
 const std = @import("std");
-const metrics_api = @import("otel-api").metrics;
-const provider_registry = @import("otel-api").provider_registry;
-const metrics_processor = @import("processor.zig");
-const basic_periodic_processor = @import("basic_periodic_processor.zig");
-const meter_provider = @import("basic_provider.zig");
-const AttributeKeyValue = @import("otel-api").AttributeKeyValue;
-const Resource = @import("../resource/resource.zig").Resource;
-const ResourceBuilder = @import("../resource/resource.zig").ResourceBuilder;
-const detectResource = @import("../resource/detector.zig").detectResource;
-const MetricExporter = @import("exporter.zig").MetricExporter;
-const MetricProcessor = @import("processor.zig").MetricProcessor;
+const api = @import("otel-api");
+const sdk = struct {
+    const MeterProvider = @import("meter_provider.zig").MeterProvider;
+    const ResourceBuilder = @import("../resource/resource.zig").ResourceBuilder;
+    const detectResource = @import("../resource/detector.zig").detectResource;
+};
 
-const DefaultProvider = meter_provider.BasicMeterProvider;
+const DefaultProvider = sdk.MeterProvider;
 
 /// Create a default provider value with automatically detected resources.
 /// Returns provider by value - used internally by setupGlobalProvider.
 fn createDefaultProviderValue(allocator: std.mem.Allocator) !DefaultProvider {
     // Step 1: Detect resource
-    const detected_resource = try detectResource(allocator);
+    const detected_resource = try sdk.detectResource(allocator);
     defer detected_resource.deinitOwned(allocator);
 
     // Step 2: Merge resources
-    const merged_resource = try ResourceBuilder.init(allocator)
+    const merged_resource = try sdk.ResourceBuilder.init(allocator)
         .addResource(detected_resource)
         .withDefaults()
         .finish(allocator);
     errdefer merged_resource.deinitOwned(allocator);
 
     // Step 3: Create provider
-    return DefaultProvider.init(
+    return .init(
         allocator,
         merged_resource,
     );
@@ -54,7 +49,7 @@ pub fn setupGlobalProvider(allocator: std.mem.Allocator, links: anytype) !*Defau
     try builder.done();
 
     // 3. Register with global registry (it handles interface wrapper memory management)
-    try provider_registry.setGlobalMeterProvider(provider_ptr.meterProvider());
+    try api.provider_registry.setGlobalMeterProvider(provider_ptr.meterProvider());
 
     // 4. Return concrete provider pointer for caller management
     return provider_ptr;

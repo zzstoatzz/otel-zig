@@ -1,8 +1,9 @@
 const std = @import("std");
-const otel_api = @import("otel-api");
+const api = @import("otel-api");
 
-const ExportResult = @import("otel-api").common.ExportResult;
-const MetricData = @import("../metrics/data.zig").MetricData;
+const sdk = struct {
+    const MetricData = @import("../metrics/data.zig").MetricData;
+};
 
 /// Metric exporter interface
 pub const MetricExporter = union(enum) {
@@ -14,7 +15,7 @@ pub const MetricExporter = union(enum) {
     /// The caller is required to manage `metrics`. The exporter must be finished with
     /// the memory when this function returns. That includes making deep copies if
     /// necessary for buffering.
-    pub fn exportMetrics(self: *MetricExporter, metrics: []const MetricData) ExportResult {
+    pub fn exportMetrics(self: *MetricExporter, metrics: []const sdk.MetricData) api.common.ExportResult {
         return switch (self.*) {
             .noop => .success,
             .bridge => |exporter| exporter.exportFn(exporter, metrics),
@@ -22,7 +23,7 @@ pub const MetricExporter = union(enum) {
     }
 
     /// Force flush any buffered data
-    pub fn forceFlush(self: *MetricExporter, timeout_ms: ?u64) ExportResult {
+    pub fn forceFlush(self: *MetricExporter, timeout_ms: ?u64) api.common.ExportResult {
         return switch (self.*) {
             .noop => .success,
             .bridge => |exporter| exporter.forceFlushFn(exporter, timeout_ms),
@@ -30,7 +31,7 @@ pub const MetricExporter = union(enum) {
     }
 
     /// Shutdown the exporter
-    pub fn shutdown(self: *MetricExporter, timeout_ms: ?u64) ExportResult {
+    pub fn shutdown(self: *MetricExporter, timeout_ms: ?u64) api.common.ExportResult {
         return switch (self.*) {
             .noop => .success,
             .bridge => |exporter| exporter.shutdownFn(exporter, timeout_ms),
@@ -56,9 +57,9 @@ pub const MetricExporter = union(enum) {
 
 pub const BridgeMetricExporter = struct {
     exporter_ptr: *anyopaque,
-    exportFn: *const fn (ptr: BridgeMetricExporter, metrics: []const MetricData) ExportResult,
-    forceFlushFn: *const fn (ptr: BridgeMetricExporter, timeout_ms: ?u64) ExportResult,
-    shutdownFn: *const fn (ptr: BridgeMetricExporter, timeout_ms: ?u64) ExportResult,
+    exportFn: *const fn (ptr: BridgeMetricExporter, metrics: []const sdk.MetricData) api.common.ExportResult,
+    forceFlushFn: *const fn (ptr: BridgeMetricExporter, timeout_ms: ?u64) api.common.ExportResult,
+    shutdownFn: *const fn (ptr: BridgeMetricExporter, timeout_ms: ?u64) api.common.ExportResult,
     deinitFn: *const fn (self: BridgeMetricExporter) void,
     destroyFn: *const fn (ptr: *anyopaque) void,
 
@@ -67,15 +68,15 @@ pub const BridgeMetricExporter = struct {
         const ptr_info = @typeInfo(T);
 
         const VTable = struct {
-            pub fn exportMetrics(self: BridgeMetricExporter, metrics: []const MetricData) ExportResult {
+            pub fn exportMetrics(self: BridgeMetricExporter, metrics: []const sdk.MetricData) api.common.ExportResult {
                 const actual_self: T = @ptrCast(@alignCast(self.exporter_ptr));
                 return ptr_info.pointer.child.exportMetrics(actual_self, metrics);
             }
-            pub fn forceFlush(self: BridgeMetricExporter, timeout_ms: ?u64) ExportResult {
+            pub fn forceFlush(self: BridgeMetricExporter, timeout_ms: ?u64) api.common.ExportResult {
                 const actual_self: T = @ptrCast(@alignCast(self.exporter_ptr));
                 return ptr_info.pointer.child.forceFlush(actual_self, timeout_ms);
             }
-            pub fn shutdown(self: BridgeMetricExporter, timeout_ms: ?u64) ExportResult {
+            pub fn shutdown(self: BridgeMetricExporter, timeout_ms: ?u64) api.common.ExportResult {
                 const actual_self: T = @ptrCast(@alignCast(self.exporter_ptr));
                 return ptr_info.pointer.child.shutdown(actual_self, timeout_ms);
             }
@@ -118,18 +119,22 @@ pub const MockMetricExporter = struct {
     }
 
     allocator: std.mem.Allocator,
-    exported_metrics: std.ArrayList(MetricData),
-    export_result: ExportResult,
-    flush_result: ExportResult,
-    shutdown_result: ExportResult,
+    export_count: std.atomic.Value(u64),
+    exported_metrics: std.ArrayList(sdk.MetricData),
+    export_result: api.common.ExportResult,
+    flush_result: api.common.ExportResult,
+    shutdown_result: api.common.ExportResult,
+    mutex: std.Thread.Mutex,
 
     pub fn init(allocator: std.mem.Allocator) MockMetricExporter {
         return .{
             .allocator = allocator,
-            .exported_metrics = std.ArrayList(MetricData).init(allocator),
+            .exported_metrics = std.ArrayList(sdk.MetricData).init(allocator),
+            .export_count = .init(0),
             .export_result = .success,
             .flush_result = .success,
             .shutdown_result = .success,
+            .mutex = .{},
         };
     }
 
@@ -141,7 +146,12 @@ pub const MockMetricExporter = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn exportMetrics(self: *MockMetricExporter, metrics: []const MetricData) ExportResult {
+    pub fn exportMetrics(self: *MockMetricExporter, metrics: []const sdk.MetricData) api.common.ExportResult {
+        _ = self.export_count.fetchAdd(1, .acq_rel);
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         for (metrics) |metric| {
             // Deep copy the metric since the exporter needs to own the data
             self.exported_metrics.append(metric) catch return .failure;
@@ -149,12 +159,12 @@ pub const MockMetricExporter = struct {
         return self.export_result;
     }
 
-    pub fn forceFlush(self: *MockMetricExporter, timeout_ms: ?u64) ExportResult {
+    pub fn forceFlush(self: *MockMetricExporter, timeout_ms: ?u64) api.common.ExportResult {
         _ = timeout_ms;
         return self.flush_result;
     }
 
-    pub fn shutdown(self: *MockMetricExporter, timeout_ms: ?u64) ExportResult {
+    pub fn shutdown(self: *MockMetricExporter, timeout_ms: ?u64) api.common.ExportResult {
         _ = timeout_ms;
         return self.shutdown_result;
     }
@@ -165,14 +175,31 @@ pub const MockMetricExporter = struct {
 
     // Test helpers
     pub fn clearMetrics(self: *MockMetricExporter) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         self.exported_metrics.clearRetainingCapacity();
     }
 
-    pub fn metricCount(self: *const MockMetricExporter) usize {
+    pub fn metricCount(self: *MockMetricExporter) usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         return self.exported_metrics.items.len;
     }
 
-    pub fn getMetric(self: *const MockMetricExporter, index: usize) ?MetricData {
+    pub fn exportCount(self: *MockMetricExporter) u64 {
+        return self.export_count.load(.monotonic);
+    }
+
+    pub fn clearExportCount(self: *MockMetricExporter) void {
+        self.export_count.store(0, .release);
+    }
+
+    pub fn getMetric(self: *MockMetricExporter, index: usize) ?sdk.MetricData {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         if (index >= self.exported_metrics.items.len) return null;
         return self.exported_metrics.items[index];
     }
