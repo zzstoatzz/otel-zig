@@ -7,6 +7,10 @@ const sdk = struct {
     const PipelineBuilder = @import("../common/pipeline.zig").PipelineBuilder;
     const Meter = @import("meter.zig").Meter;
     const Reader = @import("reader.zig").Reader;
+    const View = @import("view.zig").View;
+    const ViewApplication = @import("view.zig").ViewApplication;
+    const AggregationType = @import("view.zig").AggregationType;
+    const InstrumentType = @import("metadata.zig").InstrumentType;
 };
 
 /// Basic meter provider with caching and configuration
@@ -16,6 +20,7 @@ pub const MeterProvider = struct {
     resource: sdk.Resource,
     cache: std.HashMapUnmanaged(api.InstrumentationScope, *sdk.Meter, sdk.InstrumentationScopeMapContext, 80),
     readers: std.ArrayListUnmanaged(sdk.Reader),
+    views: std.ArrayListUnmanaged(sdk.View),
     mutex: std.Thread.Mutex,
 
     pub fn init(
@@ -27,6 +32,7 @@ pub const MeterProvider = struct {
             .resource = resource,
             .cache = .empty,
             .readers = .empty,
+            .views = .empty,
             .mutex = .{},
         };
     }
@@ -56,8 +62,90 @@ pub const MeterProvider = struct {
         }
         self.readers.deinit(self.allocator);
 
+        // Clean up views
+        self.views.deinit(self.allocator);
+
         // Clean up the resource.
         self.resource.deinitOwned(self.allocator);
+    }
+
+    /// Add a view to this provider
+    /// Views are immutable after setupGlobalProvider is called
+    pub fn addView(self: *MeterProvider, view: sdk.View) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        try self.views.append(self.allocator, view);
+    }
+
+    /// Apply all registered views to an instrument, returning view applications
+    /// If no views match, returns a single default view application
+    pub fn applyViews(
+        self: *MeterProvider,
+        instrument_name: []const u8,
+        instrument_type: sdk.InstrumentType,
+        instrument_unit: []const u8,
+        instrument_description: ?[]const u8,
+        meter_name: []const u8,
+        meter_version: ?[]const u8,
+        meter_schema_url: ?[]const u8,
+        allocator: std.mem.Allocator,
+    ) ![]sdk.ViewApplication {
+        _ = instrument_description; // TODO: Use in view validation
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var applications = std.ArrayList(sdk.ViewApplication).init(allocator);
+        defer applications.deinit();
+
+        for (self.views.items) |view| {
+            if (view.instrument_selector.matches(
+                instrument_name,
+                instrument_type,
+                instrument_unit,
+                meter_name,
+                meter_version,
+                meter_schema_url,
+            )) {
+                // Validate aggregation compatibility
+                if (view.aggregation_override) |override_type| {
+                    if (!isAggregationCompatible(instrument_type, override_type)) {
+                        api.common.reportValidationError(.meter, "applyViews", "Incompatible aggregation type for instrument", null);
+                        continue; // Skip this view
+                    }
+                }
+
+                const app = sdk.ViewApplication{
+                    .view = view,
+                };
+                try applications.append(app);
+            }
+        }
+
+        // If no views matched, add default view
+        if (applications.items.len == 0) {
+            try applications.append(.{ .view = sdk.View.default });
+        }
+
+        return try applications.toOwnedSlice();
+    }
+
+    /// Check if an aggregation type is compatible with an instrument type
+    fn isAggregationCompatible(instrument_type: sdk.InstrumentType, aggregation_type: sdk.AggregationType) bool {
+        return switch (instrument_type) {
+            .Counter, .UpDownCounter, .ObservableCounter, .ObservableUpDownCounter => switch (aggregation_type) {
+                .sum, .drop => true,
+                else => false,
+            },
+            .Gauge, .ObservableGauge => switch (aggregation_type) {
+                .last_value, .drop => true,
+                else => false,
+            },
+            .Histogram, .ObservableHistogram => switch (aggregation_type) {
+                .histogram, .sum, .drop => true, // Histograms can be aggregated as sums
+                else => false,
+            },
+        };
     }
 
     /// Destroys the provider instance (assumes deinit() was already called)
@@ -85,7 +173,7 @@ pub const MeterProvider = struct {
         const sdk_meter = try self.allocator.create(sdk.Meter);
         errdefer self.allocator.destroy(sdk_meter);
 
-        sdk_meter.* = try sdk.Meter.init(self.allocator, owned_scope, self.resource);
+        sdk_meter.* = try sdk.Meter.init(self.allocator, owned_scope, self.resource, self);
 
         // Register the meter with the processor for collection
         //

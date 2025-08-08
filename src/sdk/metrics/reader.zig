@@ -11,6 +11,13 @@ const api = @import("otel-api");
 
 const sdk = struct {
     const BasicMeter = @import("meter.zig").Meter;
+    const MetricMetadata = @import("metadata.zig").MetricMetadata;
+};
+
+/// Union type for metric values to avoid generic anytype parameters
+pub const MetricValue = union(enum) {
+    i64: i64,
+    f64: f64,
 };
 
 /// Metric reader interface
@@ -68,6 +75,20 @@ pub const Reader = union(enum) {
             .bridge => |reader| reader.destroyFn(reader.reader_ptr),
         }
     }
+
+    /// Record a measurement from an instrument
+    pub fn recordMeasurement(
+        self: *Reader,
+        instrument: *anyopaque,
+        value: MetricValue,
+        attributes: []const api.AttributeKeyValue,
+        metadata: sdk.MetricMetadata,
+    ) void {
+        switch (self.*) {
+            .noop => {},
+            .bridge => |reader| reader.recordMeasurementFn(reader.reader_ptr, instrument, value, attributes, metadata),
+        }
+    }
 };
 
 /// Interface for bridging to a more complex reader.
@@ -80,6 +101,7 @@ pub const BridgeReader = struct {
     destroyFn: *const fn (reader_ptr: *anyopaque) void,
     registerMeterFn: *const fn (reader_ptr: *anyopaque, meter: *sdk.BasicMeter) void,
     unregisterMeterFn: *const fn (reader_ptr: *anyopaque, meter: *sdk.BasicMeter) void,
+    recordMeasurementFn: *const fn (reader_ptr: *anyopaque, instrument: *anyopaque, value: MetricValue, attributes: []const api.AttributeKeyValue, metadata: sdk.MetricMetadata) void,
 
     pub fn init(ptr: anytype) BridgeReader {
         const T = @TypeOf(ptr);
@@ -114,6 +136,10 @@ pub const BridgeReader = struct {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.unregisterMeter(self, meter);
             }
+            pub fn recordMeasurement(pointer: *anyopaque, instrument: *anyopaque, value: MetricValue, attributes: []const api.AttributeKeyValue, metadata: sdk.MetricMetadata) void {
+                const self: T = @ptrCast(@alignCast(pointer));
+                return ptr_info.pointer.child.recordMeasurement(self, instrument, value, attributes, metadata);
+            }
         };
 
         return .{
@@ -125,6 +151,7 @@ pub const BridgeReader = struct {
             .destroyFn = VTable.destroy,
             .registerMeterFn = VTable.registerMeter,
             .unregisterMeterFn = VTable.unregisterMeter,
+            .recordMeasurementFn = VTable.recordMeasurement,
         };
     }
 };

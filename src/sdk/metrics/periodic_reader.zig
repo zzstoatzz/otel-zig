@@ -17,6 +17,9 @@ const sdk = struct {
     const MetricData = @import("data.zig").MetricData;
     const Reader = @import("reader.zig").Reader;
     const MetricExporter = @import("exporter.zig").MetricExporter;
+    const ReaderAggregationState = @import("reader_aggregation_state.zig").ReaderAggregationState;
+    const MetricMetadata = @import("metadata.zig").MetricMetadata;
+    const MetricValue = @import("reader.zig").MetricValue;
 };
 
 /// Basic periodic metrics processor that collects metrics at regular intervals
@@ -48,6 +51,7 @@ pub const PeriodicReader = struct {
     thread: ?std.Thread,
     collection_interval_ms: u32,
     registered_meters: std.ArrayListUnmanaged(*sdk.Meter),
+    reader_state: sdk.ReaderAggregationState,
 
     /// Initialize a new basic periodic metrics processor
     /// collection_interval_ms: How often to collect metrics (default: 60000ms = 60s)
@@ -71,6 +75,11 @@ pub const PeriodicReader = struct {
             .thread = null,
             .collection_interval_ms = collection_interval_ms orelse 60000, // 60 seconds default
             .registered_meters = .{},
+            .reader_state = sdk.ReaderAggregationState.init(
+                allocator,
+                .Delta, // Default to Delta temporality for now
+                @import("reader_aggregation_state.zig").defaultAggregationSelector,
+            ),
         };
     }
 
@@ -103,6 +112,7 @@ pub const PeriodicReader = struct {
         }
 
         // Clean up resources
+        self.reader_state.deinit();
         self.registered_meters.deinit(self.allocator);
         if (self.exporter) |exporter| {
             exporter.deinit();
@@ -113,6 +123,16 @@ pub const PeriodicReader = struct {
     /// Destroy the processor and free its memory
     pub fn destroy(self: *PeriodicReader) void {
         self.allocator.destroy(self);
+    }
+
+    pub fn recordMeasurement(
+        self: *PeriodicReader,
+        instrument: *anyopaque,
+        value: sdk.MetricValue,
+        attributes: []const api.AttributeKeyValue,
+        metadata: sdk.MetricMetadata,
+    ) void {
+        self.reader_state.recordMeasurement(instrument, value, attributes, metadata);
     }
 
     /// Collect metrics from all registered meters (called by background thread)
@@ -126,22 +146,118 @@ pub const PeriodicReader = struct {
 
         if (self.is_shutdown.load(.acquire)) return;
 
-        // Initialize collection data structure
+        // Collect from reader state (regular instruments)
         var collected_metrics = std.ArrayList(sdk.MetricData).init(arena_allocator);
 
-        // Iterate through registered meters
-        for (self.registered_meters.items) |meter| {
-            // Collect from each meter, continue on errors
-            const meter_metrics = meter.collectMetrics(arena_allocator) catch {
-                // Log error if needed, but continue with next meter
-                continue;
-            };
+        const reader_state_metrics = self.reader_state.collect(arena_allocator) catch {
+            // Log error if needed
+            return;
+        };
+        collected_metrics.appendSlice(reader_state_metrics) catch return;
 
-            // Append to main collection, continue on errors
-            collected_metrics.appendSlice(meter_metrics) catch {
-                // Could log allocation failure, but continue
-                continue;
-            };
+        // Collect from observable instruments in registered meters
+        for (self.registered_meters.items) |meter| {
+            // Collect from i64 observable counters
+            for (meter.observable_counters_i64.items) |obs_counter| {
+                const data_points = obs_counter.collect(arena_allocator) catch continue;
+                if (data_points.len > 0) {
+                    const metric_data = sdk.MetricData{
+                        .name = obs_counter.name,
+                        .description = obs_counter.description,
+                        .unit = obs_counter.unit,
+                        .type = .sum,
+                        .data_points = data_points,
+                        .scope = meter.scope,
+                        .resource = meter.resource,
+                    };
+                    collected_metrics.append(metric_data) catch continue;
+                }
+            }
+
+            // Collect from f64 observable counters
+            for (meter.observable_counters_f64.items) |obs_counter| {
+                const data_points = obs_counter.collect(arena_allocator) catch continue;
+                if (data_points.len > 0) {
+                    const metric_data = sdk.MetricData{
+                        .name = obs_counter.name,
+                        .description = obs_counter.description,
+                        .unit = obs_counter.unit,
+                        .type = .sum,
+                        .data_points = data_points,
+                        .scope = meter.scope,
+                        .resource = meter.resource,
+                    };
+                    collected_metrics.append(metric_data) catch continue;
+                }
+            }
+
+            // Collect from i64 observable gauges
+            for (meter.observable_gauges_i64.items) |obs_gauge| {
+                const data_points = obs_gauge.collect(arena_allocator) catch continue;
+                if (data_points.len > 0) {
+                    const metric_data = sdk.MetricData{
+                        .name = obs_gauge.name,
+                        .description = obs_gauge.description,
+                        .unit = obs_gauge.unit,
+                        .type = .gauge,
+                        .data_points = data_points,
+                        .scope = meter.scope,
+                        .resource = meter.resource,
+                    };
+                    collected_metrics.append(metric_data) catch continue;
+                }
+            }
+
+            // Collect from f64 observable gauges
+            for (meter.observable_gauges_f64.items) |obs_gauge| {
+                const data_points = obs_gauge.collect(arena_allocator) catch continue;
+                if (data_points.len > 0) {
+                    const metric_data = sdk.MetricData{
+                        .name = obs_gauge.name,
+                        .description = obs_gauge.description,
+                        .unit = obs_gauge.unit,
+                        .type = .gauge,
+                        .data_points = data_points,
+                        .scope = meter.scope,
+                        .resource = meter.resource,
+                    };
+                    collected_metrics.append(metric_data) catch continue;
+                }
+            }
+
+            // Collect from i64 observable up-down counters
+            for (meter.observable_updown_counters_i64.items) |obs_updown| {
+                const data_points = obs_updown.collect(arena_allocator) catch continue;
+                if (data_points.len > 0) {
+                    const metric_data = sdk.MetricData{
+                        .name = obs_updown.name,
+                        .description = obs_updown.description,
+                        .unit = obs_updown.unit,
+                        .type = .sum,
+                        .data_points = data_points,
+                        .scope = meter.scope,
+                        .resource = meter.resource,
+                    };
+                    collected_metrics.append(metric_data) catch continue;
+                }
+            }
+
+            // Collect from f64 observable up-down counters
+            for (meter.observable_updown_counters_f64.items) |obs_updown| {
+                const data_points = obs_updown.collect(arena_allocator) catch continue;
+                if (data_points.len > 0) {
+                    const metric_data = sdk.MetricData{
+                        .name = obs_updown.name,
+                        .description = obs_updown.description,
+                        .unit = obs_updown.unit,
+                        .type = .sum,
+                        .data_points = data_points,
+                        .scope = meter.scope,
+                        .resource = meter.resource,
+                    };
+                    collected_metrics.append(metric_data) catch continue;
+                }
+            }
         }
 
         // Export all collected metrics. Exporter must copy memory
@@ -221,12 +337,117 @@ pub const PeriodicReader = struct {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
 
+        // Collect from reader state (regular instruments)
         var collected_metrics = std.ArrayList(sdk.MetricData).init(arena.allocator());
 
-        // Collect from all meters
+        const reader_state_metrics = self.reader_state.collect(arena.allocator()) catch {
+            return .failure;
+        };
+        collected_metrics.appendSlice(reader_state_metrics) catch return .failure;
+
+        // Collect from observable instruments in registered meters
         for (self.registered_meters.items) |meter| {
-            const meter_metrics = meter.collectMetrics(arena.allocator()) catch continue;
-            collected_metrics.appendSlice(meter_metrics) catch continue;
+            // Collect from i64 observable counters
+            for (meter.observable_counters_i64.items) |obs_counter| {
+                const data_points = obs_counter.collect(arena.allocator()) catch continue;
+                if (data_points.len > 0) {
+                    const metric_data = sdk.MetricData{
+                        .name = obs_counter.name,
+                        .description = obs_counter.description,
+                        .unit = obs_counter.unit,
+                        .type = .sum,
+                        .data_points = data_points,
+                        .scope = meter.scope,
+                        .resource = meter.resource,
+                    };
+                    collected_metrics.append(metric_data) catch continue;
+                }
+            }
+
+            // Collect from f64 observable counters
+            for (meter.observable_counters_f64.items) |obs_counter| {
+                const data_points = obs_counter.collect(arena.allocator()) catch continue;
+                if (data_points.len > 0) {
+                    const metric_data = sdk.MetricData{
+                        .name = obs_counter.name,
+                        .description = obs_counter.description,
+                        .unit = obs_counter.unit,
+                        .type = .sum,
+                        .data_points = data_points,
+                        .scope = meter.scope,
+                        .resource = meter.resource,
+                    };
+                    collected_metrics.append(metric_data) catch continue;
+                }
+            }
+
+            // Collect from i64 observable gauges
+            for (meter.observable_gauges_i64.items) |obs_gauge| {
+                const data_points = obs_gauge.collect(arena.allocator()) catch continue;
+                if (data_points.len > 0) {
+                    const metric_data = sdk.MetricData{
+                        .name = obs_gauge.name,
+                        .description = obs_gauge.description,
+                        .unit = obs_gauge.unit,
+                        .type = .gauge,
+                        .data_points = data_points,
+                        .scope = meter.scope,
+                        .resource = meter.resource,
+                    };
+                    collected_metrics.append(metric_data) catch continue;
+                }
+            }
+
+            // Collect from f64 observable gauges
+            for (meter.observable_gauges_f64.items) |obs_gauge| {
+                const data_points = obs_gauge.collect(arena.allocator()) catch continue;
+                if (data_points.len > 0) {
+                    const metric_data = sdk.MetricData{
+                        .name = obs_gauge.name,
+                        .description = obs_gauge.description,
+                        .unit = obs_gauge.unit,
+                        .type = .gauge,
+                        .data_points = data_points,
+                        .scope = meter.scope,
+                        .resource = meter.resource,
+                    };
+                    collected_metrics.append(metric_data) catch continue;
+                }
+            }
+
+            // Collect from i64 observable up-down counters
+            for (meter.observable_updown_counters_i64.items) |obs_updown| {
+                const data_points = obs_updown.collect(arena.allocator()) catch continue;
+                if (data_points.len > 0) {
+                    const metric_data = sdk.MetricData{
+                        .name = obs_updown.name,
+                        .description = obs_updown.description,
+                        .unit = obs_updown.unit,
+                        .type = .sum,
+                        .data_points = data_points,
+                        .scope = meter.scope,
+                        .resource = meter.resource,
+                    };
+                    collected_metrics.append(metric_data) catch continue;
+                }
+            }
+
+            // Collect from f64 observable up-down counters
+            for (meter.observable_updown_counters_f64.items) |obs_updown| {
+                const data_points = obs_updown.collect(arena.allocator()) catch continue;
+                if (data_points.len > 0) {
+                    const metric_data = sdk.MetricData{
+                        .name = obs_updown.name,
+                        .description = obs_updown.description,
+                        .unit = obs_updown.unit,
+                        .type = .sum,
+                        .data_points = data_points,
+                        .scope = meter.scope,
+                        .resource = meter.resource,
+                    };
+                    collected_metrics.append(metric_data) catch continue;
+                }
+            }
         }
 
         // Update last collection time atomically
@@ -388,7 +609,7 @@ test "BasicPeriodicProcessor - direct init vs pipeline init thread behavior" {
     const scope = try api.InstrumentationScope.initSimple("test.meter", "1.0.0");
     const resource = Resource.empty;
     const basic_meter = try allocator.create(sdk.Meter);
-    basic_meter.* = try sdk.Meter.init(allocator, scope, resource);
+    basic_meter.* = try sdk.Meter.init(allocator, scope, resource, null);
     defer {
         basic_meter.deinit();
         allocator.destroy(basic_meter);
@@ -407,7 +628,7 @@ test "BasicPeriodicProcessor - direct init vs pipeline init thread behavior" {
     // Create a second meter
     const scope2 = try api.InstrumentationScope.initSimple("test.meter2", "1.0.0");
     const basic_meter2 = try allocator.create(sdk.Meter);
-    basic_meter2.* = try sdk.Meter.init(allocator, scope2, resource);
+    basic_meter2.* = try sdk.Meter.init(allocator, scope2, resource, null);
     defer {
         basic_meter2.deinit();
         allocator.destroy(basic_meter2);

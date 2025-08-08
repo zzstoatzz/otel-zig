@@ -24,6 +24,7 @@ pub fn basicProcessorDemo(allocator: std.mem.Allocator) !void {
         allocator,
         .{otel_sdk.metrics.ManualReader.PipelineStep.init({})
             .flowTo(otel_exporters.otlp.OtlpMetricExporter.PipelineStep.init(.{}))},
+        .{},
     );
     defer {
         concrete_provider.deinit();
@@ -159,6 +160,7 @@ pub fn advancedProcessorDemo(allocator: std.mem.Allocator) !void {
         allocator,
         .{otel_sdk.metrics.PeriodicReader.PipelineStep.init(5000)
             .flowTo(otel_exporters.otlp.OtlpMetricExporter.PipelineStep.init(.{}))},
+        .{},
     );
     defer {
         concrete_provider.deinit();

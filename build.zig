@@ -337,6 +337,21 @@ pub fn build(b: *std.Build) void {
     const metrics_histogram_step = b.step("example-metrics-histogram", "Run metrics histogram example");
     metrics_histogram_step.dependOn(&run_metrics_histogram.step);
 
+    // View System Demo Example
+    const view_system_demo_example = b.addExecutable(.{
+        .name = "view_system_demo",
+        .root_source_file = b.path("examples/view_system_demo.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    view_system_demo_example.root_module.addImport("otel-api", otel_api_mod);
+    view_system_demo_example.root_module.addImport("otel-sdk", otel_sdk_mod);
+    view_system_demo_example.root_module.addImport("otel-exporters", otel_exporters_mod);
+
+    const run_view_system_demo = b.addRunArtifact(view_system_demo_example);
+    const view_system_demo_step = b.step("example-view-system", "Run view system demo example");
+    view_system_demo_step.dependOn(&run_view_system_demo.step);
+
     // Observable Metrics Demo Example
     const observable_metrics_demo_example = b.addExecutable(.{
         .name = "observable_metrics_demo",
@@ -598,6 +613,7 @@ pub fn build(b: *std.Build) void {
     examples_step.dependOn(&run_logs_batch.step);
     examples_step.dependOn(&run_metrics_demo.step);
     examples_step.dependOn(&run_metrics_histogram.step);
+    examples_step.dependOn(&run_view_system_demo.step);
     examples_step.dependOn(&run_metrics_comprehensive_otlp.step);
     examples_step.dependOn(&run_simple_trace_sdk.step);
     examples_step.dependOn(&run_comprehensive_trace_sdk.step);

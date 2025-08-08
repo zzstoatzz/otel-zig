@@ -14,6 +14,9 @@ const sdk = struct {
     const MetricExporter = @import("exporter.zig").MetricExporter;
     const Reader = @import("reader.zig").Reader;
     const MetricData = @import("data.zig").MetricData;
+    const ReaderAggregationState = @import("reader_aggregation_state.zig").ReaderAggregationState;
+    const MetricMetadata = @import("metadata.zig").MetricMetadata;
+    const MetricValue = @import("reader.zig").MetricValue;
 };
 
 /// Basic log processor implementation.
@@ -37,6 +40,7 @@ pub const ManualReader = struct {
     mutex: std.Thread.Mutex,
     is_shutdown: bool,
     registered_meters: std.ArrayListUnmanaged(*sdk.Meter),
+    reader_state: sdk.ReaderAggregationState,
 
     pub fn init(allocator: std.mem.Allocator, exporter: ?sdk.MetricExporter) ManualReader {
         return .{
@@ -45,10 +49,16 @@ pub const ManualReader = struct {
             .mutex = .{},
             .is_shutdown = false,
             .registered_meters = .{},
+            .reader_state = sdk.ReaderAggregationState.init(
+                allocator,
+                .Delta, // Default to Delta temporality for now
+                @import("reader_aggregation_state.zig").defaultAggregationSelector,
+            ),
         };
     }
 
     pub fn deinit(self: *ManualReader) void {
+        self.reader_state.deinit();
         self.registered_meters.deinit(self.allocator);
         if (self.exporter) |exporter| {
             exporter.deinit();
@@ -68,6 +78,16 @@ pub const ManualReader = struct {
         self.exporter = exporter;
     }
 
+    pub fn recordMeasurement(
+        self: *ManualReader,
+        instrument: *anyopaque,
+        value: sdk.MetricValue,
+        attributes: []const api.AttributeKeyValue,
+        metadata: sdk.MetricMetadata,
+    ) void {
+        self.reader_state.recordMeasurement(instrument, value, attributes, metadata);
+    }
+
     pub fn collect(self: *ManualReader) void {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
@@ -76,22 +96,118 @@ pub const ManualReader = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        // Initialize collection data structure
+        // Collect from reader state (regular instruments)
         var collected_metrics = std.ArrayList(sdk.MetricData).init(arena_allocator);
 
-        // Iterate through registered meters
-        for (self.registered_meters.items) |meter| {
-            // Collect from each meter, continue on errors
-            const meter_metrics = meter.collectMetrics(arena_allocator) catch {
-                // Log error if needed, but continue with next meter
-                continue;
-            };
+        const reader_state_metrics = self.reader_state.collect(arena_allocator) catch {
+            // Log error if needed
+            return;
+        };
+        collected_metrics.appendSlice(reader_state_metrics) catch return;
 
-            // Append to main collection, continue on errors
-            collected_metrics.appendSlice(meter_metrics) catch {
-                // Could log allocation failure, but continue
-                continue;
-            };
+        // Collect from observable instruments in registered meters
+        for (self.registered_meters.items) |meter| {
+            // Collect from i64 observable counters
+            for (meter.observable_counters_i64.items) |obs_counter| {
+                const data_points = obs_counter.collect(arena_allocator) catch continue;
+                if (data_points.len > 0) {
+                    const metric_data = sdk.MetricData{
+                        .name = obs_counter.name,
+                        .description = obs_counter.description,
+                        .unit = obs_counter.unit,
+                        .type = .sum,
+                        .data_points = data_points,
+                        .scope = meter.scope,
+                        .resource = meter.resource,
+                    };
+                    collected_metrics.append(metric_data) catch continue;
+                }
+            }
+
+            // Collect from f64 observable counters
+            for (meter.observable_counters_f64.items) |obs_counter| {
+                const data_points = obs_counter.collect(arena_allocator) catch continue;
+                if (data_points.len > 0) {
+                    const metric_data = sdk.MetricData{
+                        .name = obs_counter.name,
+                        .description = obs_counter.description,
+                        .unit = obs_counter.unit,
+                        .type = .sum,
+                        .data_points = data_points,
+                        .scope = meter.scope,
+                        .resource = meter.resource,
+                    };
+                    collected_metrics.append(metric_data) catch continue;
+                }
+            }
+
+            // Collect from i64 observable gauges
+            for (meter.observable_gauges_i64.items) |obs_gauge| {
+                const data_points = obs_gauge.collect(arena_allocator) catch continue;
+                if (data_points.len > 0) {
+                    const metric_data = sdk.MetricData{
+                        .name = obs_gauge.name,
+                        .description = obs_gauge.description,
+                        .unit = obs_gauge.unit,
+                        .type = .gauge,
+                        .data_points = data_points,
+                        .scope = meter.scope,
+                        .resource = meter.resource,
+                    };
+                    collected_metrics.append(metric_data) catch continue;
+                }
+            }
+
+            // Collect from f64 observable gauges
+            for (meter.observable_gauges_f64.items) |obs_gauge| {
+                const data_points = obs_gauge.collect(arena_allocator) catch continue;
+                if (data_points.len > 0) {
+                    const metric_data = sdk.MetricData{
+                        .name = obs_gauge.name,
+                        .description = obs_gauge.description,
+                        .unit = obs_gauge.unit,
+                        .type = .gauge,
+                        .data_points = data_points,
+                        .scope = meter.scope,
+                        .resource = meter.resource,
+                    };
+                    collected_metrics.append(metric_data) catch continue;
+                }
+            }
+
+            // Collect from i64 observable up-down counters
+            for (meter.observable_updown_counters_i64.items) |obs_updown| {
+                const data_points = obs_updown.collect(arena_allocator) catch continue;
+                if (data_points.len > 0) {
+                    const metric_data = sdk.MetricData{
+                        .name = obs_updown.name,
+                        .description = obs_updown.description,
+                        .unit = obs_updown.unit,
+                        .type = .sum,
+                        .data_points = data_points,
+                        .scope = meter.scope,
+                        .resource = meter.resource,
+                    };
+                    collected_metrics.append(metric_data) catch continue;
+                }
+            }
+
+            // Collect from f64 observable up-down counters
+            for (meter.observable_updown_counters_f64.items) |obs_updown| {
+                const data_points = obs_updown.collect(arena_allocator) catch continue;
+                if (data_points.len > 0) {
+                    const metric_data = sdk.MetricData{
+                        .name = obs_updown.name,
+                        .description = obs_updown.description,
+                        .unit = obs_updown.unit,
+                        .type = .sum,
+                        .data_points = data_points,
+                        .scope = meter.scope,
+                        .resource = meter.resource,
+                    };
+                    collected_metrics.append(metric_data) catch continue;
+                }
+            }
         }
 
         // Export all collected metrics. Exporter must copy memory

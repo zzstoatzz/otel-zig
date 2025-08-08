@@ -26,6 +26,13 @@ pub const MetricValue = data_zig.MetricValue;
 pub const I64HistogramData = data_zig.I64HistogramData;
 pub const F64HistogramData = data_zig.F64HistogramData;
 
+// View system exports
+const view_zig = @import("view.zig");
+pub const View = view_zig.View;
+pub const ViewApplication = view_zig.ViewApplication;
+pub const InstrumentSelector = view_zig.InstrumentSelector;
+pub const AggregationType = view_zig.AggregationType;
+
 // Exporter types.
 const exporter_zig = @import("exporter.zig");
 pub const MetricExporter = exporter_zig.MetricExporter;
@@ -44,6 +51,7 @@ pub const CallbackMetrics = async_instrument_zig.CallbackMetrics;
 
 // Re-export the setup helper functions
 pub const setupGlobalProvider = @import("setup.zig").setupGlobalProvider;
+pub const setupGlobalProviderWithViews = @import("setup.zig").setupGlobalProviderWithViews;
 
 test {
     _ = @import("test.zig");

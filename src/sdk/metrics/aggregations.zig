@@ -5,6 +5,8 @@
 
 const std = @import("std");
 
+const InstrumentType = @import("metadata.zig").InstrumentType;
+
 pub const DEFAULT_HISTOGRAM_BOUNDARIES = [_]f64{
     0.0,   5.0,   10.0,   25.0,   50.0,   75.0,   100.0,   250.0,
     500.0, 750.0, 1000.0, 2500.0, 5000.0, 7500.0, 10000.0,
@@ -19,22 +21,30 @@ pub const HistogramAggregationConfig = struct {
 /// Simple aggregation state for sum aggregation
 pub fn SumAggregation(comptime T: type) type {
     return struct {
-        value: T,
+        value: std.atomic.Value(T),
         start_timestamp_ns: u64,
+
+        // Metadata fields for Phase 1b preparation
+        instrument_name: []const u8,
+        instrument_type: InstrumentType,
+        instrument_unit: []const u8,
 
         pub fn init() @This() {
             return .{
-                .value = 0,
+                .value = std.atomic.Value(T).init(0),
                 .start_timestamp_ns = @intCast(std.time.nanoTimestamp()),
+                .instrument_name = "",
+                .instrument_type = .Counter,
+                .instrument_unit = "",
             };
         }
 
         pub fn add(self: *@This(), value: T) void {
-            self.value += value;
+            _ = self.value.fetchAdd(value, .monotonic);
         }
 
         pub fn getValue(self: *const @This()) T {
-            return self.value;
+            return self.value.load(.monotonic);
         }
 
         pub fn getStartTime(self: *const @This()) u64 {
@@ -42,7 +52,7 @@ pub fn SumAggregation(comptime T: type) type {
         }
 
         pub fn reset(self: *@This()) void {
-            self.value = 0;
+            self.value.store(0, .monotonic);
             self.start_timestamp_ns = @intCast(std.time.nanoTimestamp());
         }
     };
@@ -51,22 +61,39 @@ pub fn SumAggregation(comptime T: type) type {
 /// Simple aggregation state for last value aggregation
 pub fn LastValueAggregation(comptime T: type) type {
     return struct {
-        value: ?T,
+        has_value: std.atomic.Value(bool),
+        value: std.atomic.Value(T),
+
+        // Metadata fields for Phase 1b preparation
+        instrument_name: []const u8,
+        instrument_type: InstrumentType,
+        instrument_unit: []const u8,
 
         pub fn init() @This() {
-            return .{ .value = null };
+            return .{
+                .has_value = std.atomic.Value(bool).init(false),
+                .value = std.atomic.Value(T).init(0),
+                .instrument_name = "",
+                .instrument_type = .Gauge,
+                .instrument_unit = "",
+            };
         }
 
         pub fn record(self: *@This(), value: T) void {
-            self.value = value;
+            self.value.store(value, .monotonic);
+            self.has_value.store(true, .monotonic);
         }
 
         pub fn getValue(self: *const @This()) ?T {
-            return self.value;
+            if (self.has_value.load(.monotonic)) {
+                return self.value.load(.monotonic);
+            }
+            return null;
         }
 
         pub fn reset(self: *@This()) void {
-            self.value = null;
+            self.has_value.store(false, .monotonic);
+            self.value.store(0, .monotonic);
         }
     };
 }
@@ -75,27 +102,41 @@ pub fn LastValueAggregation(comptime T: type) type {
 pub fn HistogramAggregation(comptime T: type) type {
     return struct {
         boundaries: []const f64,
-        counts: []u64,
-        sum: T,
-        count: u64,
-        min: ?T,
-        max: ?T,
+        counts: []std.atomic.Value(u64),
+        sum: std.atomic.Value(T),
+        count: std.atomic.Value(u64),
+        has_min: std.atomic.Value(bool),
+        min: std.atomic.Value(T),
+        has_max: std.atomic.Value(bool),
+        max: std.atomic.Value(T),
         start_timestamp_ns: u64,
         record_min_max: bool,
 
+        // Metadata fields for Phase 1b preparation
+        instrument_name: []const u8,
+        instrument_type: InstrumentType,
+        instrument_unit: []const u8,
+
         pub fn init(allocator: std.mem.Allocator, config: HistogramAggregationConfig) !@This() {
-            const counts = try allocator.alloc(u64, config.boundaries.len + 1);
-            @memset(counts, 0);
+            const counts = try allocator.alloc(std.atomic.Value(u64), config.boundaries.len + 1);
+            for (counts) |*count| {
+                count.* = std.atomic.Value(u64).init(0);
+            }
 
             return .{
                 .boundaries = config.boundaries,
                 .counts = counts,
-                .sum = 0,
-                .count = 0,
-                .min = null,
-                .max = null,
+                .sum = std.atomic.Value(T).init(0),
+                .count = std.atomic.Value(u64).init(0),
+                .has_min = std.atomic.Value(bool).init(false),
+                .min = std.atomic.Value(T).init(0),
+                .has_max = std.atomic.Value(bool).init(false),
+                .max = std.atomic.Value(T).init(0),
                 .start_timestamp_ns = @intCast(std.time.nanoTimestamp()),
                 .record_min_max = config.record_min_max,
+                .instrument_name = "",
+                .instrument_type = .Histogram,
+                .instrument_unit = "",
             };
         }
 
@@ -104,25 +145,35 @@ pub fn HistogramAggregation(comptime T: type) type {
         }
 
         pub fn record(self: *@This(), value: T) void {
-            self.count += 1;
-            self.sum += value;
+            // Atomic operations for sum and count
+            _ = self.count.fetchAdd(1, .monotonic);
+            _ = self.sum.fetchAdd(value, .monotonic);
 
             if (self.record_min_max) {
-                if (self.min) |min| {
-                    self.min = @min(min, value);
+                // Simple atomic min/max (not fully lock-free for f64, but functional)
+                if (self.has_min.load(.monotonic)) {
+                    const current_min = self.min.load(.monotonic);
+                    if (value < current_min) {
+                        self.min.store(value, .monotonic);
+                    }
                 } else {
-                    self.min = value;
+                    self.min.store(value, .monotonic);
+                    self.has_min.store(true, .monotonic);
                 }
 
-                if (self.max) |max| {
-                    self.max = @max(max, value);
+                if (self.has_max.load(.monotonic)) {
+                    const current_max = self.max.load(.monotonic);
+                    if (value > current_max) {
+                        self.max.store(value, .monotonic);
+                    }
                 } else {
-                    self.max = value;
+                    self.max.store(value, .monotonic);
+                    self.has_max.store(true, .monotonic);
                 }
             }
 
             const bucket_index = self.findBucketIndex(value);
-            self.counts[bucket_index] += 1;
+            _ = self.counts[bucket_index].fetchAdd(1, .monotonic);
         }
 
         pub fn findBucketIndex(self: *const @This(), value: T) usize {
@@ -148,26 +199,32 @@ pub fn HistogramAggregation(comptime T: type) type {
         }
 
         pub fn getSum(self: *const @This()) T {
-            return self.sum;
+            return self.sum.load(.monotonic);
         }
 
         pub fn getCount(self: *const @This()) u64 {
-            return self.count;
+            return self.count.load(.monotonic);
         }
 
         pub fn getMin(self: *const @This()) ?T {
-            return self.min;
+            if (self.has_min.load(.monotonic)) {
+                return self.min.load(.monotonic);
+            }
+            return null;
         }
 
         pub fn getMax(self: *const @This()) ?T {
-            return self.max;
+            if (self.has_max.load(.monotonic)) {
+                return self.max.load(.monotonic);
+            }
+            return null;
         }
 
         pub fn getBoundaries(self: *const @This()) []const f64 {
             return self.boundaries;
         }
 
-        pub fn getCounts(self: *const @This()) []const u64 {
+        pub fn getCounts(self: *const @This()) []const std.atomic.Value(u64) {
             return self.counts;
         }
 
@@ -176,11 +233,15 @@ pub fn HistogramAggregation(comptime T: type) type {
         }
 
         pub fn reset(self: *@This()) void {
-            @memset(self.counts, 0);
-            self.sum = 0;
-            self.count = 0;
-            self.min = null;
-            self.max = null;
+            for (self.counts) |*count| {
+                count.store(0, .monotonic);
+            }
+            self.sum.store(0, .monotonic);
+            self.count.store(0, .monotonic);
+            self.has_min.store(false, .monotonic);
+            self.min.store(0, .monotonic);
+            self.has_max.store(false, .monotonic);
+            self.max.store(0, .monotonic);
             self.start_timestamp_ns = @intCast(std.time.nanoTimestamp());
         }
     };
