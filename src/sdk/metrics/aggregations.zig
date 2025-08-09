@@ -18,24 +18,16 @@ pub const HistogramAggregationConfig = struct {
     record_min_max: bool = true,
 };
 
-/// Simple aggregation state for sum aggregation
+/// Aggregation state for sum aggregation
 pub fn SumAggregation(comptime T: type) type {
     return struct {
-        value: std.atomic.Value(T),
+        value: std.atomic.Value(T) = .init(0),
         start_timestamp_ns: u64,
-
-        // Metadata fields for Phase 1b preparation
-        instrument_name: []const u8,
-        instrument_type: InstrumentType,
-        instrument_unit: []const u8,
 
         pub fn init() @This() {
             return .{
-                .value = std.atomic.Value(T).init(0),
+                .value = .init(0),
                 .start_timestamp_ns = @intCast(std.time.nanoTimestamp()),
-                .instrument_name = "",
-                .instrument_type = .Counter,
-                .instrument_unit = "",
             };
         }
 
@@ -58,41 +50,35 @@ pub fn SumAggregation(comptime T: type) type {
     };
 }
 
-/// Simple aggregation state for last value aggregation
+/// Aggregation state for last value aggregation
 pub fn LastValueAggregation(comptime T: type) type {
     return struct {
-        has_value: std.atomic.Value(bool),
-        value: std.atomic.Value(T),
-
-        // Metadata fields for Phase 1b preparation
-        instrument_name: []const u8,
-        instrument_type: InstrumentType,
-        instrument_unit: []const u8,
+        // zig doesn't support `?(i64|f64)` with atomic.
+        // zig only supports powers of 2 for the bit length with atomic.
+        /// the 65th bit is the optional flag; 0 == null; 1 == value
+        value: std.atomic.Value(u128) = .init(0),
 
         pub fn init() @This() {
             return .{
-                .has_value = std.atomic.Value(bool).init(false),
-                .value = std.atomic.Value(T).init(0),
-                .instrument_name = "",
-                .instrument_type = .Gauge,
-                .instrument_unit = "",
+                .value = .init(0),
             };
         }
 
         pub fn record(self: *@This(), value: T) void {
-            self.value.store(value, .monotonic);
-            self.has_value.store(true, .monotonic);
+            const bits: u64 = @bitCast(value);
+            const guarded: u128 = @as(u128, bits) | (1 << 64);
+            self.value.store(guarded, .monotonic);
         }
 
         pub fn getValue(self: *const @This()) ?T {
-            if (self.has_value.load(.monotonic)) {
-                return self.value.load(.monotonic);
-            }
-            return null;
+            const guarded = self.value.load(.monotonic);
+            return if (guarded & (1 << 64) == 0)
+                null
+            else
+                @bitCast(@as(u64, @truncate(guarded)));
         }
 
         pub fn reset(self: *@This()) void {
-            self.has_value.store(false, .monotonic);
             self.value.store(0, .monotonic);
         }
     };
@@ -103,19 +89,14 @@ pub fn HistogramAggregation(comptime T: type) type {
     return struct {
         boundaries: []const f64,
         counts: []std.atomic.Value(u64),
-        sum: std.atomic.Value(T),
-        count: std.atomic.Value(u64),
-        has_min: std.atomic.Value(bool),
-        min: std.atomic.Value(T),
-        has_max: std.atomic.Value(bool),
-        max: std.atomic.Value(T),
+        sum: std.atomic.Value(T) = .init(0),
+        count: std.atomic.Value(u64) = .init(0),
         start_timestamp_ns: u64,
         record_min_max: bool,
 
-        // Metadata fields for Phase 1b preparation
-        instrument_name: []const u8,
-        instrument_type: InstrumentType,
-        instrument_unit: []const u8,
+        // similar to LastValueAggregation, no support of optionals.
+        min: std.atomic.Value(u128) = .init(0),
+        max: std.atomic.Value(u128) = .init(0),
 
         pub fn init(allocator: std.mem.Allocator, config: HistogramAggregationConfig) !@This() {
             const counts = try allocator.alloc(std.atomic.Value(u64), config.boundaries.len + 1);
@@ -126,17 +107,8 @@ pub fn HistogramAggregation(comptime T: type) type {
             return .{
                 .boundaries = config.boundaries,
                 .counts = counts,
-                .sum = std.atomic.Value(T).init(0),
-                .count = std.atomic.Value(u64).init(0),
-                .has_min = std.atomic.Value(bool).init(false),
-                .min = std.atomic.Value(T).init(0),
-                .has_max = std.atomic.Value(bool).init(false),
-                .max = std.atomic.Value(T).init(0),
                 .start_timestamp_ns = @intCast(std.time.nanoTimestamp()),
                 .record_min_max = config.record_min_max,
-                .instrument_name = "",
-                .instrument_type = .Histogram,
-                .instrument_unit = "",
             };
         }
 
@@ -150,25 +122,35 @@ pub fn HistogramAggregation(comptime T: type) type {
             _ = self.sum.fetchAdd(value, .monotonic);
 
             if (self.record_min_max) {
-                // Simple atomic min/max (not fully lock-free for f64, but functional)
-                if (self.has_min.load(.monotonic)) {
-                    const current_min = self.min.load(.monotonic);
-                    if (value < current_min) {
-                        self.min.store(value, .monotonic);
+                // Simple atomic min/max
+                const bits: u64 = @bitCast(value);
+                const value_guarded: u128 = @as(u128, bits) | (1 << 64);
+
+                // min will always be "decreasing", even if it changes
+                var expected_guarded = value_guarded;
+                while (self.min.cmpxchgWeak(expected_guarded, value_guarded, .acq_rel, .monotonic)) |new_expected| {
+                    if (new_expected & (1 << 64) == 0) {
+                        // new_expected was null, so retry to set the first value
+                        expected_guarded = new_expected;
+                    } else {
+                        // new_expected is a value, so we have to compare before we can try again.
+                        const expected: T = @bitCast(@as(u64, @truncate(new_expected)));
+                        if (value >= expected) break; // Min is already lower than our value.
+                        expected_guarded = new_expected;
                     }
-                } else {
-                    self.min.store(value, .monotonic);
-                    self.has_min.store(true, .monotonic);
                 }
 
-                if (self.has_max.load(.monotonic)) {
-                    const current_max = self.max.load(.monotonic);
-                    if (value > current_max) {
-                        self.max.store(value, .monotonic);
+                expected_guarded = value_guarded;
+                while (self.max.cmpxchgWeak(expected_guarded, value_guarded, .acq_rel, .monotonic)) |new_expected| {
+                    if (new_expected & (1 << 64) == 0) {
+                        // new_expected was null, so retry to set the first value
+                        expected_guarded = new_expected;
+                    } else {
+                        // new_expected is a value, so we have to compare before we can try again.
+                        const expected: T = @bitCast(@as(u64, @truncate(new_expected)));
+                        if (value <= expected) break; // Max is already higher than our value.
+                        expected_guarded = new_expected;
                     }
-                } else {
-                    self.max.store(value, .monotonic);
-                    self.has_max.store(true, .monotonic);
                 }
             }
 
@@ -177,6 +159,19 @@ pub fn HistogramAggregation(comptime T: type) type {
         }
 
         pub fn findBucketIndex(self: *const @This(), value: T) usize {
+            // For a given list of N boundaries [b_0, b_1, ..., b_{N-1}],
+            // N+1 buckets are created. Each boundary value represents the inclusive
+            // upper bound of a bucket.
+            //
+            // The resulting buckets are:
+            //   - bucket[0]: (-inf, b_0]
+            //   - bucket[1]: (b_0, b_1]
+            //   - ...
+            //   - bucket[N]: (b_{N-1}, +inf)
+            //
+            // This is why we allocate `boundaries.len + 1` space for the `counts` slice,
+            // to accommodate the extra bucket for values greater than the last boundary.
+
             const float_value = switch (T) {
                 i64 => @as(f64, @floatFromInt(value)),
                 f64 => value,
@@ -188,7 +183,7 @@ pub fn HistogramAggregation(comptime T: type) type {
 
             while (left < right) {
                 const mid = left + (right - left) / 2;
-                if (float_value < self.boundaries[mid]) {
+                if (float_value <= self.boundaries[mid]) {
                     right = mid;
                 } else {
                     left = mid + 1;
@@ -207,17 +202,19 @@ pub fn HistogramAggregation(comptime T: type) type {
         }
 
         pub fn getMin(self: *const @This()) ?T {
-            if (self.has_min.load(.monotonic)) {
-                return self.min.load(.monotonic);
-            }
-            return null;
+            const guarded = self.min.load(.monotonic);
+            return if (guarded & (1 << 64) == 0)
+                null
+            else
+                @bitCast(@as(u64, @truncate(guarded)));
         }
 
         pub fn getMax(self: *const @This()) ?T {
-            if (self.has_max.load(.monotonic)) {
-                return self.max.load(.monotonic);
-            }
-            return null;
+            const guarded = self.max.load(.monotonic);
+            return if (guarded & (1 << 64) == 0)
+                null
+            else
+                @bitCast(@as(u64, @truncate(guarded)));
         }
 
         pub fn getBoundaries(self: *const @This()) []const f64 {
@@ -238,11 +235,138 @@ pub fn HistogramAggregation(comptime T: type) type {
             }
             self.sum.store(0, .monotonic);
             self.count.store(0, .monotonic);
-            self.has_min.store(false, .monotonic);
             self.min.store(0, .monotonic);
-            self.has_max.store(false, .monotonic);
             self.max.store(0, .monotonic);
             self.start_timestamp_ns = @intCast(std.time.nanoTimestamp());
         }
     };
+}
+
+const testing = @import("std").testing;
+
+test "SumAggregation" {
+    var sum = SumAggregation(i64).init();
+
+    sum.add(10);
+    sum.add(20);
+    try testing.expectEqual(sum.getValue(), 30);
+    try testing.expectEqual(sum.getStartTime(), sum.start_timestamp_ns);
+    const old_ts = sum.getStartTime();
+    std.Thread.sleep(1000);
+
+    sum.reset();
+    try testing.expectEqual(sum.getValue(), 0);
+    try testing.expect(sum.getStartTime() != old_ts);
+}
+
+test "LastValueAggregation" {
+    var last_value = LastValueAggregation(i64).init();
+
+    last_value.record(10);
+    try testing.expectEqual(last_value.getValue(), 10);
+
+    last_value.record(20);
+    try testing.expectEqual(last_value.getValue(), 20);
+
+    last_value.reset();
+    try testing.expectEqual(last_value.getValue(), null);
+}
+
+test "HistogramAggregation findBucketIndex" {
+    const allocator = std.heap.page_allocator;
+    const config = HistogramAggregationConfig{};
+    var histogram = try HistogramAggregation(i64).init(allocator, config);
+
+    // Test cases for findBucketIndex
+    const test_cases = [_]struct {
+        value: i64,
+        expected_index: usize,
+    }{
+        .{ .value = -1, .expected_index = 0 }, // Below the first boundary
+        .{ .value = 0, .expected_index = 0 }, // Exactly on the first boundary
+        .{ .value = 1, .expected_index = 1 }, // Just above the first boundary
+        .{ .value = 4, .expected_index = 1 }, // Close to the first boundary
+        .{ .value = 5, .expected_index = 1 }, // Exactly on the second boundary
+        .{ .value = 6, .expected_index = 2 }, // Just above the second boundary
+        .{ .value = 9, .expected_index = 2 }, // Close to the second boundary
+        .{ .value = 10, .expected_index = 2 }, // Exactly on the third boundary
+        .{ .value = 11, .expected_index = 3 }, // Just above the third boundary
+        .{ .value = 24, .expected_index = 3 }, // Close to the third boundary
+        .{ .value = 25, .expected_index = 3 }, // Exactly on the fourth boundary
+        .{ .value = 26, .expected_index = 4 }, // Just above the fourth boundary
+        .{ .value = 49, .expected_index = 4 }, // Close to the fourth boundary
+        .{ .value = 50, .expected_index = 4 }, // Exactly on the fifth boundary
+        .{ .value = 51, .expected_index = 5 }, // Just above the fifth boundary
+        .{ .value = 74, .expected_index = 5 }, // Close to the fifth boundary
+        .{ .value = 75, .expected_index = 5 }, // Exactly on the sixth boundary
+        .{ .value = 76, .expected_index = 6 }, // Just above the sixth boundary
+        .{ .value = 99, .expected_index = 6 }, // Close to the sixth boundary
+        .{ .value = 100, .expected_index = 6 }, // Exactly on the seventh boundary
+        .{ .value = 101, .expected_index = 7 }, // Just above the seventh boundary
+        .{ .value = 249, .expected_index = 7 }, // Close to the seventh boundary
+        .{ .value = 250, .expected_index = 7 }, // Exactly on the eighth boundary
+        .{ .value = 251, .expected_index = 8 }, // Just above the eighth boundary
+        .{ .value = 499, .expected_index = 8 }, // Close to the eighth boundary
+        .{ .value = 500, .expected_index = 8 }, // Exactly on the ninth boundary
+        .{ .value = 501, .expected_index = 9 }, // Just above the ninth boundary
+        .{ .value = 749, .expected_index = 9 }, // Close to the ninth boundary
+        .{ .value = 750, .expected_index = 9 }, // Exactly on the tenth boundary
+        .{ .value = 751, .expected_index = 10 }, // Just above the tenth boundary
+        .{ .value = 999, .expected_index = 10 }, // Close to the tenth boundary
+        .{ .value = 1000, .expected_index = 10 }, // Exactly on the eleventh boundary
+        .{ .value = 1001, .expected_index = 11 }, // Just above the eleventh boundary
+        .{ .value = 2499, .expected_index = 11 }, // Close to the eleventh boundary
+        .{ .value = 2500, .expected_index = 11 }, // Exactly on the twelfth boundary
+        .{ .value = 2501, .expected_index = 12 }, // Just above the twelfth boundary
+        .{ .value = 4999, .expected_index = 12 }, // Close to the twelfth boundary
+        .{ .value = 5000, .expected_index = 12 }, // Exactly on the thirteenth boundary
+        .{ .value = 5001, .expected_index = 13 }, // Just above the thirteenth boundary
+        .{ .value = 7499, .expected_index = 13 }, // Close to the thirteenth boundary
+        .{ .value = 7500, .expected_index = 13 }, // Exactly on the fourteenth boundary
+        .{ .value = 7501, .expected_index = 14 }, // Just above the fourteenth boundary
+        .{ .value = 9999, .expected_index = 14 }, // Close to the fourteenth boundary
+        .{ .value = 10000, .expected_index = 14 }, // Exactly on the fifteenth boundary
+        .{ .value = 10001, .expected_index = 15 }, // Just above the fifteenth boundary
+        .{ .value = 100000, .expected_index = 15 }, // Clearly in the last bucket
+    };
+
+    for (test_cases) |test_case| {
+        const index = histogram.findBucketIndex(test_case.value);
+        testing.expectEqual(@as(usize, test_case.expected_index), index) catch |e| {
+            std.log.err("test case for value {} failed.", .{test_case.value});
+            return e;
+        };
+    }
+
+    histogram.deinit(allocator);
+}
+
+test "HistogramAggregation" {
+    const allocator = std.heap.page_allocator;
+    const config = HistogramAggregationConfig{};
+    var histogram = try HistogramAggregation(i64).init(allocator, config);
+
+    histogram.record(10);
+    histogram.record(20);
+    try testing.expectEqual(histogram.getSum(), 30);
+    try testing.expectEqual(histogram.getCount(), 2);
+    try testing.expectEqual(histogram.getMin(), 10);
+    try testing.expectEqual(histogram.getMax(), 20);
+
+    const counts = histogram.getCounts();
+    try testing.expectEqual(counts[0].load(.monotonic), 0);
+    try testing.expectEqual(counts[1].load(.monotonic), 0);
+    try testing.expectEqual(counts[2].load(.monotonic), 1);
+    try testing.expectEqual(counts[3].load(.monotonic), 1);
+    const old_ts = histogram.getStartTime();
+    std.Thread.sleep(1000);
+
+    histogram.reset();
+    try testing.expectEqual(histogram.getSum(), 0);
+    try testing.expectEqual(histogram.getCount(), 0);
+    try testing.expectEqual(histogram.getMin(), null);
+    try testing.expectEqual(histogram.getMax(), null);
+    try testing.expect(histogram.getStartTime() != old_ts);
+
+    histogram.deinit(allocator);
 }

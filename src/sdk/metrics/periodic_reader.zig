@@ -14,12 +14,14 @@ const c = std.c;
 const sdk = struct {
     const BridgeReader = @import("reader.zig").BridgeReader;
     const Meter = @import("meter.zig").Meter;
+    const MeterProvider = @import("meter_provider.zig").MeterProvider;
     const MetricData = @import("data.zig").MetricData;
     const Reader = @import("reader.zig").Reader;
     const MetricExporter = @import("exporter.zig").MetricExporter;
     const ReaderAggregationState = @import("reader_aggregation_state.zig").ReaderAggregationState;
     const MetricMetadata = @import("metadata.zig").MetricMetadata;
     const MetricValue = @import("reader.zig").MetricValue;
+    const Resource = @import("../resource/resource.zig").Resource;
 };
 
 /// Basic periodic metrics processor that collects metrics at regular intervals
@@ -33,7 +35,7 @@ pub const PeriodicReader = struct {
         setExporter,
     );
     pub fn _initFn(self: *PeriodicReader, interval: ?u32, allocator: std.mem.Allocator) !void {
-        self.* = init(allocator, null, interval);
+        self.* = try init(allocator, null, interval);
         try self.start();
     }
 
@@ -59,7 +61,7 @@ pub const PeriodicReader = struct {
         allocator: std.mem.Allocator,
         exporter: ?sdk.MetricExporter,
         collection_interval_ms: ?u32,
-    ) PeriodicReader {
+    ) !PeriodicReader {
         return .{
             .allocator = allocator,
             .exporter = exporter,
@@ -75,7 +77,7 @@ pub const PeriodicReader = struct {
             .thread = null,
             .collection_interval_ms = collection_interval_ms orelse 60000, // 60 seconds default
             .registered_meters = .{},
-            .reader_state = sdk.ReaderAggregationState.init(
+            .reader_state = try sdk.ReaderAggregationState.init(
                 allocator,
                 .Delta, // Default to Delta temporality for now
                 @import("reader_aggregation_state.zig").defaultAggregationSelector,
@@ -127,12 +129,12 @@ pub const PeriodicReader = struct {
 
     pub fn recordMeasurement(
         self: *PeriodicReader,
-        instrument: *anyopaque,
         value: sdk.MetricValue,
         attributes: []const api.AttributeKeyValue,
         metadata: sdk.MetricMetadata,
+        metadata_hash: u64,
     ) void {
-        self.reader_state.recordMeasurement(instrument, value, attributes, metadata);
+        self.reader_state.recordMeasurement(value, attributes, metadata, metadata_hash);
     }
 
     /// Collect metrics from all registered meters (called by background thread)
@@ -591,15 +593,25 @@ test "BasicPeriodicProcessor - direct init vs pipeline init thread behavior" {
     const testing = std.testing;
     const allocator = testing.allocator;
     const MockExporter = @import("exporter.zig").MockMetricExporter;
-    const Resource = @import("../resource/resource.zig").Resource;
 
     // Create mock exporter
     const mock_exporter = try allocator.create(MockExporter);
     mock_exporter.* = MockExporter.init(allocator);
 
+    // Create a provider to tie all the parts together.
+    var provider = sdk.MeterProvider.init(allocator, sdk.Resource.empty);
+    defer provider.deinit();
+
     // Create processor with very short interval for testing (direct init)
-    var processor = PeriodicReader.init(allocator, mock_exporter.metricExporter(), 100); // 100ms
-    defer processor.deinit();
+    const processor = try allocator.create(PeriodicReader);
+    {
+        errdefer allocator.destroy(processor);
+        processor.* = try PeriodicReader.init(allocator, mock_exporter.metricExporter(), 100); // 100ms
+        {
+            errdefer provider.deinit();
+            try provider.registerProcessor(processor.reader());
+        }
+    }
 
     // Verify thread is not running when created via direct init()
     try testing.expect(!processor.is_running.load(.acquire));
@@ -607,13 +619,7 @@ test "BasicPeriodicProcessor - direct init vs pipeline init thread behavior" {
 
     // Create a basic meter for testing
     const scope = try api.InstrumentationScope.initSimple("test.meter", "1.0.0");
-    const resource = Resource.empty;
-    const basic_meter = try allocator.create(sdk.Meter);
-    basic_meter.* = try sdk.Meter.init(allocator, scope, resource, null);
-    defer {
-        basic_meter.deinit();
-        allocator.destroy(basic_meter);
-    }
+    _ = try provider.getMeterWithScope(scope);
 
     // Start the thread manually (since we're not using pipeline)
     try processor.start();
@@ -622,20 +628,9 @@ test "BasicPeriodicProcessor - direct init vs pipeline init thread behavior" {
     try testing.expect(processor.is_running.load(.acquire));
     try testing.expect(processor.thread != null);
 
-    // Register meter
-    processor.registerMeter(basic_meter);
-
     // Create a second meter
     const scope2 = try api.InstrumentationScope.initSimple("test.meter2", "1.0.0");
-    const basic_meter2 = try allocator.create(sdk.Meter);
-    basic_meter2.* = try sdk.Meter.init(allocator, scope2, resource, null);
-    defer {
-        basic_meter2.deinit();
-        allocator.destroy(basic_meter2);
-    }
-
-    // Register second meter
-    processor.registerMeter(basic_meter2);
+    _ = try provider.getMeterWithScope(scope2);
 
     // Verify thread is still running and we have both meters
     try testing.expect(processor.is_running.load(.acquire));
@@ -662,7 +657,7 @@ test "BasicPeriodicProcessor - no thread start without meters" {
     const allocator = testing.allocator;
 
     // Create processor
-    var processor = PeriodicReader.init(allocator, null, 100);
+    var processor = try PeriodicReader.init(allocator, null, 100);
     defer processor.deinit();
 
     // Verify thread is not running

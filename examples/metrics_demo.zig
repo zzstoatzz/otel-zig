@@ -20,7 +20,7 @@ pub fn main() !void {
 
 /// Example that sets up a very simple meter provider with a console exporter.
 pub fn basicProcessorDemo(allocator: std.mem.Allocator) !void {
-    const concrete_provider = try otel_sdk.metrics.setupGlobalProvider(
+    const concrete_provider = try otel_sdk.metrics.setupGlobalProviderWithViews(
         allocator,
         .{otel_sdk.metrics.ManualReader.PipelineStep.init({})
             .flowTo(otel_exporters.otlp.OtlpMetricExporter.PipelineStep.init(.{}))},
@@ -156,7 +156,7 @@ pub fn basicProcessorDemo(allocator: std.mem.Allocator) !void {
 }
 
 pub fn advancedProcessorDemo(allocator: std.mem.Allocator) !void {
-    const concrete_provider = try otel_sdk.metrics.setupGlobalProvider(
+    const concrete_provider = try otel_sdk.metrics.setupGlobalProviderWithViews(
         allocator,
         .{otel_sdk.metrics.PeriodicReader.PipelineStep.init(5000)
             .flowTo(otel_exporters.otlp.OtlpMetricExporter.PipelineStep.init(.{}))},

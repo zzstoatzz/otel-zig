@@ -129,7 +129,7 @@ pub fn ObservableCounter(comptime T: type) type {
         }
 
         /// Clean up resources
-        pub fn deinit(self: *Self) void {
+        pub fn deinit(self: *Self, _: std.mem.Allocator) void {
             self.mutex.lock();
             defer self.mutex.unlock();
 
@@ -443,7 +443,7 @@ pub fn ObservableGauge(comptime T: type) type {
         }
 
         /// Clean up resources
-        pub fn deinit(self: *Self) void {
+        pub fn deinit(self: *Self, _: std.mem.Allocator) void {
             self.mutex.lock();
             defer self.mutex.unlock();
 
@@ -757,7 +757,7 @@ pub fn ObservableUpDownCounter(comptime T: type) type {
         }
 
         /// Clean up resources
-        pub fn deinit(self: *Self) void {
+        pub fn deinit(self: *Self, _: std.mem.Allocator) void {
             self.mutex.lock();
             defer self.mutex.unlock();
 
@@ -1050,7 +1050,7 @@ test "observable instrument semantic differences" {
 
     // Test Counter (sum type)
     var counter = ObservableCounter(i64).init(allocator, "test.counter", "A test counter", "1", config);
-    defer counter.deinit();
+    defer counter.deinit(allocator);
 
     const counter_data = try counter.createMetricData(allocator, scope, resource);
     defer allocator.free(counter_data.data_points);
@@ -1060,7 +1060,7 @@ test "observable instrument semantic differences" {
 
     // Test Gauge (gauge type)
     var gauge = ObservableGauge(f64).init(allocator, "test.gauge", "A test gauge", "°C", config);
-    defer gauge.deinit();
+    defer gauge.deinit(allocator);
 
     const gauge_data = try gauge.createMetricData(allocator, scope, resource);
     defer allocator.free(gauge_data.data_points);
@@ -1070,7 +1070,7 @@ test "observable instrument semantic differences" {
 
     // Test UpDownCounter (sum type)
     var updown = ObservableUpDownCounter(i64).init(allocator, "test.updown", "A test up-down counter", "bytes", config);
-    defer updown.deinit();
+    defer updown.deinit(allocator);
 
     const updown_data = try updown.createMetricData(allocator, scope, resource);
     defer allocator.free(updown_data.data_points);
@@ -1093,7 +1093,7 @@ test "observable instrument metric value types" {
 
     // Test that Counter uses i64_sum/f64_sum
     var counter_i64 = ObservableCounter(i64).init(allocator, "test.counter.i64", null, null, config);
-    defer counter_i64.deinit();
+    defer counter_i64.deinit(allocator);
 
     const TestCallback = struct {
         fn callback(result_ptr: *anyopaque, state: ?*anyopaque) void {
@@ -1119,7 +1119,7 @@ test "observable instrument metric value types" {
 
     // Test that Gauge uses i64_gauge/f64_gauge
     var gauge_f64 = ObservableGauge(f64).init(allocator, "test.gauge.f64", null, null, config);
-    defer gauge_f64.deinit();
+    defer gauge_f64.deinit(allocator);
 
     const TestCallbackF64 = struct {
         fn gaugeCallback(result_ptr: *anyopaque, state: ?*anyopaque) void {
@@ -1145,7 +1145,7 @@ test "observable instrument metric value types" {
 
     // Test that UpDownCounter uses i64_sum/f64_sum
     var updown_i64 = ObservableUpDownCounter(i64).init(allocator, "test.updown.i64", null, null, config);
-    defer updown_i64.deinit();
+    defer updown_i64.deinit(allocator);
 
     _ = updown_i64.registerCallback(test_callback);
     const updown_points = try updown_i64.collect(allocator);
@@ -1209,7 +1209,7 @@ test "observable counter basic functionality" {
         "1",
         .default,
     );
-    defer counter.deinit();
+    defer counter.deinit(allocator);
 
     // Test basic properties
     try testing.expectEqualStrings("test_counter", counter.getName());

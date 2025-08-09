@@ -3,6 +3,7 @@ const api = @import("otel-api");
 
 const sdk = struct {
     const AsyncInstrumentConfig = @import("async_instrument_config.zig").AsyncInstrumentConfig;
+    const MeterProvider = @import("meter_provider.zig").MeterProvider;
     const MetricData = @import("data.zig").MetricData;
     const MetricDataPoint = @import("data.zig").MetricDataPoint;
     const Resource = @import("../resource/resource.zig").Resource;
@@ -16,7 +17,7 @@ pub const Meter = struct {
     is_shutdown: std.atomic.Value(bool),
     scope: api.InstrumentationScope,
     resource: sdk.Resource,
-    provider: ?*@import("meter_provider.zig").MeterProvider,
+    provider: *sdk.MeterProvider,
 
     // Synchronous instruments
     counters_i64: std.ArrayListUnmanaged(*sdk.sync_instr.StandardCounter(i64)),
@@ -43,7 +44,7 @@ pub const Meter = struct {
         allocator: std.mem.Allocator,
         scope: api.InstrumentationScope,
         resource: sdk.Resource,
-        provider: ?*@import("meter_provider.zig").MeterProvider,
+        provider: *sdk.MeterProvider,
     ) !Meter {
         return .{
             .allocator = allocator,
@@ -92,7 +93,7 @@ pub const Meter = struct {
         };
         inline for (instruments) |list| {
             for (list.items) |instrument| {
-                instrument.deinit();
+                instrument.deinit(self.allocator);
                 self.allocator.destroy(instrument);
             }
             // The captured var is const, which blocks calling
@@ -135,7 +136,7 @@ pub const Meter = struct {
             validated_unit,
             self,
         );
-        errdefer counter.deinit();
+        errdefer counter.deinit(self.allocator);
 
         try self.counters_i64.append(self.allocator, counter);
 
@@ -170,7 +171,7 @@ pub const Meter = struct {
             validated_unit,
             self,
         );
-        errdefer counter.deinit();
+        errdefer counter.deinit(self.allocator);
 
         try self.counters_f64.append(self.allocator, counter);
 
@@ -205,7 +206,7 @@ pub const Meter = struct {
             validated_unit,
             self,
         );
-        errdefer counter.deinit();
+        errdefer counter.deinit(self.allocator);
 
         try self.up_down_counters_i64.append(self.allocator, counter);
 
@@ -240,7 +241,7 @@ pub const Meter = struct {
             validated_unit,
             self,
         );
-        errdefer counter.deinit();
+        errdefer counter.deinit(self.allocator);
 
         try self.up_down_counters_f64.append(self.allocator, counter);
 
@@ -275,7 +276,7 @@ pub const Meter = struct {
             validated_unit,
             self,
         );
-        errdefer counter.deinit();
+        errdefer counter.deinit(self.allocator);
 
         try self.gauges_i64.append(self.allocator, counter);
 
@@ -310,7 +311,7 @@ pub const Meter = struct {
             validated_unit,
             self,
         );
-        errdefer counter.deinit();
+        errdefer counter.deinit(self.allocator);
 
         try self.gauges_f64.append(self.allocator, counter);
 
@@ -347,7 +348,7 @@ pub const Meter = struct {
             self,
             .{}, // Use default config
         );
-        errdefer histogram.deinit();
+        errdefer histogram.deinit(self.allocator);
 
         try self.histograms_i64.append(self.allocator, histogram);
 
@@ -384,7 +385,7 @@ pub const Meter = struct {
             self,
             .{}, // Use default config
         );
-        errdefer histogram.deinit();
+        errdefer histogram.deinit(self.allocator);
 
         try self.histograms_f64.append(self.allocator, histogram);
 
@@ -424,7 +425,7 @@ pub const Meter = struct {
             validated_unit,
             self.async_config,
         );
-        errdefer observable_counter.deinit();
+        errdefer observable_counter.deinit(self.allocator);
 
         try self.observable_counters_i64.append(self.allocator, observable_counter);
 
@@ -462,7 +463,7 @@ pub const Meter = struct {
             validated_unit,
             self.async_config,
         );
-        errdefer observable_counter.deinit();
+        errdefer observable_counter.deinit(self.allocator);
 
         try self.observable_counters_f64.append(self.allocator, observable_counter);
 
@@ -500,7 +501,7 @@ pub const Meter = struct {
             validated_unit,
             self.async_config,
         );
-        errdefer observable_gauge.deinit();
+        errdefer observable_gauge.deinit(self.allocator);
 
         try self.observable_gauges_i64.append(self.allocator, observable_gauge);
 
@@ -538,7 +539,7 @@ pub const Meter = struct {
             validated_unit,
             self.async_config,
         );
-        errdefer observable_gauge.deinit();
+        errdefer observable_gauge.deinit(self.allocator);
 
         try self.observable_gauges_f64.append(self.allocator, observable_gauge);
 
@@ -576,7 +577,7 @@ pub const Meter = struct {
             validated_unit,
             self.async_config,
         );
-        errdefer observable_counter.deinit();
+        errdefer observable_counter.deinit(self.allocator);
 
         try self.observable_updown_counters_i64.append(self.allocator, observable_counter);
 
@@ -614,7 +615,7 @@ pub const Meter = struct {
             validated_unit,
             self.async_config,
         );
-        errdefer observable_counter.deinit();
+        errdefer observable_counter.deinit(self.allocator);
 
         try self.observable_updown_counters_f64.append(self.allocator, observable_counter);
 

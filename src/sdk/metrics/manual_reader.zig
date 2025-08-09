@@ -32,7 +32,7 @@ pub const ManualReader = struct {
         setExporter,
     );
     pub fn _initFn(self: *ManualReader, _: void, allocator: std.mem.Allocator) !void {
-        self.* = init(allocator, null);
+        self.* = try init(allocator, null);
     }
 
     allocator: std.mem.Allocator,
@@ -42,14 +42,14 @@ pub const ManualReader = struct {
     registered_meters: std.ArrayListUnmanaged(*sdk.Meter),
     reader_state: sdk.ReaderAggregationState,
 
-    pub fn init(allocator: std.mem.Allocator, exporter: ?sdk.MetricExporter) ManualReader {
+    pub fn init(allocator: std.mem.Allocator, exporter: ?sdk.MetricExporter) !ManualReader {
         return .{
             .allocator = allocator,
             .exporter = exporter,
             .mutex = .{},
             .is_shutdown = false,
             .registered_meters = .{},
-            .reader_state = sdk.ReaderAggregationState.init(
+            .reader_state = try sdk.ReaderAggregationState.init(
                 allocator,
                 .Delta, // Default to Delta temporality for now
                 @import("reader_aggregation_state.zig").defaultAggregationSelector,
@@ -80,12 +80,12 @@ pub const ManualReader = struct {
 
     pub fn recordMeasurement(
         self: *ManualReader,
-        instrument: *anyopaque,
         value: sdk.MetricValue,
         attributes: []const api.AttributeKeyValue,
         metadata: sdk.MetricMetadata,
+        metadata_hash: u64,
     ) void {
-        self.reader_state.recordMeasurement(instrument, value, attributes, metadata);
+        self.reader_state.recordMeasurement(value, attributes, metadata, metadata_hash);
     }
 
     pub fn collect(self: *ManualReader) void {

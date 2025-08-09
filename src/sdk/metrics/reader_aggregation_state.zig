@@ -50,7 +50,7 @@ pub const ReaderAggregationState = struct {
     // Phase 1b: Attribute-based aggregation map with cardinality limits
     aggregations: sdk.AttributeAggregationMap,
     allocator: std.mem.Allocator,
-    mutex: std.Thread.Mutex, // Protects map access only in Phase 1c (aggregations are lock-free)
+    mutex: std.Thread.Mutex,
 
     // Reader's configured temporality
     temporality: AggregationTemporality,
@@ -66,9 +66,9 @@ pub const ReaderAggregationState = struct {
         allocator: std.mem.Allocator,
         temporality: AggregationTemporality,
         aggregation_selector: AggregationSelector,
-    ) @This() {
+    ) !@This() {
         return .{
-            .aggregations = sdk.AttributeAggregationMap.init(allocator),
+            .aggregations = try sdk.AttributeAggregationMap.init(allocator),
             .allocator = allocator,
             .mutex = .{},
             .temporality = temporality,
@@ -89,17 +89,17 @@ pub const ReaderAggregationState = struct {
     /// Record a measurement from an instrument (lock-free for aggregation updates)
     pub fn recordMeasurement(
         self: *@This(),
-        instrument: *anyopaque,
         value: sdk.MetricValue,
         attributes: []const api.AttributeKeyValue,
         metadata: sdk.MetricMetadata,
+        metadata_hash: u64,
     ) void {
         // Phase 1c: Lock only for map access, aggregation updates are lock-free
         const agg = blk: {
             self.mutex.lock();
             defer self.mutex.unlock();
             // Get or create aggregation for this instrument + attribute combination
-            break :blk self.aggregations.getOrCreateAggregation(instrument, attributes, metadata, value);
+            break :blk self.aggregations.getOrCreateAggregation(attributes, metadata, metadata_hash, value);
         };
 
         // Record the measurement lock-free (aggregations use atomic operations)
@@ -112,18 +112,11 @@ pub const ReaderAggregationState = struct {
     /// Collect metrics from all aggregations (lock-free aggregation access)
     pub fn collect(self: *@This(), allocator: std.mem.Allocator) ![]sdk.MetricData {
         // Lock only for map iteration, aggregation data access is lock-free
-        var entry_list = std.ArrayList(*sdk.AttributeAggregationEntry).init(allocator);
+        var entry_list = std.ArrayList(sdk.AttributeAggregationEntry).init(allocator);
         defer entry_list.deinit();
 
         // Copy aggregation entry pointers under lock
-        {
-            self.mutex.lock();
-            defer self.mutex.unlock();
-            var iter = self.aggregations.iterator();
-            while (iter.next()) |entry| {
-                try entry_list.append(entry.value_ptr.*);
-            }
-        }
+        try self.aggregations.snapshot(allocator, &entry_list);
 
         var metrics_list = std.ArrayList(sdk.MetricData).init(allocator);
         errdefer metrics_list.deinit();
@@ -131,7 +124,7 @@ pub const ReaderAggregationState = struct {
         const current_timestamp = @as(u64, @intCast(std.time.nanoTimestamp()));
 
         // Process aggregation entries lock-free (atomic reads)
-        for (entry_list.items) |entry| {
+        for (entry_list.items) |*entry| {
             // Create metric data based on aggregation type (lock-free atomic reads)
             const metric_data = try self.createMetricDataFromAggregationEntry(
                 allocator,
@@ -161,8 +154,9 @@ pub const ReaderAggregationState = struct {
         errdefer allocator.free(data_points);
 
         // Clone attributes from the entry for export
-        const export_attributes = try allocator.alloc(api.AttributeKeyValue, entry.attributes.len);
-        @memcpy(export_attributes, entry.attributes);
+        // const export_attributes = try allocator.alloc(api.AttributeKeyValue, entry.attributes.len);
+        // @memcpy(export_attributes, entry.attributes);
+        const export_attributes = entry.attributes;
 
         switch (entry.aggregation) {
             .sum_i64 => |*sum| {
@@ -173,17 +167,12 @@ pub const ReaderAggregationState = struct {
                     .value = .{ .i64_sum = sum.value.load(.monotonic) },
                 };
                 return sdk.MetricData{
-                    .name = sum.instrument_name,
-                    .description = null,
-                    .unit = if (sum.instrument_unit.len > 0) sum.instrument_unit else null,
+                    .name = entry.metadata.name,
+                    .description = if (entry.metadata.description.len > 0) entry.metadata.description else null,
+                    .unit = if (entry.metadata.unit.len > 0) entry.metadata.unit else null,
                     .type = .sum,
                     .data_points = data_points,
-                    .scope = api.InstrumentationScope{
-                        .name = "unknown",
-                        .version = null,
-                        .schema_url = null,
-                        .attributes = &[_]api.AttributeKeyValue{},
-                    },
+                    .scope = entry.metadata.instrumentation_scope,
                     .resource = sdk.Resource.empty,
                 };
             },
@@ -195,77 +184,64 @@ pub const ReaderAggregationState = struct {
                     .value = .{ .f64_sum = sum.value.load(.monotonic) },
                 };
                 return sdk.MetricData{
-                    .name = sum.instrument_name,
-                    .description = null,
-                    .unit = if (sum.instrument_unit.len > 0) sum.instrument_unit else null,
+                    .name = entry.metadata.name,
+                    .description = if (entry.metadata.description.len > 0) entry.metadata.description else null,
+                    .unit = if (entry.metadata.unit.len > 0) entry.metadata.unit else null,
                     .type = .sum,
                     .data_points = data_points,
-                    .scope = api.InstrumentationScope{
-                        .name = "unknown",
-                        .version = null,
-                        .schema_url = null,
-                        .attributes = &[_]api.AttributeKeyValue{},
-                    },
+                    .scope = entry.metadata.instrumentation_scope,
                     .resource = sdk.Resource.empty,
                 };
             },
-            .last_value_i64 => |*gauge| {
-                if (gauge.getValue()) |value| {
-                    data_points[0] = sdk.MetricDataPoint{
-                        .timestamp_ns = timestamp,
-                        .start_timestamp_ns = null, // Gauges don't have start times
-                        .attributes = export_attributes,
-                        .value = .{ .i64_gauge = value },
-                    };
-                    return sdk.MetricData{
-                        .name = gauge.instrument_name,
-                        .description = null,
-                        .unit = if (gauge.instrument_unit.len > 0) gauge.instrument_unit else null,
-                        .type = .gauge,
-                        .data_points = data_points,
-                        .scope = api.InstrumentationScope{
-                            .name = "unknown",
-                            .version = null,
-                            .schema_url = null,
-                            .attributes = &[_]api.AttributeKeyValue{},
-                        },
-                        .resource = sdk.Resource.empty,
-                    };
-                } else {
+            .last_value_i64 => |*lv| {
+                const value = lv.getValue();
+                if (value == null) {
                     // No value recorded, skip this gauge
                     allocator.free(data_points);
                     allocator.free(export_attributes);
                     return null;
                 }
+
+                data_points[0] = sdk.MetricDataPoint{
+                    .timestamp_ns = timestamp,
+                    .start_timestamp_ns = 0, // Last value doesn't have start time
+                    .attributes = export_attributes,
+                    .value = .{ .i64_gauge = value.? },
+                };
+                return sdk.MetricData{
+                    .name = entry.metadata.name,
+                    .description = if (entry.metadata.description.len > 0) entry.metadata.description else null,
+                    .unit = if (entry.metadata.unit.len > 0) entry.metadata.unit else null,
+                    .type = .gauge,
+                    .data_points = data_points,
+                    .scope = entry.metadata.instrumentation_scope,
+                    .resource = sdk.Resource.empty,
+                };
             },
-            .last_value_f64 => |*gauge| {
-                if (gauge.getValue()) |value| {
-                    data_points[0] = sdk.MetricDataPoint{
-                        .timestamp_ns = timestamp,
-                        .start_timestamp_ns = null, // Gauges don't have start times
-                        .attributes = export_attributes,
-                        .value = .{ .f64_gauge = value },
-                    };
-                    return sdk.MetricData{
-                        .name = gauge.instrument_name,
-                        .description = null,
-                        .unit = if (gauge.instrument_unit.len > 0) gauge.instrument_unit else null,
-                        .type = .gauge,
-                        .data_points = data_points,
-                        .scope = api.InstrumentationScope{
-                            .name = "unknown",
-                            .version = null,
-                            .schema_url = null,
-                            .attributes = &[_]api.AttributeKeyValue{},
-                        },
-                        .resource = sdk.Resource.empty,
-                    };
-                } else {
+            .last_value_f64 => |*lv| {
+                const value = lv.getValue();
+                if (value == null) {
                     // No value recorded, skip this gauge
                     allocator.free(data_points);
                     allocator.free(export_attributes);
                     return null;
                 }
+
+                data_points[0] = sdk.MetricDataPoint{
+                    .timestamp_ns = timestamp,
+                    .start_timestamp_ns = 0, // Last value doesn't have start time
+                    .attributes = export_attributes,
+                    .value = .{ .f64_gauge = value.? },
+                };
+                return sdk.MetricData{
+                    .name = entry.metadata.name,
+                    .description = if (entry.metadata.description.len > 0) entry.metadata.description else null,
+                    .unit = if (entry.metadata.unit.len > 0) entry.metadata.unit else null,
+                    .type = .gauge,
+                    .data_points = data_points,
+                    .scope = entry.metadata.instrumentation_scope,
+                    .resource = sdk.Resource.empty,
+                };
             },
             .histogram_i64 => |*hist| {
                 if (hist.getCount() == 0) {
@@ -297,17 +273,12 @@ pub const ReaderAggregationState = struct {
                     },
                 };
                 return sdk.MetricData{
-                    .name = hist.instrument_name,
-                    .description = null,
-                    .unit = if (hist.instrument_unit.len > 0) hist.instrument_unit else null,
+                    .name = entry.metadata.name,
+                    .description = if (entry.metadata.description.len > 0) entry.metadata.description else null,
+                    .unit = if (entry.metadata.unit.len > 0) entry.metadata.unit else null,
                     .type = .histogram,
                     .data_points = data_points,
-                    .scope = api.InstrumentationScope{
-                        .name = "unknown",
-                        .version = null,
-                        .schema_url = null,
-                        .attributes = &[_]api.AttributeKeyValue{},
-                    },
+                    .scope = entry.metadata.instrumentation_scope,
                     .resource = sdk.Resource.empty,
                 };
             },
@@ -341,17 +312,12 @@ pub const ReaderAggregationState = struct {
                     },
                 };
                 return sdk.MetricData{
-                    .name = hist.instrument_name,
-                    .description = null,
-                    .unit = if (hist.instrument_unit.len > 0) hist.instrument_unit else null,
+                    .name = entry.metadata.name,
+                    .description = if (entry.metadata.description.len > 0) entry.metadata.description else null,
+                    .unit = if (entry.metadata.unit.len > 0) entry.metadata.unit else null,
                     .type = .histogram,
                     .data_points = data_points,
-                    .scope = api.InstrumentationScope{
-                        .name = "unknown",
-                        .version = null,
-                        .schema_url = null,
-                        .attributes = &[_]api.AttributeKeyValue{},
-                    },
+                    .scope = entry.metadata.instrumentation_scope,
                     .resource = sdk.Resource.empty,
                 };
             },

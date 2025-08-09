@@ -177,7 +177,7 @@ test "BasicMeter data collection through processor pipeline" {
 
     // Create processor (heap-allocated)
     const reader = try allocator.create(sdk.ManualReader);
-    reader.* = sdk.ManualReader.init(allocator, mock_exporter.metricExporter());
+    reader.* = try sdk.ManualReader.init(allocator, mock_exporter.metricExporter());
 
     // Register reader (provider takes ownership)
     try provider.registerProcessor(reader.reader());
@@ -293,7 +293,7 @@ test "BasicMeterProvider flush behavior" {
     mock_exporter.* = MockMetricExporter.init(allocator);
 
     const reader = try allocator.create(sdk.ManualReader);
-    reader.* = sdk.ManualReader.init(allocator, mock_exporter.metricExporter());
+    reader.* = try sdk.ManualReader.init(allocator, mock_exporter.metricExporter());
 
     try provider.registerProcessor(reader.reader());
 
@@ -476,7 +476,7 @@ test "PeriodicReader with multiple instruments" {
 
     // Create periodic reader with 100ms interval
     const reader = try allocator.create(sdk.PeriodicReader);
-    reader.* = sdk.PeriodicReader.init(allocator, mock_exporter.metricExporter(), 100);
+    reader.* = try sdk.PeriodicReader.init(allocator, mock_exporter.metricExporter(), 100);
 
     // Register reader (provider takes ownership)
     try provider.registerProcessor(reader.reader());

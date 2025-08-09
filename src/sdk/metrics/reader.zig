@@ -79,14 +79,14 @@ pub const Reader = union(enum) {
     /// Record a measurement from an instrument
     pub fn recordMeasurement(
         self: *Reader,
-        instrument: *anyopaque,
         value: MetricValue,
         attributes: []const api.AttributeKeyValue,
         metadata: sdk.MetricMetadata,
+        metadata_hash: u64,
     ) void {
         switch (self.*) {
             .noop => {},
-            .bridge => |reader| reader.recordMeasurementFn(reader.reader_ptr, instrument, value, attributes, metadata),
+            .bridge => |reader| reader.recordMeasurementFn(reader.reader_ptr, value, attributes, metadata, metadata_hash),
         }
     }
 };
@@ -101,7 +101,7 @@ pub const BridgeReader = struct {
     destroyFn: *const fn (reader_ptr: *anyopaque) void,
     registerMeterFn: *const fn (reader_ptr: *anyopaque, meter: *sdk.BasicMeter) void,
     unregisterMeterFn: *const fn (reader_ptr: *anyopaque, meter: *sdk.BasicMeter) void,
-    recordMeasurementFn: *const fn (reader_ptr: *anyopaque, instrument: *anyopaque, value: MetricValue, attributes: []const api.AttributeKeyValue, metadata: sdk.MetricMetadata) void,
+    recordMeasurementFn: *const fn (reader_ptr: *anyopaque, value: MetricValue, attributes: []const api.AttributeKeyValue, metadata: sdk.MetricMetadata, metadata_hash: u64) void,
 
     pub fn init(ptr: anytype) BridgeReader {
         const T = @TypeOf(ptr);
@@ -136,9 +136,9 @@ pub const BridgeReader = struct {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.unregisterMeter(self, meter);
             }
-            pub fn recordMeasurement(pointer: *anyopaque, instrument: *anyopaque, value: MetricValue, attributes: []const api.AttributeKeyValue, metadata: sdk.MetricMetadata) void {
+            pub fn recordMeasurement(pointer: *anyopaque, value: MetricValue, attributes: []const api.AttributeKeyValue, metadata: sdk.MetricMetadata, metadata_hash: u64) void {
                 const self: T = @ptrCast(@alignCast(pointer));
-                return ptr_info.pointer.child.recordMeasurement(self, instrument, value, attributes, metadata);
+                return ptr_info.pointer.child.recordMeasurement(self, value, attributes, metadata, metadata_hash);
             }
         };
 
