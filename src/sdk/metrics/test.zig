@@ -491,9 +491,9 @@ test "PeriodicReader with multiple instruments" {
     const histogram = try meter.createHistogram(i64, "test.histogram", "Test histogram", "count", null);
 
     // Create observable instruments
-    const observable_counter = try meter.createObservableCounter(i64, "test.observable.counter", "Test observable counter", "requests", null, &[_]api.metrics.TypeErasedCallback{});
-    const observable_gauge = try meter.createObservableGauge(f64, "test.observable.gauge", "Test observable gauge", "ratio", null, &[_]api.metrics.TypeErasedCallback{});
-    const observable_updown = try meter.createObservableUpDownCounter(i64, "test.observable.updown", "Test observable updown", "items", null, &[_]api.metrics.TypeErasedCallback{});
+    const observable_counter = try meter.createObservableCounter(i64, "test.observable.counter", "Test observable counter", "requests", null, &[_]api.metrics.TypeErasedCallback(i64){});
+    const observable_gauge = try meter.createObservableGauge(f64, "test.observable.gauge", "Test observable gauge", "ratio", null, &[_]api.metrics.TypeErasedCallback(f64){});
+    const observable_updown = try meter.createObservableUpDownCounter(i64, "test.observable.updown", "Test observable updown", "items", null, &[_]api.metrics.TypeErasedCallback(i64){});
 
     // Record some data with regular instruments
     const ctx = api.Context.init(allocator);
@@ -507,18 +507,18 @@ test "PeriodicReader with multiple instruments" {
 
     // Setup callbacks for observable instruments
     const counter_callback = struct {
-        fn callback(result: *api.metrics.ObservableResult(i64)) void {
-            result.observe(42, &empty_attributes, null) catch {};
+        fn callback(_: std.mem.Allocator, result: *api.metrics.ObservableResult(i64)) void {
+            result.observe(42, &empty_attributes);
         }
     }.callback;
     const gauge_callback = struct {
-        fn callback(result: *api.metrics.ObservableResult(f64)) void {
-            result.observe(0.95, &empty_attributes, null) catch {};
+        fn callback(_: std.mem.Allocator, result: *api.metrics.ObservableResult(f64)) void {
+            result.observe(0.95, &empty_attributes);
         }
     }.callback;
     const updown_callback = struct {
-        fn callback(result: *api.metrics.ObservableResult(i64)) void {
-            result.observe(100, &empty_attributes, null) catch {};
+        fn callback(_: std.mem.Allocator, result: *api.metrics.ObservableResult(i64)) void {
+            result.observe(100, &empty_attributes);
         }
     }.callback;
 

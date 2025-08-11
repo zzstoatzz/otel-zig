@@ -44,9 +44,7 @@ pub const AsyncInstrumentConfig = async_instrument_config_zig.AsyncInstrumentCon
 pub const CallbackErrorPolicy = async_instrument_config_zig.CallbackErrorPolicy;
 
 const async_instrument_zig = @import("async_instruments.zig");
-pub const ObservableCounter = async_instrument_zig.ObservableCounter;
-pub const ObservableGauge = async_instrument_zig.ObservableGauge;
-pub const ObservableUpDownCounter = async_instrument_zig.ObservableUpDownCounter;
+pub const Observable = async_instrument_zig.Observable;
 pub const CallbackMetrics = async_instrument_zig.CallbackMetrics;
 
 // Re-export the setup helper functions

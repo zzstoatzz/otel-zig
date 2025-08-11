@@ -8,9 +8,15 @@ const api = @import("otel-api");
 
 const sdk = struct {
     const AsyncInstrumentConfig = @import("async_instrument_config.zig").AsyncInstrumentConfig;
-    const Resource = @import("../resource/resource.zig").Resource;
+    const InstrumentType = @import("metadata.zig").InstrumentType;
+    const Meter = @import("meter.zig").Meter;
     const MetricData = @import("data.zig").MetricData;
     const MetricDataPoint = @import("data.zig").MetricDataPoint;
+    const MetricMetadata = @import("metadata.zig").MetricMetadata;
+    const MetricValue = @import("data.zig").MetricValue;
+    const Reader = @import("reader.zig").Reader;
+    const Resource = @import("../resource/resource.zig").Resource;
+    const ViewApplication = @import("view.zig").ViewApplication;
 };
 
 /// Metrics for tracking callback performance
@@ -80,14 +86,25 @@ pub const CallbackMetrics = struct {
     }
 };
 
-/// SDK implementation of ObservableCounter
-pub fn ObservableCounter(comptime T: type) type {
+/// Wrapper for the different Observable types.
+///
+/// The spec says that observables all behave the same way, as far as the
+/// callback is concerned : the call back should return the current absolute
+/// value, not a delta. The SDK has the responsibilty of creating the right
+/// temporality. In our implementation that is delegated to the reader stored
+/// aggregations, not to the instrument.
+pub fn Observable(comptime T: type) type {
+    comptime switch (T) {
+        i64, f64 => {},
+        else => @compileError("ObservableInstrument must be of type i64 or f64"),
+    };
+
     return struct {
         const Self = @This();
 
         /// Entry for a registered callback
         const CallbackEntry = struct {
-            callback: api.metrics.TypeErasedCallback,
+            callback: api.metrics.TypeErasedCallback(T),
             id: u64,
             metrics: CallbackMetrics,
         };
@@ -96,49 +113,79 @@ pub fn ObservableCounter(comptime T: type) type {
         name: []const u8,
         description: ?[]const u8,
         unit: ?[]const u8,
+        instrument_type: sdk.InstrumentType,
+        meter: *sdk.Meter,
+        metadata_hash: u64,
 
         /// Callback management
         callbacks: std.ArrayList(CallbackEntry),
         next_callback_id: u64,
 
         /// Configuration and state
-        allocator: std.mem.Allocator,
         mutex: std.Thread.Mutex,
         config: sdk.AsyncInstrumentConfig,
         instrument_metrics: CallbackMetrics,
+
+        /// View support
+        views: []sdk.ViewApplication,
 
         /// Initialize the observable counter
         pub fn init(
-            allocator: std.mem.Allocator,
             name: []const u8,
             description: ?[]const u8,
             unit: ?[]const u8,
+            instrument_type: sdk.InstrumentType,
+            parent_meter: *sdk.Meter,
             config: sdk.AsyncInstrumentConfig,
-        ) Self {
-            return Self{
+        ) !Self {
+            // Precompute the hash values that don't change per datapoint.
+            const metadata_hash = sdk.MetricMetadata.computeHash(
+                name,
+                unit orelse "",
+                instrument_type,
+                &parent_meter.scope,
+            );
+
+            // Get the views that apply to this instrument.
+            const view_applications = try parent_meter.provider.applyViews(
+                name,
+                instrument_type,
+                unit orelse "",
+                description,
+                parent_meter.scope.name,
+                parent_meter.scope.version,
+                parent_meter.scope.schema_url,
+                parent_meter.allocator,
+            );
+
+            return .{
                 .name = name,
                 .description = description,
                 .unit = unit,
-                .callbacks = std.ArrayList(CallbackEntry).init(allocator),
+                .instrument_type = instrument_type,
+                .meter = parent_meter,
+                .metadata_hash = metadata_hash,
+                .callbacks = std.ArrayList(CallbackEntry).init(parent_meter.allocator),
                 .next_callback_id = 1,
-                .allocator = allocator,
                 .mutex = std.Thread.Mutex{},
                 .config = config,
                 .instrument_metrics = CallbackMetrics{},
+                .views = view_applications,
             };
         }
 
         /// Clean up resources
-        pub fn deinit(self: *Self, _: std.mem.Allocator) void {
+        pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
             self.mutex.lock();
             defer self.mutex.unlock();
 
             // Clean up callback metrics
             for (self.callbacks.items) |*entry| {
-                entry.metrics.deinit(self.allocator);
+                entry.metrics.deinit(allocator);
             }
             self.callbacks.deinit();
-            self.instrument_metrics.deinit(self.allocator);
+            self.instrument_metrics.deinit(allocator);
+            allocator.free(self.views);
         }
 
         /// Get the name of this instrument
@@ -153,12 +200,11 @@ pub fn ObservableCounter(comptime T: type) type {
         }
 
         /// Register a callback
-        pub fn registerCallback(self: *Self, callback: api.metrics.TypeErasedCallback) api.metrics.CallbackHandle {
+        pub fn registerCallback(self: *Self, callback: api.metrics.TypeErasedCallback(T)) api.metrics.CallbackHandle {
             self.mutex.lock();
             defer self.mutex.unlock();
 
             const callback_id = self.next_callback_id;
-            self.next_callback_id += 1;
 
             const entry = CallbackEntry{
                 .callback = callback,
@@ -171,6 +217,7 @@ pub fn ObservableCounter(comptime T: type) type {
                 return .noop;
             };
 
+            self.next_callback_id += 1;
             return .init(self, unregisterCallback, callback_id);
         }
 
@@ -184,70 +231,127 @@ pub fn ObservableCounter(comptime T: type) type {
             for (self.callbacks.items, 0..) |entry, i| {
                 if (entry.id == callback_id) {
                     var removed_entry = self.callbacks.swapRemove(i);
-                    removed_entry.metrics.deinit(self.allocator);
+                    removed_entry.metrics.deinit(self.meter.allocator);
                     break;
                 }
             }
         }
 
-        /// Collect measurements from all callbacks
-        pub fn collect(self: *Self, allocator: std.mem.Allocator) ![]sdk.MetricDataPoint {
-            self.mutex.lock();
-            defer self.mutex.unlock();
-
-            var data_points = std.ArrayList(sdk.MetricDataPoint).init(allocator);
-            defer data_points.deinit();
-
+        /// Trigger callbacks and record measurements.
+        ///
+        /// `allocator` is expected to be the readers allocator, to reduce copies.
+        /// `points` is the readers export queue, to avoid copies.
+        /// `reader` is the specific reader that triggered this observation.
+        pub fn triggerObserve(self: *Self, allocator: std.mem.Allocator, reader: sdk.Reader) void {
             const collection_start = std.time.nanoTimestamp();
 
-            for (self.callbacks.items) |*entry| {
-                const callback_start = std.time.nanoTimestamp();
+            var buffer: std.ArrayListUnmanaged(api.metrics.ObservableResult(T).Measurement) = .{};
+            defer buffer.deinit(allocator);
 
-                // Execute callback and collect measurements
-                const measurements = self.executeCallback(allocator, entry) catch |err| {
-                    const error_message = switch (err) {
-                        error.OutOfMemory => "Out of memory during callback execution",
+            // lock for iteration over the callbacks.
+            {
+                self.mutex.lock();
+                defer self.mutex.unlock();
+
+                for (self.callbacks.items) |*entry| {
+                    const callback_start = std.time.nanoTimestamp();
+
+                    // Execute callback and collect measurements
+                    const measurements = self.executeCallback(allocator, entry) catch |err| {
+                        const error_message = switch (err) {
+                            error.OutOfMemory => "Out of memory during callback execution",
+                        };
+
+                        if (self.config.track_callback_metrics) {
+                            entry.metrics.recordError(self.meter.allocator, error_message, entry.id, self.name);
+                        }
+
+                        switch (self.config.error_policy) {
+                            .fail_fast => break,
+                            .log_continue => {
+                                api.common.reportError(.{
+                                    .component = .meter,
+                                    .context = null,
+                                    .error_type = .internal,
+                                    .message = error_message,
+                                    .operation = "observable callback execution",
+                                    .source_error = err,
+                                });
+                                continue;
+                            },
+                            .silent_ignore => continue,
+                        }
                     };
+                    defer allocator.free(measurements);
+
+                    // buffer the measurements we did get.
+                    if (measurements.len > 0) {
+                        buffer.appendSlice(allocator, measurements) catch |err| {
+                            switch (self.config.error_policy) {
+                                .fail_fast => break,
+                                .log_continue => {
+                                    api.common.reportError(.{
+                                        .component = .meter,
+                                        .context = null,
+                                        .error_type = .internal,
+                                        .message = "Out of memory during callback aggregation.",
+                                        .operation = "observable callback collection",
+                                        .source_error = err,
+                                    });
+                                    continue;
+                                },
+                                .silent_ignore => continue,
+                            }
+                        };
+                    }
+
+                    const callback_end = std.time.nanoTimestamp();
+                    const execution_time = @as(u64, @intCast(callback_end - callback_start));
 
                     if (self.config.track_callback_metrics) {
-                        entry.metrics.recordError(self.allocator, error_message, entry.id, self.name);
+                        entry.metrics.recordExecution(execution_time);
                     }
-
-                    switch (self.config.error_policy) {
-                        .fail_fast => return err,
-                        .log_continue => {
-                            continue;
-                        },
-                        .silent_ignore => continue,
-                    }
-                };
-                defer allocator.free(measurements);
-
-                const callback_end = std.time.nanoTimestamp();
-                const execution_time = @as(u64, @intCast(callback_end - callback_start));
-
-                if (self.config.track_callback_metrics) {
-                    entry.metrics.recordExecution(execution_time);
                 }
+            }
 
-                // Convert measurements to data points
-                for (measurements) |measurement| {
-                    const data_point = sdk.MetricDataPoint{
-                        .value = switch (T) {
-                            i64 => .{ .i64_sum = measurement.value },
-                            f64 => .{ .f64_sum = measurement.value },
+            // Convert measurements to data points
+            for (buffer.items) |measurement| {
+                // Process each view application
+                for (self.views) |view| {
+                    // Skip drop aggregations
+                    if (view.drops()) continue;
+
+                    // Transform attributes according to view
+                    const attrs = view.transformAttributes(measurement.attributes, allocator) catch |e| blk: {
+                        api.common.reportErrorWithAllocator(.{
+                            .component = .meter,
+                            .context = null,
+                            .error_type = .internal,
+                            .message = "Unable to transform attributes with view",
+                            .operation = "StandardCounter.addI64()",
+                            .source_error = e,
+                        }, allocator);
+                        break :blk measurement.attributes; // On error, use original attributes
+                    };
+
+                    const metadata = sdk.MetricMetadata{
+                        .name = view.getName(self.name),
+                        .description = view.getDescription(self.description) orelse "",
+                        .unit = self.unit orelse "", // Unit not transformable per spec
+                        .instrument_type = self.instrument_type,
+                        .instrumentation_scope = self.meter.scope,
+                    };
+
+                    reader.recordMeasurement(
+                        switch (T) {
+                            i64 => .{ .i64 = measurement.value },
+                            f64 => .{ .f64 = measurement.value },
                             else => unreachable,
                         },
-                        .attributes = measurement.attributes,
-                        .timestamp_ns = @intCast(measurement.timestamp orelse collection_start),
-                        .start_timestamp_ns = null,
-                    };
-                    try data_points.append(data_point);
-                }
-
-                // Warn if no measurements were produced
-                if (self.config.warn_on_no_measurements and measurements.len == 0) {
-                    // Warning already reported via reportCallbackError
+                        attrs,
+                        metadata,
+                        self.metadata_hash,
+                    );
                 }
             }
 
@@ -257,19 +361,20 @@ pub fn ObservableCounter(comptime T: type) type {
             if (self.config.track_callback_metrics) {
                 self.instrument_metrics.recordExecution(total_execution_time);
             }
-
-            return data_points.toOwnedSlice();
         }
 
         /// Execute a single callback with proper error handling and timing
         fn executeCallback(self: *Self, allocator: std.mem.Allocator, entry: *CallbackEntry) ![]api.metrics.ObservableResult(T).Measurement {
             const start_time = if (self.config.track_callback_metrics) std.time.nanoTimestamp() else 0;
 
-            var result = api.metrics.ObservableResult(T).init(allocator, null);
+            var result = api.metrics.ObservableResult(T).init(allocator);
             defer result.deinit();
 
             // Execute the callback - callbacks are void functions, so we detect errors by observing behavior
-            entry.callback.callback_fn(@ptrCast(&result), entry.callback.state);
+            switch (entry.callback) {
+                .state => |cb| cb.callback_fn(allocator, &result, cb.state),
+                .stateless => |cbFn| cbFn(allocator, &result),
+            }
 
             // Record timing if enabled
             if (self.config.track_callback_metrics) {
@@ -392,862 +497,4 @@ pub fn ObservableCounter(comptime T: type) type {
             return metrics.toOwnedSlice();
         }
     };
-}
-
-/// SDK implementation of ObservableGauge (identical to ObservableCounter)
-pub fn ObservableGauge(comptime T: type) type {
-    return struct {
-        const Self = @This();
-
-        /// Entry for a registered callback
-        const CallbackEntry = struct {
-            callback: api.metrics.TypeErasedCallback,
-            id: u64,
-            metrics: CallbackMetrics,
-        };
-
-        /// Instrument metadata
-        name: []const u8,
-        description: ?[]const u8,
-        unit: ?[]const u8,
-
-        /// Callback management
-        callbacks: std.ArrayList(CallbackEntry),
-        next_callback_id: u64,
-
-        /// Configuration and state
-        allocator: std.mem.Allocator,
-        mutex: std.Thread.Mutex,
-        config: sdk.AsyncInstrumentConfig,
-        instrument_metrics: CallbackMetrics,
-
-        /// Initialize the observable gauge
-        pub fn init(
-            allocator: std.mem.Allocator,
-            name: []const u8,
-            description: ?[]const u8,
-            unit: ?[]const u8,
-            config: sdk.AsyncInstrumentConfig,
-        ) Self {
-            return Self{
-                .name = name,
-                .description = description,
-                .unit = unit,
-                .callbacks = std.ArrayList(CallbackEntry).init(allocator),
-                .next_callback_id = 1,
-                .allocator = allocator,
-                .mutex = std.Thread.Mutex{},
-                .config = config,
-                .instrument_metrics = CallbackMetrics{},
-            };
-        }
-
-        /// Clean up resources
-        pub fn deinit(self: *Self, _: std.mem.Allocator) void {
-            self.mutex.lock();
-            defer self.mutex.unlock();
-
-            // Clean up callback metrics
-            for (self.callbacks.items) |*entry| {
-                entry.metrics.deinit(self.allocator);
-            }
-            self.callbacks.deinit();
-            self.instrument_metrics.deinit(self.allocator);
-        }
-
-        /// Get the name of this instrument
-        pub fn getName(self: *const Self) []const u8 {
-            return self.name;
-        }
-
-        /// Check if this instrument is enabled
-        pub fn enabled(self: *const Self) bool {
-            _ = self;
-            return true; // SDK instruments are always enabled
-        }
-
-        /// Register a callback
-        pub fn registerCallback(self: *Self, callback: api.metrics.TypeErasedCallback) api.metrics.CallbackHandle {
-            self.mutex.lock();
-            defer self.mutex.unlock();
-
-            const callback_id = self.next_callback_id;
-            self.next_callback_id += 1;
-
-            const entry = CallbackEntry{
-                .callback = callback,
-                .id = callback_id,
-                .metrics = CallbackMetrics{},
-            };
-
-            self.callbacks.append(entry) catch {
-                // Return noop handle on allocation failure
-                return .noop;
-            };
-
-            return .init(self, unregisterCallback, callback_id);
-        }
-
-        /// Unregister a callback (internal method)
-        fn unregisterCallback(instrument_ptr: *anyopaque, callback_id: u64) void {
-            const self: *Self = @ptrCast(@alignCast(instrument_ptr));
-
-            self.mutex.lock();
-            defer self.mutex.unlock();
-
-            for (self.callbacks.items, 0..) |entry, i| {
-                if (entry.id == callback_id) {
-                    var removed_entry = self.callbacks.swapRemove(i);
-                    removed_entry.metrics.deinit(self.allocator);
-                    break;
-                }
-            }
-        }
-
-        /// Collect measurements from all callbacks
-        pub fn collect(self: *Self, allocator: std.mem.Allocator) ![]sdk.MetricDataPoint {
-            self.mutex.lock();
-            defer self.mutex.unlock();
-
-            var data_points = std.ArrayList(sdk.MetricDataPoint).init(allocator);
-            defer data_points.deinit();
-
-            const collection_start = std.time.nanoTimestamp();
-
-            for (self.callbacks.items) |*entry| {
-                const callback_start = std.time.nanoTimestamp();
-
-                // Execute callback and collect measurements
-                const measurements = self.executeCallback(allocator, entry) catch |err| {
-                    const error_message = switch (err) {
-                        error.OutOfMemory => "Out of memory during callback execution",
-                    };
-
-                    if (self.config.track_callback_metrics) {
-                        entry.metrics.recordError(self.allocator, error_message, entry.id, self.name);
-                    }
-
-                    switch (self.config.error_policy) {
-                        .fail_fast => return err,
-                        .log_continue => {
-                            continue;
-                        },
-                        .silent_ignore => continue,
-                    }
-                };
-                defer allocator.free(measurements);
-
-                const callback_end = std.time.nanoTimestamp();
-                const execution_time = @as(u64, @intCast(callback_end - callback_start));
-
-                if (self.config.track_callback_metrics) {
-                    entry.metrics.recordExecution(execution_time);
-                }
-
-                // Convert measurements to data points (gauges use current timestamp, no start timestamp)
-                for (measurements) |measurement| {
-                    const data_point = sdk.MetricDataPoint{
-                        .value = switch (T) {
-                            i64 => .{ .i64_gauge = measurement.value },
-                            f64 => .{ .f64_gauge = measurement.value },
-                            else => unreachable,
-                        },
-                        .attributes = measurement.attributes,
-                        .timestamp_ns = @intCast(measurement.timestamp orelse collection_start),
-                        .start_timestamp_ns = null, // Gauges don't have start timestamps
-                    };
-                    try data_points.append(data_point);
-                }
-
-                // Warn if no measurements were produced
-                if (self.config.warn_on_no_measurements and measurements.len == 0) {
-                    // Warning already reported via reportCallbackError
-                }
-            }
-
-            const collection_end = std.time.nanoTimestamp();
-            const total_execution_time = @as(u64, @intCast(collection_end - collection_start));
-
-            if (self.config.track_callback_metrics) {
-                self.instrument_metrics.recordExecution(total_execution_time);
-            }
-
-            return data_points.toOwnedSlice();
-        }
-
-        /// Execute a single callback with proper error handling and timing
-        fn executeCallback(self: *Self, allocator: std.mem.Allocator, entry: *CallbackEntry) ![]api.metrics.ObservableResult(T).Measurement {
-            const start_time = if (self.config.track_callback_metrics) std.time.nanoTimestamp() else 0;
-
-            var result = api.metrics.ObservableResult(T).init(allocator, null);
-            defer result.deinit();
-
-            // Execute the callback - callbacks are void functions, so we detect errors by observing behavior
-            entry.callback.callback_fn(@ptrCast(&result), entry.callback.state);
-
-            // Record timing if enabled
-            if (self.config.track_callback_metrics) {
-                const end_time = std.time.nanoTimestamp();
-                const execution_time = @as(u64, @intCast(end_time - start_time));
-                entry.metrics.recordExecution(execution_time);
-            }
-
-            // Check measurement limit
-            if (self.config.max_measurements_per_callback) |limit| {
-                if (result.measurements.items.len > limit) {
-                    const warn_msg = "Callback produced too many measurements";
-                    // Warning already reported via reportCallbackError
-                    if (self.config.track_callback_metrics) {
-                        entry.metrics.recordError(allocator, warn_msg, entry.id, self.name);
-                    }
-                    api.common.reportCallbackError(.meter, "executeCallback", warn_msg, self.name);
-                    // Truncate to limit
-                    result.measurements.shrinkRetainingCapacity(limit);
-                }
-            }
-
-            // Warn if no measurements were produced and policy requires it
-            if (self.config.warn_on_no_measurements and result.measurements.items.len == 0) {
-                const warn_msg = "Callback produced no measurements";
-                // Warning already reported via reportCallbackError
-                if (self.config.track_callback_metrics) {
-                    entry.metrics.recordError(allocator, warn_msg, entry.id, self.name);
-                }
-                api.common.reportCallbackError(.meter, "executeCallback", warn_msg, self.name);
-            }
-
-            return result.measurements.toOwnedSlice();
-        }
-
-        /// Create MetricData from collected measurements
-        pub fn createMetricData(self: *Self, allocator: std.mem.Allocator, scope: api.common.InstrumentationScope, resource: sdk.Resource) !sdk.MetricData {
-            const data_points = try self.collect(allocator);
-
-            return .{
-                .name = self.name,
-                .description = self.description,
-                .unit = self.unit,
-                .type = .gauge,
-                .data_points = data_points,
-                .scope = scope,
-                .resource = resource,
-            };
-        }
-
-        /// Destroy the instrument
-        pub fn destroy(self: *Self) void {
-            self.allocator.destroy(self);
-        }
-
-        /// Get overall instrument metrics
-        pub fn getInstrumentMetrics(self: *Self) CallbackMetrics {
-            self.mutex.lock();
-            defer self.mutex.unlock();
-            return self.instrument_metrics;
-        }
-
-        /// Get metrics for a specific callback
-        pub fn getCallbackMetrics(self: *Self, callback_id: u64) ?CallbackMetrics {
-            self.mutex.lock();
-            defer self.mutex.unlock();
-
-            for (self.callbacks.items) |entry| {
-                if (entry.id == callback_id) {
-                    return entry.metrics;
-                }
-            }
-            return null;
-        }
-
-        /// Get metrics for all callbacks
-        pub fn getAllCallbackMetrics(self: *Self, allocator: std.mem.Allocator) ![]CallbackMetrics {
-            self.mutex.lock();
-            defer self.mutex.unlock();
-
-            var metrics = std.ArrayList(CallbackMetrics).init(allocator);
-            for (self.callbacks.items) |entry| {
-                try metrics.append(entry.metrics);
-            }
-            return metrics.toOwnedSlice();
-        }
-
-        /// Export callback performance metrics as MetricData
-        pub fn exportCallbackMetrics(self: *Self, allocator: std.mem.Allocator) ![]sdk.MetricData {
-            if (!self.config.track_callback_metrics) {
-                return &[_]sdk.MetricData{};
-            }
-
-            var metrics = std.ArrayList(sdk.MetricData).init(allocator);
-
-            // Overall instrument metrics
-            const instrument_metrics = self.getInstrumentMetrics();
-
-            // Execution count metric
-            if (instrument_metrics.total_executions > 0) {
-                const exec_count_points = try allocator.alloc(sdk.MetricDataPoint, 1);
-                exec_count_points[0] = .{
-                    .value = .{ .i64_sum = @intCast(instrument_metrics.total_executions) },
-                    .attributes = &[_]api.AttributeKeyValue{
-                        .{ .key = "instrument", .value = .{ .string = self.name } },
-                    },
-                    .timestamp_ns = @intCast(std.time.nanoTimestamp()),
-                    .start_timestamp_ns = null,
-                };
-
-                try metrics.append(sdk.MetricData{
-                    .name = "otel.async_instrument.callback.executions",
-                    .description = "Total number of callback executions",
-                    .unit = "1",
-                    .type = .sum,
-                    .data_points = exec_count_points,
-                });
-            }
-
-            return metrics.toOwnedSlice();
-        }
-    };
-}
-
-/// SDK implementation of ObservableUpDownCounter
-pub fn ObservableUpDownCounter(comptime T: type) type {
-    return struct {
-        const Self = @This();
-
-        /// Entry for a registered callback
-        const CallbackEntry = struct {
-            callback: api.metrics.TypeErasedCallback,
-            id: u64,
-            metrics: CallbackMetrics,
-        };
-
-        /// Instrument metadata
-        name: []const u8,
-        description: ?[]const u8,
-        unit: ?[]const u8,
-
-        /// Callback management
-        callbacks: std.ArrayList(CallbackEntry),
-        next_callback_id: u64,
-
-        /// Configuration and state
-        allocator: std.mem.Allocator,
-        mutex: std.Thread.Mutex,
-        config: sdk.AsyncInstrumentConfig,
-        instrument_metrics: CallbackMetrics,
-
-        /// Initialize the observable up-down counter
-        pub fn init(
-            allocator: std.mem.Allocator,
-            name: []const u8,
-            description: ?[]const u8,
-            unit: ?[]const u8,
-            config: sdk.AsyncInstrumentConfig,
-        ) Self {
-            return Self{
-                .name = name,
-                .description = description,
-                .unit = unit,
-                .callbacks = std.ArrayList(CallbackEntry).init(allocator),
-                .next_callback_id = 1,
-                .allocator = allocator,
-                .mutex = std.Thread.Mutex{},
-                .config = config,
-                .instrument_metrics = CallbackMetrics{},
-            };
-        }
-
-        /// Clean up resources
-        pub fn deinit(self: *Self, _: std.mem.Allocator) void {
-            self.mutex.lock();
-            defer self.mutex.unlock();
-
-            // Clean up callback metrics
-            for (self.callbacks.items) |*entry| {
-                entry.metrics.deinit(self.allocator);
-            }
-            self.callbacks.deinit();
-            self.instrument_metrics.deinit(self.allocator);
-        }
-
-        /// Get the name of this instrument
-        pub fn getName(self: *const Self) []const u8 {
-            return self.name;
-        }
-
-        /// Check if this instrument is enabled
-        pub fn enabled(self: *const Self) bool {
-            _ = self;
-            return true; // SDK instruments are always enabled
-        }
-
-        /// Register a callback
-        pub fn registerCallback(self: *Self, callback: api.metrics.TypeErasedCallback) api.metrics.CallbackHandle {
-            self.mutex.lock();
-            defer self.mutex.unlock();
-
-            const callback_id = self.next_callback_id;
-            self.next_callback_id += 1;
-
-            const entry = CallbackEntry{
-                .callback = callback,
-                .id = callback_id,
-                .metrics = CallbackMetrics{},
-            };
-
-            self.callbacks.append(entry) catch {
-                // Return noop handle on allocation failure
-                return .noop;
-            };
-
-            return .init(self, unregisterCallback, callback_id);
-        }
-
-        /// Unregister a callback (internal method)
-        fn unregisterCallback(instrument_ptr: *anyopaque, callback_id: u64) void {
-            const self: *Self = @ptrCast(@alignCast(instrument_ptr));
-
-            self.mutex.lock();
-            defer self.mutex.unlock();
-
-            for (self.callbacks.items, 0..) |entry, i| {
-                if (entry.id == callback_id) {
-                    var removed_entry = self.callbacks.swapRemove(i);
-                    removed_entry.metrics.deinit(self.allocator);
-                    break;
-                }
-            }
-        }
-
-        /// Collect measurements from all callbacks
-        pub fn collect(self: *Self, allocator: std.mem.Allocator) ![]sdk.MetricDataPoint {
-            self.mutex.lock();
-            defer self.mutex.unlock();
-
-            var data_points = std.ArrayList(sdk.MetricDataPoint).init(allocator);
-            defer data_points.deinit();
-
-            const collection_start = std.time.nanoTimestamp();
-
-            for (self.callbacks.items) |*entry| {
-                const callback_start = std.time.nanoTimestamp();
-
-                // Execute callback and collect measurements
-                const measurements = self.executeCallback(allocator, entry) catch |err| {
-                    const error_message = switch (err) {
-                        error.OutOfMemory => "Out of memory during callback execution",
-                    };
-
-                    if (self.config.track_callback_metrics) {
-                        entry.metrics.recordError(self.allocator, error_message, entry.id, self.name);
-                    }
-
-                    switch (self.config.error_policy) {
-                        .fail_fast => return err,
-                        .log_continue => {
-                            continue;
-                        },
-                        .silent_ignore => continue,
-                    }
-                };
-                defer allocator.free(measurements);
-
-                const callback_end = std.time.nanoTimestamp();
-                const execution_time = @as(u64, @intCast(callback_end - callback_start));
-
-                if (self.config.track_callback_metrics) {
-                    entry.metrics.recordExecution(execution_time);
-                }
-
-                // Convert measurements to data points (up-down counters use sum values)
-                for (measurements) |measurement| {
-                    const data_point = sdk.MetricDataPoint{
-                        .value = switch (T) {
-                            i64 => .{ .i64_sum = measurement.value },
-                            f64 => .{ .f64_sum = measurement.value },
-                            else => unreachable,
-                        },
-                        .attributes = measurement.attributes,
-                        .timestamp_ns = @intCast(measurement.timestamp orelse collection_start),
-                        .start_timestamp_ns = null, // Up-down counters don't have start timestamps
-                    };
-                    try data_points.append(data_point);
-                }
-
-                // Warn if no measurements were produced
-                if (self.config.warn_on_no_measurements and measurements.len == 0) {
-                    // Warning already reported via reportCallbackError
-                }
-            }
-
-            const collection_end = std.time.nanoTimestamp();
-            const total_execution_time = @as(u64, @intCast(collection_end - collection_start));
-
-            if (self.config.track_callback_metrics) {
-                self.instrument_metrics.recordExecution(total_execution_time);
-            }
-
-            return data_points.toOwnedSlice();
-        }
-
-        /// Execute a single callback with proper error handling and timing
-        fn executeCallback(self: *Self, allocator: std.mem.Allocator, entry: *CallbackEntry) ![]api.metrics.ObservableResult(T).Measurement {
-            const start_time = if (self.config.track_callback_metrics) std.time.nanoTimestamp() else 0;
-
-            var result = api.metrics.ObservableResult(T).init(allocator, null);
-            defer result.deinit();
-
-            // Execute the callback - callbacks are void functions, so we detect errors by observing behavior
-            entry.callback.callback_fn(@ptrCast(&result), entry.callback.state);
-
-            // Record timing if enabled
-            if (self.config.track_callback_metrics) {
-                const end_time = std.time.nanoTimestamp();
-                const execution_time = @as(u64, @intCast(end_time - start_time));
-                entry.metrics.recordExecution(execution_time);
-            }
-
-            // Check measurement limit
-            if (self.config.max_measurements_per_callback) |limit| {
-                if (result.measurements.items.len > limit) {
-                    const warn_msg = "Callback produced too many measurements";
-                    // Warning already reported via reportCallbackError
-                    if (self.config.track_callback_metrics) {
-                        entry.metrics.recordError(allocator, warn_msg, entry.id, self.name);
-                    }
-                    api.common.reportCallbackError(.meter, "executeCallback", warn_msg, self.name);
-                    // Truncate to limit
-                    result.measurements.shrinkRetainingCapacity(limit);
-                }
-            }
-
-            // Warn if no measurements were produced and policy requires it
-            if (self.config.warn_on_no_measurements and result.measurements.items.len == 0) {
-                const warn_msg = "Callback produced no measurements";
-                // Warning already reported via reportCallbackError
-                if (self.config.track_callback_metrics) {
-                    entry.metrics.recordError(allocator, warn_msg, entry.id, self.name);
-                }
-                api.common.reportCallbackError(.meter, "executeCallback", warn_msg, self.name);
-            }
-
-            return result.measurements.toOwnedSlice();
-        }
-
-        /// Create MetricData from collected measurements
-        pub fn createMetricData(self: *Self, allocator: std.mem.Allocator, scope: api.common.InstrumentationScope, resource: sdk.Resource) !sdk.MetricData {
-            const data_points = try self.collect(allocator);
-
-            return .{
-                .name = self.name,
-                .description = self.description,
-                .unit = self.unit,
-                .type = .sum,
-                .data_points = data_points,
-                .scope = scope,
-                .resource = resource,
-            };
-        }
-
-        /// Destroy the instrument
-        pub fn destroy(self: *Self) void {
-            self.allocator.destroy(self);
-        }
-
-        /// Get overall instrument metrics
-        pub fn getInstrumentMetrics(self: *Self) CallbackMetrics {
-            self.mutex.lock();
-            defer self.mutex.unlock();
-            return self.instrument_metrics;
-        }
-
-        /// Get metrics for a specific callback
-        pub fn getCallbackMetrics(self: *Self, callback_id: u64) ?CallbackMetrics {
-            self.mutex.lock();
-            defer self.mutex.unlock();
-
-            for (self.callbacks.items) |entry| {
-                if (entry.id == callback_id) {
-                    return entry.metrics;
-                }
-            }
-            return null;
-        }
-
-        /// Get metrics for all callbacks
-        pub fn getAllCallbackMetrics(self: *Self, allocator: std.mem.Allocator) ![]CallbackMetrics {
-            self.mutex.lock();
-            defer self.mutex.unlock();
-
-            var metrics = std.ArrayList(CallbackMetrics).init(allocator);
-            for (self.callbacks.items) |entry| {
-                try metrics.append(entry.metrics);
-            }
-            return metrics.toOwnedSlice();
-        }
-
-        /// Export callback performance metrics as MetricData
-        pub fn exportCallbackMetrics(self: *Self, allocator: std.mem.Allocator) ![]sdk.MetricData {
-            if (!self.config.track_callback_metrics) {
-                return &[_]sdk.MetricData{};
-            }
-
-            var metrics = std.ArrayList(sdk.MetricData).init(allocator);
-
-            // Overall instrument metrics
-            const instrument_metrics = self.getInstrumentMetrics();
-
-            // Execution count metric
-            if (instrument_metrics.total_executions > 0) {
-                const exec_count_points = try allocator.alloc(sdk.MetricDataPoint, 1);
-                exec_count_points[0] = .{
-                    .value = .{ .i64_sum = @intCast(instrument_metrics.total_executions) },
-                    .attributes = &[_]api.AttributeKeyValue{
-                        .{ .key = "instrument", .value = .{ .string = self.name } },
-                    },
-                    .timestamp_ns = @intCast(std.time.nanoTimestamp()),
-                    .start_timestamp_ns = null,
-                };
-
-                try metrics.append(sdk.MetricData{
-                    .name = "otel.async_instrument.callback.executions",
-                    .description = "Total number of callback executions",
-                    .unit = "1",
-                    .type = .sum,
-                    .data_points = exec_count_points,
-                });
-            }
-
-            return metrics.toOwnedSlice();
-        }
-    };
-}
-
-test "observable instrument semantic differences" {
-    const MetricType = @import("data.zig").MetricType;
-
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    const config = sdk.AsyncInstrumentConfig{
-        .error_policy = .log_continue,
-        .max_measurements_per_callback = null,
-        .warn_on_no_measurements = false,
-        .track_callback_metrics = false,
-    };
-
-    const scope = api.common.InstrumentationScope{
-        .name = "test",
-        .version = "1.0.0",
-        .schema_url = null,
-        .attributes = &[_]api.common.AttributeKeyValue{},
-    };
-
-    const resource = @import("../resource/resource.zig").Resource{
-        .attributes = &[_]api.common.AttributeKeyValue{},
-        .schema_url = null,
-    };
-
-    // Test Counter (sum type)
-    var counter = ObservableCounter(i64).init(allocator, "test.counter", "A test counter", "1", config);
-    defer counter.deinit(allocator);
-
-    const counter_data = try counter.createMetricData(allocator, scope, resource);
-    defer allocator.free(counter_data.data_points);
-
-    try std.testing.expectEqual(MetricType.sum, counter_data.type);
-    try std.testing.expectEqualStrings("test.counter", counter_data.name);
-
-    // Test Gauge (gauge type)
-    var gauge = ObservableGauge(f64).init(allocator, "test.gauge", "A test gauge", "°C", config);
-    defer gauge.deinit(allocator);
-
-    const gauge_data = try gauge.createMetricData(allocator, scope, resource);
-    defer allocator.free(gauge_data.data_points);
-
-    try std.testing.expectEqual(MetricType.gauge, gauge_data.type);
-    try std.testing.expectEqualStrings("test.gauge", gauge_data.name);
-
-    // Test UpDownCounter (sum type)
-    var updown = ObservableUpDownCounter(i64).init(allocator, "test.updown", "A test up-down counter", "bytes", config);
-    defer updown.deinit(allocator);
-
-    const updown_data = try updown.createMetricData(allocator, scope, resource);
-    defer allocator.free(updown_data.data_points);
-
-    try std.testing.expectEqual(MetricType.sum, updown_data.type);
-    try std.testing.expectEqualStrings("test.updown", updown_data.name);
-}
-
-test "observable instrument metric value types" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    const config = sdk.AsyncInstrumentConfig{
-        .error_policy = .log_continue,
-        .max_measurements_per_callback = null,
-        .warn_on_no_measurements = false,
-        .track_callback_metrics = false,
-    };
-
-    // Test that Counter uses i64_sum/f64_sum
-    var counter_i64 = ObservableCounter(i64).init(allocator, "test.counter.i64", null, null, config);
-    defer counter_i64.deinit(allocator);
-
-    const TestCallback = struct {
-        fn callback(result_ptr: *anyopaque, state: ?*anyopaque) void {
-            _ = state;
-            const result: *api.metrics.ObservableResult(i64) = @ptrCast(@alignCast(result_ptr));
-            result.observe(42, &[_]api.AttributeKeyValue{}, null) catch {};
-        }
-    };
-
-    const test_callback = api.metrics.TypeErasedCallback{
-        .callback_fn = TestCallback.callback,
-        .state = null,
-        .has_state = false,
-    };
-
-    _ = counter_i64.registerCallback(test_callback);
-    const counter_points = try counter_i64.collect(allocator);
-    defer allocator.free(counter_points);
-
-    try std.testing.expect(counter_points.len == 1);
-    try std.testing.expect(counter_points[0].value == .i64_sum);
-    try std.testing.expectEqual(@as(i64, 42), counter_points[0].value.i64_sum);
-
-    // Test that Gauge uses i64_gauge/f64_gauge
-    var gauge_f64 = ObservableGauge(f64).init(allocator, "test.gauge.f64", null, null, config);
-    defer gauge_f64.deinit(allocator);
-
-    const TestCallbackF64 = struct {
-        fn gaugeCallback(result_ptr: *anyopaque, state: ?*anyopaque) void {
-            _ = state;
-            const result: *api.metrics.ObservableResult(f64) = @ptrCast(@alignCast(result_ptr));
-            result.observe(3.14, &[_]api.AttributeKeyValue{}, null) catch {};
-        }
-    };
-
-    const callback_f64 = api.metrics.TypeErasedCallback{
-        .callback_fn = TestCallbackF64.gaugeCallback,
-        .state = null,
-        .has_state = false,
-    };
-
-    _ = gauge_f64.registerCallback(callback_f64);
-    const gauge_points = try gauge_f64.collect(allocator);
-    defer allocator.free(gauge_points);
-
-    try std.testing.expect(gauge_points.len == 1);
-    try std.testing.expect(gauge_points[0].value == .f64_gauge);
-    try std.testing.expectEqual(@as(f64, 3.14), gauge_points[0].value.f64_gauge);
-
-    // Test that UpDownCounter uses i64_sum/f64_sum
-    var updown_i64 = ObservableUpDownCounter(i64).init(allocator, "test.updown.i64", null, null, config);
-    defer updown_i64.deinit(allocator);
-
-    _ = updown_i64.registerCallback(test_callback);
-    const updown_points = try updown_i64.collect(allocator);
-    defer allocator.free(updown_points);
-
-    try std.testing.expect(updown_points.len == 1);
-    try std.testing.expect(updown_points[0].value == .i64_sum);
-    try std.testing.expectEqual(@as(i64, 42), updown_points[0].value.i64_sum);
-}
-
-test "callback metrics basic functionality" {
-    const testing = std.testing;
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    // Use mock error handler to capture errors instead of printing to stderr
-    var mock_error_handler = api.common.MockErrorHandler.init(allocator);
-    defer mock_error_handler.deinit();
-    api.common.setMockErrorHandler(&mock_error_handler);
-    defer api.common.clearMockErrorHandler();
-
-    var metrics = CallbackMetrics{};
-    defer metrics.deinit(allocator);
-
-    // Test recording executions
-    metrics.recordExecution(1000);
-    metrics.recordExecution(2000);
-    metrics.recordExecution(500);
-
-    try testing.expectEqual(@as(u64, 3), metrics.total_executions);
-    try testing.expectEqual(@as(u64, 3500), metrics.total_execution_time_ns);
-    try testing.expectEqual(@as(u64, 2000), metrics.max_execution_time_ns);
-    try testing.expectEqual(@as(u64, 500), metrics.min_execution_time_ns);
-    try testing.expectEqual(@as(u64, 1166), metrics.getAverageExecutionTimeNs());
-
-    // Test recording errors
-    metrics.recordError(allocator, "Test error", 123, "test.instrument");
-    try testing.expectEqual(@as(u64, 1), metrics.error_count);
-    try testing.expect(metrics.last_error != null);
-    try testing.expectEqualStrings("Test error", metrics.last_error.?);
-
-    // Verify error was captured by mock handler
-    try testing.expectEqual(@as(usize, 1), mock_error_handler.errorCount());
-    const captured_error = mock_error_handler.getError(0).?;
-    try testing.expectEqual(api.common.Component.meter, captured_error.component);
-    try testing.expectEqual(api.common.ErrorType.callback, captured_error.error_type);
-    try testing.expectEqualStrings("Test error", captured_error.message);
-}
-
-test "observable counter basic functionality" {
-    const testing = std.testing;
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    var counter = ObservableCounter(i64).init(
-        allocator,
-        "test_counter",
-        "Test counter",
-        "1",
-        .default,
-    );
-    defer counter.deinit(allocator);
-
-    // Test basic properties
-    try testing.expectEqualStrings("test_counter", counter.getName());
-    try testing.expect(counter.enabled());
-
-    // Test callback registration
-    const TestCallback = struct {
-        fn callback(result: *api.metrics.ObservableResult(i64), state: *i32) void {
-            const value = state.*;
-            result.observeValue(value) catch {};
-        }
-    };
-
-    var state: i32 = 42;
-    const callback = api.metrics.TypeErasedCallback{
-        .callback_fn = struct {
-            fn call(result_ptr: *anyopaque, state_ptr: ?*anyopaque) void {
-                const result: *api.metrics.ObservableResult(i64) = @ptrCast(@alignCast(result_ptr));
-                const typed_state: *i32 = @ptrCast(@alignCast(state_ptr.?));
-                TestCallback.callback(result, typed_state);
-            }
-        }.call,
-        .state = &state,
-        .has_state = true,
-    };
-    const handle = counter.registerCallback(callback);
-
-    // Test collection
-    const data_points = try counter.collect(allocator);
-    defer allocator.free(data_points);
-
-    try testing.expectEqual(@as(usize, 1), data_points.len);
-    try testing.expectEqual(@as(i64, 42), data_points[0].value.i64_sum);
-
-    // Test unregistration
-    handle.unregister();
-
-    const empty_data_points = try counter.collect(allocator);
-    defer allocator.free(empty_data_points);
-    try testing.expectEqual(@as(usize, 0), empty_data_points.len);
 }

@@ -11,12 +11,14 @@ const api = @import("otel-api");
 const sdk = struct {
     const BridgeMetricReader = @import("reader.zig").BridgeReader;
     const Meter = @import("meter.zig").Meter;
+    const MeterProvider = @import("meter_provider.zig").MeterProvider;
     const MetricExporter = @import("exporter.zig").MetricExporter;
     const Reader = @import("reader.zig").Reader;
     const MetricData = @import("data.zig").MetricData;
     const ReaderAggregationState = @import("reader_aggregation_state.zig").ReaderAggregationState;
     const MetricMetadata = @import("metadata.zig").MetricMetadata;
     const MetricValue = @import("reader.zig").MetricValue;
+    const Resource = @import("../resource/resource.zig").Resource;
 };
 
 /// Basic log processor implementation.
@@ -51,7 +53,7 @@ pub const ManualReader = struct {
             .registered_meters = .{},
             .reader_state = try sdk.ReaderAggregationState.init(
                 allocator,
-                .Delta, // Default to Delta temporality for now
+                .delta, // Default to Delta temporality for now
                 @import("reader_aggregation_state.zig").defaultAggregationSelector,
             ),
         };
@@ -91,139 +93,27 @@ pub const ManualReader = struct {
     pub fn collect(self: *ManualReader) void {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
-        const arena_allocator = arena.allocator();
+        const allocator = arena.allocator();
 
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        // Collect from reader state (regular instruments)
-        var collected_metrics = std.ArrayList(sdk.MetricData).init(arena_allocator);
+        // trigger the observables to write their data to the aggregation state.
+        for (self.registered_meters.items) |meter| {
+            meter.triggerObservables(allocator, self.reader());
+        }
 
-        const reader_state_metrics = self.reader_state.collect(arena_allocator) catch {
+        // Collect all the aggregated metrics.
+        const collected_metrics = self.reader_state.collect(allocator) catch |err| {
+            std.log.err("Failed to collect metrics: {}", .{err});
             // Log error if needed
             return;
         };
-        collected_metrics.appendSlice(reader_state_metrics) catch return;
-
-        // Collect from observable instruments in registered meters
-        for (self.registered_meters.items) |meter| {
-            // Collect from i64 observable counters
-            for (meter.observable_counters_i64.items) |obs_counter| {
-                const data_points = obs_counter.collect(arena_allocator) catch continue;
-                if (data_points.len > 0) {
-                    const metric_data = sdk.MetricData{
-                        .name = obs_counter.name,
-                        .description = obs_counter.description,
-                        .unit = obs_counter.unit,
-                        .type = .sum,
-                        .data_points = data_points,
-                        .scope = meter.scope,
-                        .resource = meter.resource,
-                    };
-                    collected_metrics.append(metric_data) catch continue;
-                }
-            }
-
-            // Collect from f64 observable counters
-            for (meter.observable_counters_f64.items) |obs_counter| {
-                const data_points = obs_counter.collect(arena_allocator) catch continue;
-                if (data_points.len > 0) {
-                    const metric_data = sdk.MetricData{
-                        .name = obs_counter.name,
-                        .description = obs_counter.description,
-                        .unit = obs_counter.unit,
-                        .type = .sum,
-                        .data_points = data_points,
-                        .scope = meter.scope,
-                        .resource = meter.resource,
-                    };
-                    collected_metrics.append(metric_data) catch continue;
-                }
-            }
-
-            // Collect from i64 observable gauges
-            for (meter.observable_gauges_i64.items) |obs_gauge| {
-                const data_points = obs_gauge.collect(arena_allocator) catch continue;
-                if (data_points.len > 0) {
-                    const metric_data = sdk.MetricData{
-                        .name = obs_gauge.name,
-                        .description = obs_gauge.description,
-                        .unit = obs_gauge.unit,
-                        .type = .gauge,
-                        .data_points = data_points,
-                        .scope = meter.scope,
-                        .resource = meter.resource,
-                    };
-                    collected_metrics.append(metric_data) catch continue;
-                }
-            }
-
-            // Collect from f64 observable gauges
-            for (meter.observable_gauges_f64.items) |obs_gauge| {
-                const data_points = obs_gauge.collect(arena_allocator) catch continue;
-                if (data_points.len > 0) {
-                    const metric_data = sdk.MetricData{
-                        .name = obs_gauge.name,
-                        .description = obs_gauge.description,
-                        .unit = obs_gauge.unit,
-                        .type = .gauge,
-                        .data_points = data_points,
-                        .scope = meter.scope,
-                        .resource = meter.resource,
-                    };
-                    collected_metrics.append(metric_data) catch continue;
-                }
-            }
-
-            // Collect from i64 observable up-down counters
-            for (meter.observable_updown_counters_i64.items) |obs_updown| {
-                const data_points = obs_updown.collect(arena_allocator) catch continue;
-                if (data_points.len > 0) {
-                    const metric_data = sdk.MetricData{
-                        .name = obs_updown.name,
-                        .description = obs_updown.description,
-                        .unit = obs_updown.unit,
-                        .type = .sum,
-                        .data_points = data_points,
-                        .scope = meter.scope,
-                        .resource = meter.resource,
-                    };
-                    collected_metrics.append(metric_data) catch continue;
-                }
-            }
-
-            // Collect from f64 observable up-down counters
-            for (meter.observable_updown_counters_f64.items) |obs_updown| {
-                const data_points = obs_updown.collect(arena_allocator) catch continue;
-                if (data_points.len > 0) {
-                    const metric_data = sdk.MetricData{
-                        .name = obs_updown.name,
-                        .description = obs_updown.description,
-                        .unit = obs_updown.unit,
-                        .type = .sum,
-                        .data_points = data_points,
-                        .scope = meter.scope,
-                        .resource = meter.resource,
-                    };
-                    collected_metrics.append(metric_data) catch continue;
-                }
-            }
-        }
+        defer allocator.free(collected_metrics);
 
         // Export all collected metrics. Exporter must copy memory
         // that it needs beyond the duration of this call.
-        if (self.exporter) |*exporter| {
-            const result = exporter.exportMetrics(collected_metrics.items);
-            if (result != .success) {
-                api.common.reportError(.{
-                    .component = .processor,
-                    .operation = "metric_export",
-                    .error_type = .network,
-                    .message = "Failed to export metrics",
-                    .context = null,
-                });
-            }
-        }
+        if (self.exporter) |*exporter| _ = exporter.exportMetrics(collected_metrics);
         // Arena cleans up all the memory.
     }
 
@@ -285,3 +175,74 @@ pub const ManualReader = struct {
         return .{ .bridge = sdk.BridgeMetricReader.init(self) };
     }
 };
+
+test "ManualReader and Observable instrument test." {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const MockExporter = @import("exporter.zig").MockMetricExporter;
+
+    // Create mock exporter
+    const mock_exporter = try allocator.create(MockExporter);
+    mock_exporter.* = MockExporter.init(allocator);
+
+    // Create a provider to tie all the parts together.
+    var provider = sdk.MeterProvider.init(allocator, sdk.Resource.empty);
+    defer provider.deinit();
+
+    // Create processor with very short interval for testing (direct init)
+    const processor = try allocator.create(ManualReader);
+    {
+        errdefer allocator.destroy(processor);
+        processor.* = try ManualReader.init(allocator, mock_exporter.metricExporter());
+        {
+            errdefer processor.deinit();
+            try provider.registerProcessor(processor.reader());
+        }
+    }
+
+    const scope = try api.InstrumentationScope.initSimple("cardinality", "1.0.0");
+    var meter = try provider.getMeterWithScope(scope);
+    const ctx = api.Context.empty(allocator);
+
+    const CbStruct = struct {
+        fn callback(_: std.mem.Allocator, result: *api.metrics.ObservableResult(i64), context: *anyopaque) void {
+            const self: *ManualReader = @ptrCast(@alignCast(context));
+            const cardinality = self.reader_state.aggregations.getCardinality();
+            result.observeValue(@intCast(cardinality));
+        }
+    };
+
+    const instrument = try meter.createObservableGauge(
+        i64,
+        "reader.cardinality",
+        "how many active buckets in the reader aggregation.",
+        "1",
+        null,
+        &[_]api.metrics.TypeErasedCallback(i64){},
+    );
+
+    _ = try instrument.registerCallback(ManualReader, CbStruct.callback, processor);
+
+    const up_down = try meter.createCounter(i64, "foo", null, "1", null);
+    for (0..15) |i| {
+        const attributes = try api.AttributeBuilder.init(allocator)
+            .addString("bar", "baz")
+            .addInt("basic", @intCast(i % 4))
+            .finish(allocator);
+        defer api.AttributeKeyValue.deinitOwnedSlice(allocator, attributes);
+        up_down.add(ctx, 1, attributes);
+        if (i % 12 == 0) {
+            processor.collect();
+        }
+    }
+
+    _ = provider.shutdown(null);
+
+    var found = false;
+    for (mock_exporter.exported_metrics.items) |value| {
+        if (std.mem.eql(u8, value.name, instrument.getName())) {
+            found = true;
+        }
+    }
+    try testing.expect(found);
+}

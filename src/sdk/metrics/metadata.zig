@@ -14,7 +14,6 @@ pub const InstrumentType = enum {
     Gauge,
     ObservableCounter,
     ObservableUpDownCounter,
-    ObservableHistogram,
     ObservableGauge,
 };
 
@@ -401,7 +400,6 @@ test "MetricMetadata hash all instrument types" {
     const gauge_hash = MetricMetadata.computeHash("metric", "unit", InstrumentType.Gauge, &scope);
     const obs_counter_hash = MetricMetadata.computeHash("metric", "unit", InstrumentType.ObservableCounter, &scope);
     const obs_updown_hash = MetricMetadata.computeHash("metric", "unit", InstrumentType.ObservableUpDownCounter, &scope);
-    const obs_histogram_hash = MetricMetadata.computeHash("metric", "unit", InstrumentType.ObservableHistogram, &scope);
     const obs_gauge_hash = MetricMetadata.computeHash("metric", "unit", InstrumentType.ObservableGauge, &scope);
 
     // All should be different
@@ -412,7 +410,6 @@ test "MetricMetadata hash all instrument types" {
         gauge_hash,
         obs_counter_hash,
         obs_updown_hash,
-        obs_histogram_hash,
         obs_gauge_hash,
     };
 

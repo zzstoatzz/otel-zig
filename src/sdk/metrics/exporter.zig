@@ -2,7 +2,8 @@ const std = @import("std");
 const api = @import("otel-api");
 
 const sdk = struct {
-    const MetricData = @import("../metrics/data.zig").MetricData;
+    const MetricData = @import("data.zig").MetricData;
+    const MetricDataPoint = @import("data.zig").MetricDataPoint;
 };
 
 /// Metric exporter interface
@@ -15,7 +16,7 @@ pub const MetricExporter = union(enum) {
     /// The caller is required to manage `metrics`. The exporter must be finished with
     /// the memory when this function returns. That includes making deep copies if
     /// necessary for buffering.
-    pub fn exportMetrics(self: *MetricExporter, metrics: []const sdk.MetricData) api.common.ExportResult {
+    pub fn exportMetrics(self: *const MetricExporter, metrics: []const sdk.MetricData) api.common.ExportResult {
         return switch (self.*) {
             .noop => .success,
             .bridge => |exporter| exporter.exportFn(exporter, metrics),
@@ -23,7 +24,7 @@ pub const MetricExporter = union(enum) {
     }
 
     /// Force flush any buffered data
-    pub fn forceFlush(self: *MetricExporter, timeout_ms: ?u64) api.common.ExportResult {
+    pub fn forceFlush(self: *const MetricExporter, timeout_ms: ?u64) api.common.ExportResult {
         return switch (self.*) {
             .noop => .success,
             .bridge => |exporter| exporter.forceFlushFn(exporter, timeout_ms),
@@ -31,7 +32,7 @@ pub const MetricExporter = union(enum) {
     }
 
     /// Shutdown the exporter
-    pub fn shutdown(self: *MetricExporter, timeout_ms: ?u64) api.common.ExportResult {
+    pub fn shutdown(self: *const MetricExporter, timeout_ms: ?u64) api.common.ExportResult {
         return switch (self.*) {
             .noop => .success,
             .bridge => |exporter| exporter.shutdownFn(exporter, timeout_ms),
@@ -139,6 +140,15 @@ pub const MockMetricExporter = struct {
     }
 
     pub fn deinit(self: *MockMetricExporter) void {
+        for (self.exported_metrics.items) |data| {
+            for (data.data_points) |point| {
+                api.AttributeKeyValue.deinitOwnedSlice(self.allocator, point.attributes);
+            }
+            self.allocator.free(data.name);
+            if (data.description) |d| self.allocator.free(d);
+            if (data.unit) |d| self.allocator.free(d);
+            self.allocator.free(data.data_points);
+        }
         self.exported_metrics.deinit();
     }
 
@@ -149,12 +159,29 @@ pub const MockMetricExporter = struct {
     pub fn exportMetrics(self: *MockMetricExporter, metrics: []const sdk.MetricData) api.common.ExportResult {
         _ = self.export_count.fetchAdd(1, .acq_rel);
 
+        var buffer = std.ArrayList(sdk.MetricData).init(self.allocator);
+        defer buffer.deinit();
+
         self.mutex.lock();
         defer self.mutex.unlock();
 
         for (metrics) |metric| {
             // Deep copy the metric since the exporter needs to own the data
-            self.exported_metrics.append(metric) catch return .failure;
+            var data_points = std.ArrayList(sdk.MetricDataPoint).init(self.allocator);
+            for (metric.data_points) |point| {
+                var new_point = point;
+                new_point.attributes = api.AttributeKeyValue.initOwnedSlice(self.allocator, point.attributes) catch return .failure;
+                data_points.append(new_point) catch return .failure;
+            }
+            self.exported_metrics.append(.{
+                .name = self.allocator.dupe(u8, metric.name) catch return .failure,
+                .description = if (metric.description) |v| self.allocator.dupe(u8, v) catch return .failure else null,
+                .unit = if (metric.unit) |v| self.allocator.dupe(u8, v) catch return .failure else null,
+                .type = metric.type,
+                .data_points = data_points.toOwnedSlice() catch return .failure,
+                .scope = metric.scope,
+                .resource = metric.resource,
+            }) catch return .failure;
         }
         return self.export_result;
     }

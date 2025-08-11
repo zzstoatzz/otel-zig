@@ -29,17 +29,13 @@ pub const AdvisoryParams = instrument_zig.AdvisoryParams;
 
 // Observable instrument exports
 const observable_instrument_zig = @import("observable_instrument.zig");
-pub const ObservableCounter = observable_instrument_zig.ObservableCounter;
-pub const ObservableGauge = observable_instrument_zig.ObservableGauge;
-pub const ObservableUpDownCounter = observable_instrument_zig.ObservableUpDownCounter;
+pub const ObservableInstrument = observable_instrument_zig.ObservableInstrument;
 pub const ObservableResult = observable_instrument_zig.ObservableResult;
 pub const ObservableCallback = observable_instrument_zig.ObservableCallback;
-pub const ObservableCallbackNoState = observable_instrument_zig.ObservableCallbackNoState;
 pub const CallbackHandle = observable_instrument_zig.CallbackHandle;
 pub const TypeErasedCallback = observable_instrument_zig.TypeErasedCallback;
 pub const AsyncInstrumentBridge = observable_instrument_zig.AsyncInstrumentBridge;
 pub const createTypeErasedCallback = observable_instrument_zig.createTypeErasedCallback;
-pub const createTypeErasedCallbackNoState = observable_instrument_zig.createTypeErasedCallbackNoState;
 
 // Validation functions for SDK use
 pub const validateInstrumentName = meter_zig.validateInstrumentName;

@@ -141,7 +141,7 @@ pub const MeterProvider = struct {
                 .last_value, .drop => true,
                 else => false,
             },
-            .Histogram, .ObservableHistogram => switch (aggregation_type) {
+            .Histogram => switch (aggregation_type) {
                 .histogram, .sum, .drop => true, // Histograms can be aggregated as sums
                 else => false,
             },

@@ -6,6 +6,10 @@
 
 const std = @import("std");
 
+const sdk = struct {
+    const AggregationTemporality = @import("aggregations.zig").AggregationTemporality;
+};
+
 /// Error handling policy for callback execution
 pub const CallbackErrorPolicy = enum {
     /// Stop processing on first callback error
@@ -19,62 +23,38 @@ pub const CallbackErrorPolicy = enum {
 /// Configuration for async instrument behavior
 pub const AsyncInstrumentConfig = struct {
     /// Policy for handling callback errors
-    error_policy: CallbackErrorPolicy = .log_continue,
+    error_policy: CallbackErrorPolicy,
 
     /// Maximum number of measurements allowed per callback
     /// null means no limit
-    max_measurements_per_callback: ?usize = null,
+    max_measurements_per_callback: ?usize,
 
     /// Whether to warn when callbacks produce no measurements
-    warn_on_no_measurements: bool = false,
+    warn_on_no_measurements: bool,
 
     /// Whether to track callback performance metrics
-    track_callback_metrics: bool = true,
+    track_callback_metrics: bool,
 
-    pub const default: AsyncInstrumentConfig = .{};
+    /// Default config used
+    pub const default: AsyncInstrumentConfig = .{
+        .error_policy = .log_continue,
+        .max_measurements_per_callback = null,
+        .track_callback_metrics = true,
+        .warn_on_no_measurements = true,
+    };
 
-    /// Configuration for production use (minimal overhead)
-    pub fn production() AsyncInstrumentConfig {
-        return AsyncInstrumentConfig{
-            .error_policy = .silent_ignore,
-            .max_measurements_per_callback = 100,
-            .warn_on_no_measurements = false,
-            .track_callback_metrics = false,
-        };
-    }
+    pub const strict: AsyncInstrumentConfig = .{
+        .error_policy = .fail_fast,
+        .max_measurements_per_callback = 10,
+        .track_callback_metrics = true,
+        .warn_on_no_measurements = true,
+    };
 
-    /// Configuration for development/debugging
-    pub fn development() AsyncInstrumentConfig {
-        return AsyncInstrumentConfig{
-            .error_policy = .log_continue,
-            .max_measurements_per_callback = 10,
-            .warn_on_no_measurements = true,
-            .track_callback_metrics = true,
-        };
-    }
+    /// Default config for up-down counters
+    pub const production: AsyncInstrumentConfig = .{
+        .error_policy = .silent_ignore,
+        .max_measurements_per_callback = 100,
+        .track_callback_metrics = false,
+        .warn_on_no_measurements = false,
+    };
 };
-
-test "async instrument config creation" {
-    const testing = std.testing;
-
-    // Test default config
-    const default_config: AsyncInstrumentConfig = .default;
-    try testing.expectEqual(CallbackErrorPolicy.log_continue, default_config.error_policy);
-    try testing.expectEqual(@as(?usize, null), default_config.max_measurements_per_callback);
-    try testing.expectEqual(false, default_config.warn_on_no_measurements);
-    try testing.expectEqual(true, default_config.track_callback_metrics);
-
-    // Test production config
-    const prod_config = AsyncInstrumentConfig.production();
-    try testing.expectEqual(CallbackErrorPolicy.silent_ignore, prod_config.error_policy);
-    try testing.expectEqual(@as(?usize, 100), prod_config.max_measurements_per_callback);
-    try testing.expectEqual(false, prod_config.warn_on_no_measurements);
-    try testing.expectEqual(false, prod_config.track_callback_metrics);
-
-    // Test development config
-    const dev_config = AsyncInstrumentConfig.development();
-    try testing.expectEqual(CallbackErrorPolicy.log_continue, dev_config.error_policy);
-    try testing.expectEqual(@as(?usize, 10), dev_config.max_measurements_per_callback);
-    try testing.expectEqual(true, dev_config.warn_on_no_measurements);
-    try testing.expectEqual(true, dev_config.track_callback_metrics);
-}

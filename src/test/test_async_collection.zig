@@ -11,7 +11,6 @@ const otel_sdk = @import("otel-sdk");
 const ObservableResult = otel_api.metrics.ObservableResult;
 const TypeErasedCallback = otel_api.metrics.TypeErasedCallback;
 const createTypeErasedCallback = otel_api.metrics.createTypeErasedCallback;
-const createTypeErasedCallbackNoState = otel_api.metrics.createTypeErasedCallbackNoState;
 const AttributeKeyValue = otel_api.common.AttributeKeyValue;
 const InstrumentationScope = otel_api.common.InstrumentationScope;
 
@@ -256,7 +255,7 @@ test "collection with mixed callback types" {
 
     const stateful_callback = createTypeErasedCallback(i64, ConcurrentState, concurrentCallback, &state);
     const heavy_callback = createTypeErasedCallback(i64, ConcurrentState, heavyCallback, &state);
-    const stateless_callback_erased = createTypeErasedCallbackNoState(i64, statelessCallback);
+    const stateless_callback_erased = TypeErasedCallback(T){ .stateless = .{ .callback_fn = statelessCallback } };
 
     const handle1 = gauge.registerCallback(stateful_callback);
     const handle2 = gauge.registerCallback(heavy_callback);

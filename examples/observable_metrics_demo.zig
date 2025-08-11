@@ -138,7 +138,7 @@ pub fn main() !void {
     const disk_handle = disk_gauge.registerCallback(disk_callback_erased);
     defer disk_handle.unregister();
 
-    const uptime_callback_erased = otel_api.metrics.createTypeErasedCallbackNoState(f64, uptimeCallback);
+    const uptime_callback_erased = otel_api.metrics.TypeErasedCallback(f64){ .stateless = .{ .callback_fn = uptimeCallback } };
     const uptime_handle = uptime_gauge.registerCallback(uptime_callback_erased);
     defer uptime_handle.unregister();
 

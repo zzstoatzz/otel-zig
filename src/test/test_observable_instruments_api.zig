@@ -16,7 +16,6 @@ const ObservableCallbackNoState = otel_api.metrics.ObservableCallbackNoState;
 const CallbackHandle = otel_api.metrics.CallbackHandle;
 const TypeErasedCallback = otel_api.metrics.TypeErasedCallback;
 const createTypeErasedCallback = otel_api.metrics.createTypeErasedCallback;
-const createTypeErasedCallbackNoState = otel_api.metrics.createTypeErasedCallbackNoState;
 const AttributeKeyValue = otel_api.common.AttributeKeyValue;
 
 test "ObservableResult basic functionality" {
@@ -126,7 +125,7 @@ test "type erased callback creation - stateless" {
         }
     }.call;
 
-    const erased = createTypeErasedCallbackNoState(i64, callback);
+    const erased = TypeErasedCallback(i64){ .stateless = .{ .callback_fn = callback } };
     try testing.expect(erased.state == null);
     try testing.expect(!erased.has_state);
     try testing.expect(@intFromPtr(erased.callback_fn) != 0);
@@ -283,7 +282,7 @@ test "callback type compatibility" {
         }
     }.call;
 
-    const erased_stateless = createTypeErasedCallbackNoState(i64, stateless_callback);
+    const erased_stateless = TypeErasedCallback(i64){ .stateless = .{ .callback_fn = stateless_callback } };
     try testing.expect(!erased_stateless.has_state);
     try testing.expect(erased_stateless.state == null);
 }

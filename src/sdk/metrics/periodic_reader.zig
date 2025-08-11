@@ -45,9 +45,7 @@ pub const PeriodicReader = struct {
     condition: std.Thread.Condition,
     is_shutdown: std.atomic.Value(bool),
     is_running: std.atomic.Value(bool),
-    flush_in_progress: std.atomic.Value(bool),
     collection_in_progress: std.atomic.Value(bool),
-    flush_complete: std.Thread.Condition,
     collection_complete: std.Thread.Condition,
     last_collection_time: std.atomic.Value(i64),
     thread: ?std.Thread,
@@ -69,9 +67,7 @@ pub const PeriodicReader = struct {
             .condition = .{},
             .is_shutdown = std.atomic.Value(bool).init(false),
             .is_running = std.atomic.Value(bool).init(false),
-            .flush_in_progress = std.atomic.Value(bool).init(false),
             .collection_in_progress = std.atomic.Value(bool).init(false),
-            .flush_complete = .{},
             .collection_complete = .{},
             .last_collection_time = std.atomic.Value(i64).init(0),
             .thread = null,
@@ -79,7 +75,7 @@ pub const PeriodicReader = struct {
             .registered_meters = .{},
             .reader_state = try sdk.ReaderAggregationState.init(
                 allocator,
-                .Delta, // Default to Delta temporality for now
+                .delta, // Default to Delta temporality for now
                 @import("reader_aggregation_state.zig").defaultAggregationSelector,
             ),
         };
@@ -137,346 +133,99 @@ pub const PeriodicReader = struct {
         self.reader_state.recordMeasurement(value, attributes, metadata, metadata_hash);
     }
 
-    /// Collect metrics from all registered meters (called by background thread)
-    pub fn collect(self: *PeriodicReader) void {
+    /// Collect metrics from all registered meters.
+    ///
+    /// Must lock mutex before calling.
+    /// collection_in_progress must be false before calling.
+    fn internalCollect(self: *PeriodicReader) void {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
-        const arena_allocator = arena.allocator();
+        const allocator = arena.allocator();
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        if (self.is_shutdown.load(.acquire)) return;
-
-        // Collect from reader state (regular instruments)
-        var collected_metrics = std.ArrayList(sdk.MetricData).init(arena_allocator);
-
-        const reader_state_metrics = self.reader_state.collect(arena_allocator) catch {
-            // Log error if needed
+        // flag that we are in process.
+        if (self.collection_in_progress.swap(true, .acq_rel)) {
+            // It was already already true, so we aren't the first to get here.
+            api.common.reportError(.{
+                .component = .meter,
+                .context = null,
+                .error_type = .internal,
+                .message = "Collection while Collection already in progress.",
+                .operation = "PeriodicReader.internalCollect",
+                .source_error = null,
+            });
             return;
-        };
-        collected_metrics.appendSlice(reader_state_metrics) catch return;
-
-        // Collect from observable instruments in registered meters
-        for (self.registered_meters.items) |meter| {
-            // Collect from i64 observable counters
-            for (meter.observable_counters_i64.items) |obs_counter| {
-                const data_points = obs_counter.collect(arena_allocator) catch continue;
-                if (data_points.len > 0) {
-                    const metric_data = sdk.MetricData{
-                        .name = obs_counter.name,
-                        .description = obs_counter.description,
-                        .unit = obs_counter.unit,
-                        .type = .sum,
-                        .data_points = data_points,
-                        .scope = meter.scope,
-                        .resource = meter.resource,
-                    };
-                    collected_metrics.append(metric_data) catch continue;
-                }
-            }
-
-            // Collect from f64 observable counters
-            for (meter.observable_counters_f64.items) |obs_counter| {
-                const data_points = obs_counter.collect(arena_allocator) catch continue;
-                if (data_points.len > 0) {
-                    const metric_data = sdk.MetricData{
-                        .name = obs_counter.name,
-                        .description = obs_counter.description,
-                        .unit = obs_counter.unit,
-                        .type = .sum,
-                        .data_points = data_points,
-                        .scope = meter.scope,
-                        .resource = meter.resource,
-                    };
-                    collected_metrics.append(metric_data) catch continue;
-                }
-            }
-
-            // Collect from i64 observable gauges
-            for (meter.observable_gauges_i64.items) |obs_gauge| {
-                const data_points = obs_gauge.collect(arena_allocator) catch continue;
-                if (data_points.len > 0) {
-                    const metric_data = sdk.MetricData{
-                        .name = obs_gauge.name,
-                        .description = obs_gauge.description,
-                        .unit = obs_gauge.unit,
-                        .type = .gauge,
-                        .data_points = data_points,
-                        .scope = meter.scope,
-                        .resource = meter.resource,
-                    };
-                    collected_metrics.append(metric_data) catch continue;
-                }
-            }
-
-            // Collect from f64 observable gauges
-            for (meter.observable_gauges_f64.items) |obs_gauge| {
-                const data_points = obs_gauge.collect(arena_allocator) catch continue;
-                if (data_points.len > 0) {
-                    const metric_data = sdk.MetricData{
-                        .name = obs_gauge.name,
-                        .description = obs_gauge.description,
-                        .unit = obs_gauge.unit,
-                        .type = .gauge,
-                        .data_points = data_points,
-                        .scope = meter.scope,
-                        .resource = meter.resource,
-                    };
-                    collected_metrics.append(metric_data) catch continue;
-                }
-            }
-
-            // Collect from i64 observable up-down counters
-            for (meter.observable_updown_counters_i64.items) |obs_updown| {
-                const data_points = obs_updown.collect(arena_allocator) catch continue;
-                if (data_points.len > 0) {
-                    const metric_data = sdk.MetricData{
-                        .name = obs_updown.name,
-                        .description = obs_updown.description,
-                        .unit = obs_updown.unit,
-                        .type = .sum,
-                        .data_points = data_points,
-                        .scope = meter.scope,
-                        .resource = meter.resource,
-                    };
-                    collected_metrics.append(metric_data) catch continue;
-                }
-            }
-
-            // Collect from f64 observable up-down counters
-            for (meter.observable_updown_counters_f64.items) |obs_updown| {
-                const data_points = obs_updown.collect(arena_allocator) catch continue;
-                if (data_points.len > 0) {
-                    const metric_data = sdk.MetricData{
-                        .name = obs_updown.name,
-                        .description = obs_updown.description,
-                        .unit = obs_updown.unit,
-                        .type = .sum,
-                        .data_points = data_points,
-                        .scope = meter.scope,
-                        .resource = meter.resource,
-                    };
-                    collected_metrics.append(metric_data) catch continue;
-                }
-            }
         }
 
-        // Export all collected metrics. Exporter must copy memory
-        // that it needs beyond the duration of this call.
-        if (self.exporter) |*exporter| _ = exporter.exportMetrics(collected_metrics.items);
-        // Arena cleans up all the memory.
-    }
-
-    /// Force flush the exporter
-    pub fn forceFlush(self: *PeriodicReader, timeout_ms: ?u64) api.common.ProcessResult {
-        // Quick check without mutex
-        if (self.is_shutdown.load(.acquire)) {
-            return .failure;
-        }
-
-        const start_time = std.time.milliTimestamp();
-
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        // Try to set flush_in_progress atomically
-        const was_flushing = self.flush_in_progress.swap(true, .seq_cst);
-        if (was_flushing) {
-            // Another flush is in progress, wait for it
-            const remaining_ms = if (timeout_ms) |ms|
-                ms -| @as(u64, @intCast(std.time.milliTimestamp() - start_time))
-            else
-                null;
-
-            if (remaining_ms == 0) {
-                return .timeout;
-            }
-
-            if (remaining_ms) |ms| {
-                self.flush_complete.timedWait(&self.mutex, ms * std.time.ns_per_ms) catch {
-                    return .timeout;
-                };
-            } else {
-                self.flush_complete.wait(&self.mutex);
-            }
-            return .success;
-        }
-
-        defer {
-            self.flush_in_progress.store(false, .release);
-            self.flush_complete.broadcast();
-        }
-
-        // Wait for any collection in progress
-        while (self.collection_in_progress.load(.acquire)) {
-            const remaining_ms = if (timeout_ms) |ms|
-                ms -| @as(u64, @intCast(std.time.milliTimestamp() - start_time))
-            else
-                null;
-
-            if (remaining_ms == 0) {
-                return .timeout;
-            }
-
-            if (remaining_ms) |ms| {
-                self.collection_complete.timedWait(&self.mutex, ms * std.time.ns_per_ms) catch {
-                    return .timeout;
-                };
-            } else {
-                self.collection_complete.wait(&self.mutex);
-            }
-        }
-
-        // Now do immediate collection with atomic flag
-        self.collection_in_progress.store(true, .release);
+        // at this point we are the lucky thread that got false when it did the swap above.
         defer {
             self.collection_in_progress.store(false, .release);
             self.collection_complete.broadcast();
         }
 
-        // Perform immediate metric collection
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
-
-        // Collect from reader state (regular instruments)
-        var collected_metrics = std.ArrayList(sdk.MetricData).init(arena.allocator());
-
-        const reader_state_metrics = self.reader_state.collect(arena.allocator()) catch {
-            return .failure;
-        };
-        collected_metrics.appendSlice(reader_state_metrics) catch return .failure;
-
-        // Collect from observable instruments in registered meters
+        // trigger the observables to write their data to the aggregation state.
         for (self.registered_meters.items) |meter| {
-            // Collect from i64 observable counters
-            for (meter.observable_counters_i64.items) |obs_counter| {
-                const data_points = obs_counter.collect(arena.allocator()) catch continue;
-                if (data_points.len > 0) {
-                    const metric_data = sdk.MetricData{
-                        .name = obs_counter.name,
-                        .description = obs_counter.description,
-                        .unit = obs_counter.unit,
-                        .type = .sum,
-                        .data_points = data_points,
-                        .scope = meter.scope,
-                        .resource = meter.resource,
-                    };
-                    collected_metrics.append(metric_data) catch continue;
-                }
-            }
-
-            // Collect from f64 observable counters
-            for (meter.observable_counters_f64.items) |obs_counter| {
-                const data_points = obs_counter.collect(arena.allocator()) catch continue;
-                if (data_points.len > 0) {
-                    const metric_data = sdk.MetricData{
-                        .name = obs_counter.name,
-                        .description = obs_counter.description,
-                        .unit = obs_counter.unit,
-                        .type = .sum,
-                        .data_points = data_points,
-                        .scope = meter.scope,
-                        .resource = meter.resource,
-                    };
-                    collected_metrics.append(metric_data) catch continue;
-                }
-            }
-
-            // Collect from i64 observable gauges
-            for (meter.observable_gauges_i64.items) |obs_gauge| {
-                const data_points = obs_gauge.collect(arena.allocator()) catch continue;
-                if (data_points.len > 0) {
-                    const metric_data = sdk.MetricData{
-                        .name = obs_gauge.name,
-                        .description = obs_gauge.description,
-                        .unit = obs_gauge.unit,
-                        .type = .gauge,
-                        .data_points = data_points,
-                        .scope = meter.scope,
-                        .resource = meter.resource,
-                    };
-                    collected_metrics.append(metric_data) catch continue;
-                }
-            }
-
-            // Collect from f64 observable gauges
-            for (meter.observable_gauges_f64.items) |obs_gauge| {
-                const data_points = obs_gauge.collect(arena.allocator()) catch continue;
-                if (data_points.len > 0) {
-                    const metric_data = sdk.MetricData{
-                        .name = obs_gauge.name,
-                        .description = obs_gauge.description,
-                        .unit = obs_gauge.unit,
-                        .type = .gauge,
-                        .data_points = data_points,
-                        .scope = meter.scope,
-                        .resource = meter.resource,
-                    };
-                    collected_metrics.append(metric_data) catch continue;
-                }
-            }
-
-            // Collect from i64 observable up-down counters
-            for (meter.observable_updown_counters_i64.items) |obs_updown| {
-                const data_points = obs_updown.collect(arena.allocator()) catch continue;
-                if (data_points.len > 0) {
-                    const metric_data = sdk.MetricData{
-                        .name = obs_updown.name,
-                        .description = obs_updown.description,
-                        .unit = obs_updown.unit,
-                        .type = .sum,
-                        .data_points = data_points,
-                        .scope = meter.scope,
-                        .resource = meter.resource,
-                    };
-                    collected_metrics.append(metric_data) catch continue;
-                }
-            }
-
-            // Collect from f64 observable up-down counters
-            for (meter.observable_updown_counters_f64.items) |obs_updown| {
-                const data_points = obs_updown.collect(arena.allocator()) catch continue;
-                if (data_points.len > 0) {
-                    const metric_data = sdk.MetricData{
-                        .name = obs_updown.name,
-                        .description = obs_updown.description,
-                        .unit = obs_updown.unit,
-                        .type = .sum,
-                        .data_points = data_points,
-                        .scope = meter.scope,
-                        .resource = meter.resource,
-                    };
-                    collected_metrics.append(metric_data) catch continue;
-                }
-            }
+            meter.triggerObservables(allocator, self.reader());
         }
 
-        // Update last collection time atomically
-        self.last_collection_time.store(std.time.milliTimestamp(), .release);
+        // Collect all the aggregated metrics.
+        const collected_metrics = self.reader_state.collect(allocator) catch |err| {
+            std.log.err("Failed to collect metrics: {}", .{err});
+            // Log error if needed
+            return;
+        };
+        defer allocator.free(collected_metrics);
 
-        // Export if we have metrics
-        if (collected_metrics.items.len > 0 and self.exporter != null) {
-            // Temporarily release mutex for export
-            self.mutex.unlock();
-            const export_result = self.exporter.?.exportMetrics(collected_metrics.items);
+        // Export all collected metrics. Exporter must copy memory
+        // that it needs beyond the duration of this call.
+        if (self.exporter) |*exporter| _ = exporter.exportMetrics(collected_metrics);
+        // Arena cleans up all the memory.
+    }
+
+    pub fn collect(self: *PeriodicReader) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        while (self.collection_in_progress.load(.acquire)) {
+            self.collection_complete.wait(&self.mutex);
+        }
+
+        self.internalCollect();
+    }
+
+    /// Force flush the exporter
+    pub fn forceFlush(self: *PeriodicReader, timeout_ms: ?u64) api.common.ProcessResult {
+        const start_time = std.time.milliTimestamp();
+
+        // force flush has to cascade to the exporter as well, but we don't need to hold the mutex for that part.
+        {
             self.mutex.lock();
-
-            if (export_result != .success) {
-                return .failure;
+            defer self.mutex.unlock();
+            // Wait for any existing collection to complete
+            while (self.collection_in_progress.load(.acquire)) {
+                if (timeout_ms) |collection_timeout| {
+                    const delta: u64 = @intCast(std.time.milliTimestamp() - start_time);
+                    if (delta >= collection_timeout) return .timeout;
+                    self.collection_complete.timedWait(&self.mutex, collection_timeout - delta) catch {
+                        return .timeout;
+                    };
+                } else {
+                    self.collection_complete.wait(&self.mutex);
+                    // block.
+                }
             }
+            self.internalCollect();
         }
 
         // Flush the exporter
-        if (self.exporter) |*exporter| {
-            self.mutex.unlock();
-            const flush_result = exporter.forceFlush(timeout_ms);
-            self.mutex.lock();
-
-            return if (flush_result == .success) .success else .failure;
-        }
-
-        return .success;
+        return if (self.exporter) |exporter| blk: {
+            if (timeout_ms) |collection_timeout| {
+                const delta: u64 = @intCast(std.time.milliTimestamp() - start_time);
+                if (delta >= collection_timeout) return .timeout;
+                break :blk exporter.forceFlush(collection_timeout - delta).asProcessResult();
+            } else {
+                break :blk exporter.forceFlush(null).asProcessResult();
+            }
+        } else .success;
     }
 
     /// Shutdown the processor
@@ -549,11 +298,6 @@ pub const PeriodicReader = struct {
             self.mutex.lock();
             defer self.mutex.unlock();
 
-            // Double-check under mutex
-            if (self.is_shutdown.load(.acquire)) {
-                break;
-            }
-
             // Calculate wait time in nanoseconds
             const wait_ns = @as(u64, self.collection_interval_ms) * std.time.ns_per_ms;
 
@@ -562,29 +306,23 @@ pub const PeriodicReader = struct {
                 // Timeout - normal collection cycle
             };
 
-            // Skip if flush is in progress
-            if (self.flush_in_progress.load(.acquire)) {
-                continue;
+            // > Given timedWait() can be interrupted spuriously, the blocking condition
+            // > should be checked continuously irrespective of any notifications from
+            // > signal() or broadcast().
+            if (self.is_shutdown.load(.acquire)) {
+                break;
             }
 
             // Try to acquire collection lock
-            if (self.collection_in_progress.swap(true, .seq_cst)) {
+            // Is this possible? collection requires the mutex, no?
+            if (self.collection_in_progress.load(.acquire)) {
                 // Already collecting, skip this cycle
                 continue;
             }
 
-            defer {
-                self.collection_in_progress.store(false, .release);
-                self.collection_complete.broadcast();
-            }
-
             // Update last collection time
             self.last_collection_time.store(std.time.milliTimestamp(), .release);
-
-            // Do the collection
-            self.mutex.unlock();
-            self.collect();
-            self.mutex.lock();
+            self.internalCollect();
         }
     }
 };
@@ -608,7 +346,7 @@ test "BasicPeriodicProcessor - direct init vs pipeline init thread behavior" {
         errdefer allocator.destroy(processor);
         processor.* = try PeriodicReader.init(allocator, mock_exporter.metricExporter(), 100); // 100ms
         {
-            errdefer provider.deinit();
+            errdefer processor.deinit();
             try provider.registerProcessor(processor.reader());
         }
     }
@@ -675,4 +413,77 @@ test "BasicPeriodicProcessor - no thread start without meters" {
     // Shutdown should work fine
     _ = processor.shutdown(100);
     try testing.expect(processor.is_shutdown.load(.acquire));
+}
+
+test "PeriodicReader and Observable instrument test." {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const MockExporter = @import("exporter.zig").MockMetricExporter;
+
+    // Create mock exporter
+    const mock_exporter = try allocator.create(MockExporter);
+    mock_exporter.* = MockExporter.init(allocator);
+
+    // Create a provider to tie all the parts together.
+    var provider = sdk.MeterProvider.init(allocator, sdk.Resource.empty);
+    defer provider.deinit();
+
+    // Create processor with very short interval for testing (direct init)
+    const processor = try allocator.create(PeriodicReader);
+    {
+        errdefer allocator.destroy(processor);
+        processor.* = try PeriodicReader.init(allocator, mock_exporter.metricExporter(), 100); // 100ms
+        {
+            errdefer processor.deinit();
+            try provider.registerProcessor(processor.reader());
+        }
+    }
+
+    try processor.start();
+
+    const scope = try api.InstrumentationScope.initSimple("cardinality", "1.0.0");
+    var meter = try provider.getMeterWithScope(scope);
+    const ctx = api.Context.empty(allocator);
+
+    const CbStruct = struct {
+        fn callback(_: std.mem.Allocator, result: *api.metrics.ObservableResult(i64), context: *anyopaque) void {
+            const self: *PeriodicReader = @ptrCast(@alignCast(context));
+            const cardinality = self.reader_state.aggregations.getCardinality();
+            result.observeValue(@intCast(cardinality));
+        }
+    };
+
+    const instrument = try meter.createObservableGauge(
+        i64,
+        "reader.cardinality",
+        "how many active buckets in the reader aggregation.",
+        "1",
+        null,
+        &[_]api.metrics.TypeErasedCallback(i64){},
+    );
+
+    _ = try instrument.registerCallback(PeriodicReader, CbStruct.callback, processor);
+
+    const up_down = try meter.createCounter(i64, "foo", null, "1", null);
+    for (0..15) |i| {
+        const attributes = try api.AttributeBuilder.init(allocator)
+            .addString("bar", "baz")
+            .addInt("basic", @intCast(i % 4))
+            .finish(allocator);
+        defer api.AttributeKeyValue.deinitOwnedSlice(allocator, attributes);
+        up_down.add(ctx, 1, attributes);
+        if (i % 12 == 0) {
+            processor.collect();
+        }
+    }
+
+    _ = provider.shutdown(null);
+
+    var found = false;
+    for (mock_exporter.exported_metrics.items) |value| {
+        if (std.mem.eql(u8, value.name, instrument.getName())) {
+            found = true;
+        }
+    }
+    try testing.expect(found);
 }

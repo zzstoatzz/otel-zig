@@ -25,35 +25,35 @@ pub const Reader = union(enum) {
     noop: void,
     bridge: BridgeReader,
 
-    pub fn collect(self: *Reader) void {
+    pub fn collect(self: *const Reader) void {
         switch (self.*) {
             .noop => {},
             .bridge => |reader| reader.collectFn(reader.reader_ptr),
         }
     }
 
-    pub fn registerMeter(self: *Reader, meter: *sdk.BasicMeter) void {
+    pub fn registerMeter(self: *const Reader, meter: *sdk.BasicMeter) void {
         switch (self.*) {
             .noop => {},
             .bridge => |reader| reader.registerMeterFn(reader.reader_ptr, meter),
         }
     }
 
-    pub fn unregisterMeter(self: *Reader, meter: *sdk.BasicMeter) void {
+    pub fn unregisterMeter(self: *const Reader, meter: *sdk.BasicMeter) void {
         switch (self.*) {
             .noop => {},
             .bridge => |reader| reader.unregisterMeterFn(reader.reader_ptr, meter),
         }
     }
 
-    pub fn forceFlush(self: *Reader, timeout_ms: ?u64) api.common.ProcessResult {
+    pub fn forceFlush(self: *const Reader, timeout_ms: ?u64) api.common.ProcessResult {
         return switch (self.*) {
             .noop => .success,
             .bridge => |reader| reader.forceFlushFn(reader.reader_ptr, timeout_ms),
         };
     }
 
-    pub fn shutdown(self: *Reader, timeout_ms: ?u64) api.common.ProcessResult {
+    pub fn shutdown(self: *const Reader, timeout_ms: ?u64) api.common.ProcessResult {
         return switch (self.*) {
             .noop => .success,
             .bridge => |reader| reader.shutdownFn(reader.reader_ptr, timeout_ms),
@@ -78,7 +78,7 @@ pub const Reader = union(enum) {
 
     /// Record a measurement from an instrument
     pub fn recordMeasurement(
-        self: *Reader,
+        self: *const Reader,
         value: MetricValue,
         attributes: []const api.AttributeKeyValue,
         metadata: sdk.MetricMetadata,

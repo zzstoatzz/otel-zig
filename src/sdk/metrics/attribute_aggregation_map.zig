@@ -28,52 +28,7 @@ pub const AttributeAggregationEntry = struct {
 };
 
 /// Aggregation union type that supports all aggregation variants
-pub const Aggregation = union(enum) {
-    sum_i64: sdk.aggregations.SumAggregation(i64),
-    sum_f64: sdk.aggregations.SumAggregation(f64),
-    last_value_i64: sdk.aggregations.LastValueAggregation(i64),
-    last_value_f64: sdk.aggregations.LastValueAggregation(f64),
-    histogram_i64: sdk.aggregations.HistogramAggregation(i64),
-    histogram_f64: sdk.aggregations.HistogramAggregation(f64),
-    drop: void, // Drop aggregation - ignores all measurements
-
-    /// Record a measurement on this aggregation (lock-free)
-    pub fn record(self: *Aggregation, value: anytype, allocator: std.mem.Allocator) void {
-        const T = @TypeOf(value);
-        switch (self.*) {
-            .sum_i64 => |*s| if (T == i64) s.add(value),
-            .sum_f64 => |*s| if (T == f64) s.add(value),
-            .last_value_i64 => |*lv| if (T == i64) lv.record(value),
-            .last_value_f64 => |*lv| if (T == f64) lv.record(value),
-            .histogram_i64 => |*h| if (T == i64) h.record(value),
-            .histogram_f64 => |*h| if (T == f64) h.record(value),
-            .drop => {}, // Intentionally do nothing
-        }
-        _ = allocator; // Unused in Phase 1c (lock-free)
-    }
-
-    pub fn reset(self: *Aggregation) void {
-        switch (self.*) {
-            .sum_i64 => |*s| s.reset(),
-            .sum_f64 => |*s| s.reset(),
-            .last_value_i64 => |*s| s.reset(),
-            .last_value_f64 => |*s| s.reset(),
-            .histogram_i64 => |*s| s.reset(),
-            .histogram_f64 => |*s| s.reset(),
-            .drop => {},
-        }
-    }
-
-    /// Clean up aggregation resources
-    pub fn deinit(self: *Aggregation, allocator: std.mem.Allocator) void {
-        switch (self.*) {
-            .histogram_i64 => |*h| h.deinit(allocator),
-            .histogram_f64 => |*h| h.deinit(allocator),
-            .drop => {}, // Drop aggregation has no cleanup
-            else => {}, // Other aggregations don't need cleanup
-        }
-    }
-};
+pub const Aggregation = sdk.aggregations.Aggregation;
 
 /// Attribute-based aggregation map with cardinality limits
 pub const AttributeAggregationMap = struct {
@@ -203,16 +158,19 @@ pub const AttributeAggregationMap = struct {
     /// Create aggregation of the appropriate type for the instrument
     fn createAggregationForType(self: *AttributeAggregationMap, metadata: sdk.MetricMetadata, value: sdk.MetricValue) !Aggregation {
         return switch (metadata.instrument_type) {
-            .Counter, .ObservableCounter => .{
-                .sum_i64 = .init(),
+            .Counter, .ObservableCounter => switch (value) {
+                .i64 => .{ .sum_i64 = .init() },
+                .f64 => .{ .sum_f64 = .init() },
             },
-            .UpDownCounter, .ObservableUpDownCounter => .{
-                .sum_i64 = .init(),
+            .UpDownCounter, .ObservableUpDownCounter => switch (value) {
+                .i64 => .{ .sum_i64 = .init() },
+                .f64 => .{ .sum_f64 = .init() },
             },
-            .Gauge, .ObservableGauge => .{
-                .last_value_f64 = .init(),
+            .Gauge, .ObservableGauge => switch (value) {
+                .i64 => .{ .last_value_i64 = .init() },
+                .f64 => .{ .last_value_f64 = .init() },
             },
-            .Histogram, .ObservableHistogram => switch (value) {
+            .Histogram => switch (value) {
                 .i64 => .{ .histogram_i64 = try .init(self.allocator, .{}) },
                 .f64 => .{ .histogram_f64 = try .init(self.allocator, .{}) },
             },

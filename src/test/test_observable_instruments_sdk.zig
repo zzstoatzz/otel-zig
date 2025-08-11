@@ -12,7 +12,6 @@ const otel_sdk = @import("otel-sdk");
 const ObservableResult = otel_api.metrics.ObservableResult;
 const TypeErasedCallback = otel_api.metrics.TypeErasedCallback;
 const createTypeErasedCallback = otel_api.metrics.createTypeErasedCallback;
-const createTypeErasedCallbackNoState = otel_api.metrics.createTypeErasedCallbackNoState;
 const AttributeKeyValue = otel_api.common.AttributeKeyValue;
 
 const AsyncInstrumentConfig = otel_sdk.metrics.AsyncInstrumentConfig;
@@ -186,7 +185,7 @@ test "multiple callback registration and execution" {
 
     const callback1 = createTypeErasedCallback(i64, TestState, testCallback, &state1);
     const callback2 = createTypeErasedCallback(i64, TestState, testCallback, &state2);
-    const callback3 = createTypeErasedCallbackNoState(i64, testCallbackNoState);
+    const callback3 = TypeErasedCallback(i64){ .stateless = .{ .callback_fn = testCallbackNoState } };
 
     const handle1 = counter.registerCallback(callback1);
     const handle2 = counter.registerCallback(callback2);

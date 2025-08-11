@@ -12,7 +12,6 @@ const otel_sdk = @import("otel-sdk");
 const ObservableResult = otel_api.metrics.ObservableResult;
 const TypeErasedCallback = otel_api.metrics.TypeErasedCallback;
 const createTypeErasedCallback = otel_api.metrics.createTypeErasedCallback;
-const createTypeErasedCallbackNoState = otel_api.metrics.createTypeErasedCallbackNoState;
 const AttributeKeyValue = otel_api.common.AttributeKeyValue;
 const ErrorInfo = otel_api.common.ErrorInfo;
 const Component = otel_api.common.Component;

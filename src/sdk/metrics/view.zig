@@ -179,7 +179,7 @@ pub const ViewApplication = struct {
         return switch (instrument_type) {
             .Counter, .UpDownCounter, .ObservableCounter, .ObservableUpDownCounter => .sum,
             .Gauge, .ObservableGauge => .last_value,
-            .Histogram, .ObservableHistogram => .histogram,
+            .Histogram => .histogram,
         };
     }
 };

@@ -7,41 +7,29 @@ const std = @import("std");
 const api = @import("otel-api");
 
 const sdk = struct {
-    const MetricMetadata = @import("metadata.zig").MetricMetadata;
+    const AttributeAggregationMap = @import("attribute_aggregation_map.zig").AttributeAggregationMap;
+    const AttributeAggregationEntry = @import("attribute_aggregation_map.zig").AttributeAggregationEntry;
     const InstrumentType = @import("metadata.zig").InstrumentType;
-    const aggregations = @import("aggregations.zig");
     const MetricData = @import("data.zig").MetricData;
     const MetricDataPoint = @import("data.zig").MetricDataPoint;
+    const MetricMetadata = @import("metadata.zig").MetricMetadata;
     const MetricValue = @import("reader.zig").MetricValue;
-    const AttributeAggregationMap = @import("attribute_aggregation_map.zig").AttributeAggregationMap;
-    const Aggregation = @import("attribute_aggregation_map.zig").Aggregation;
-    const AttributeAggregationEntry = @import("attribute_aggregation_map.zig").AttributeAggregationEntry;
     const Resource = @import("../resource/resource.zig").Resource;
+    const aggregations = @import("aggregations.zig");
 };
 
-/// Aggregation temporality for metric data points
-pub const AggregationTemporality = enum {
-    Delta,
-    Cumulative,
-};
+pub const AggregationTemporality = sdk.aggregations.AggregationTemporality;
+pub const AggregationType = sdk.aggregations.AggregationType;
 
 /// Function type for selecting aggregation based on instrument type
 pub const AggregationSelector = *const fn (instrument_type: sdk.InstrumentType) AggregationType;
-
-/// Types of aggregations available
-pub const AggregationType = enum {
-    sum,
-    last_value,
-    histogram,
-    drop, // Special case: don't aggregate at all
-};
 
 /// Default aggregation selector based on instrument type
 pub fn defaultAggregationSelector(instrument_type: sdk.InstrumentType) AggregationType {
     return switch (instrument_type) {
         .Counter, .UpDownCounter, .ObservableCounter, .ObservableUpDownCounter => .sum,
         .Gauge, .ObservableGauge => .last_value,
-        .Histogram, .ObservableHistogram => .histogram,
+        .Histogram => .histogram,
     };
 }
 
@@ -94,7 +82,7 @@ pub const ReaderAggregationState = struct {
         metadata: sdk.MetricMetadata,
         metadata_hash: u64,
     ) void {
-        // Phase 1c: Lock only for map access, aggregation updates are lock-free
+        // Lock only for map access
         const agg = blk: {
             self.mutex.lock();
             defer self.mutex.unlock();
@@ -103,9 +91,15 @@ pub const ReaderAggregationState = struct {
         };
 
         // Record the measurement lock-free (aggregations use atomic operations)
-        switch (value) {
-            .i64 => |v| agg.aggregation.record(v, self.allocator),
-            .f64 => |v| agg.aggregation.record(v, self.allocator),
+        switch (metadata.instrument_type) {
+            .Counter, .UpDownCounter => switch (value) {
+                .i64 => |v| agg.aggregation.add(v),
+                .f64 => |v| agg.aggregation.add(v),
+            },
+            else => switch (value) {
+                .i64 => |v| _ = agg.aggregation.record(v),
+                .f64 => |v| _ = agg.aggregation.record(v),
+            },
         }
     }
 

@@ -7,15 +7,61 @@ const std = @import("std");
 
 const InstrumentType = @import("metadata.zig").InstrumentType;
 
-pub const DEFAULT_HISTOGRAM_BOUNDARIES = [_]f64{
-    0.0,   5.0,   10.0,   25.0,   50.0,   75.0,   100.0,   250.0,
-    500.0, 750.0, 1000.0, 2500.0, 5000.0, 7500.0, 10000.0,
-};
+/// Aggregation union type that supports all aggregation variants
+pub const Aggregation = union(enum) {
+    sum_i64: SumAggregation(i64),
+    sum_f64: SumAggregation(f64),
+    last_value_i64: LastValueAggregation(i64),
+    last_value_f64: LastValueAggregation(f64),
+    histogram_i64: HistogramAggregation(i64),
+    histogram_f64: HistogramAggregation(f64),
+    drop: void, // Drop aggregation - ignores all measurements
 
-/// Configuration for histogram aggregation
-pub const HistogramAggregationConfig = struct {
-    boundaries: []const f64 = &DEFAULT_HISTOGRAM_BOUNDARIES,
-    record_min_max: bool = true,
+    // Add a measurement to this aggregation (lock-free)
+    pub fn add(self: *Aggregation, value: anytype) void {
+        const T = @TypeOf(value);
+        switch (self.*) {
+            .sum_i64 => |*s| if (T == i64) s.add(value) else unreachable,
+            .sum_f64 => |*s| if (T == f64) s.add(value) else unreachable,
+            else => unreachable,
+        }
+    }
+
+    /// Record a measurement on this aggregation (lock-free)
+    pub fn record(self: *Aggregation, value: anytype) bool {
+        const T = @TypeOf(value);
+        switch (self.*) {
+            .sum_i64 => |*s| if (T == i64) return s.record(value, false) else unreachable,
+            .sum_f64 => |*s| if (T == f64) return s.record(value, false) else unreachable,
+            .last_value_i64 => |*lv| if (T == i64) lv.record(value) else unreachable,
+            .last_value_f64 => |*lv| if (T == f64) lv.record(value) else unreachable,
+            .histogram_i64 => |*h| if (T == i64) h.record(value) else unreachable,
+            .histogram_f64 => |*h| if (T == f64) h.record(value) else unreachable,
+            .drop => {}, // Intentionally do nothing
+        }
+        return true;
+    }
+
+    pub fn reset(self: *Aggregation) void {
+        switch (self.*) {
+            .sum_i64 => |*s| s.reset(),
+            .sum_f64 => |*s| s.reset(),
+            .last_value_i64 => |*s| s.reset(),
+            .last_value_f64 => |*s| s.reset(),
+            .histogram_i64 => |*s| s.reset(),
+            .histogram_f64 => |*s| s.reset(),
+            .drop => {},
+        }
+    }
+
+    /// Clean up aggregation resources
+    pub fn deinit(self: *Aggregation, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .histogram_i64 => |*h| h.deinit(allocator),
+            .histogram_f64 => |*h| h.deinit(allocator),
+            else => {}, // Other aggregations don't need cleanup
+        }
+    }
 };
 
 /// Aggregation state for sum aggregation
@@ -33,6 +79,24 @@ pub fn SumAggregation(comptime T: type) type {
 
         pub fn add(self: *@This(), value: T) void {
             _ = self.value.fetchAdd(value, .monotonic);
+        }
+
+        /// Attempt to replace the aggregation value.
+        ///
+        /// If monotonic is true, the new value must be higher than the old value.
+        /// returns true on successfully recording the value. false otherwise.
+        pub fn record(self: *@This(), value: T, monotonic: bool) bool {
+            return if (monotonic and T != f64) blk: {
+                var old_value = value;
+                while (self.value.cmpxchgWeak(old_value, value, .release, .acquire)) |v| {
+                    if (v > value) break :blk false;
+                    old_value = v;
+                }
+                break :blk true;
+            } else blk: {
+                self.value.store(value, .release);
+                break :blk true;
+            };
         }
 
         pub fn getValue(self: *const @This()) T {
@@ -241,6 +305,31 @@ pub fn HistogramAggregation(comptime T: type) type {
         }
     };
 }
+
+pub const DEFAULT_HISTOGRAM_BOUNDARIES = [_]f64{
+    0.0,   5.0,   10.0,   25.0,   50.0,   75.0,   100.0,   250.0,
+    500.0, 750.0, 1000.0, 2500.0, 5000.0, 7500.0, 10000.0,
+};
+
+/// Configuration for histogram aggregation
+pub const HistogramAggregationConfig = struct {
+    boundaries: []const f64 = &DEFAULT_HISTOGRAM_BOUNDARIES,
+    record_min_max: bool = true,
+};
+
+/// Aggregation temporality for metric data points
+pub const AggregationTemporality = enum {
+    delta,
+    cumulative,
+};
+
+/// Types of aggregations available
+pub const AggregationType = enum {
+    sum,
+    last_value,
+    histogram,
+    drop, // Special case: don't aggregate at all
+};
 
 const testing = @import("std").testing;
 
