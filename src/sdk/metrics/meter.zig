@@ -2,7 +2,6 @@ const std = @import("std");
 const api = @import("otel-api");
 
 const sdk = struct {
-    const AsyncInstrumentConfig = @import("async_instrument_config.zig").AsyncInstrumentConfig;
     const InstrumentType = @import("metadata.zig").InstrumentType;
     const MeterProvider = @import("meter_provider.zig").MeterProvider;
     const MetricData = @import("data.zig").MetricData;
@@ -36,7 +35,7 @@ pub const Meter = struct {
     observables_f64: std.ArrayListUnmanaged(*sdk.async_instr.Observable(f64)),
 
     // Configuration for async instruments
-    async_config: sdk.AsyncInstrumentConfig,
+    async_config: sdk.async_instr.AsyncInstrumentConfig,
 
     pub fn init(
         allocator: std.mem.Allocator,

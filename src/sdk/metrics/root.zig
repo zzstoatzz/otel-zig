@@ -38,14 +38,10 @@ const exporter_zig = @import("exporter.zig");
 pub const MetricExporter = exporter_zig.MetricExporter;
 pub const BridgeMetricExporter = exporter_zig.BridgeMetricExporter;
 
-// Observable instrument exports
-const async_instrument_config_zig = @import("async_instrument_config.zig");
-pub const AsyncInstrumentConfig = async_instrument_config_zig.AsyncInstrumentConfig;
-pub const CallbackErrorPolicy = async_instrument_config_zig.CallbackErrorPolicy;
-
 const async_instrument_zig = @import("async_instruments.zig");
 pub const Observable = async_instrument_zig.Observable;
-pub const CallbackMetrics = async_instrument_zig.CallbackMetrics;
+pub const AsyncInstrumentConfig = async_instrument_zig.AsyncInstrumentConfig;
+pub const CallbackErrorPolicy = async_instrument_zig.CallbackErrorPolicy;
 
 // Re-export the setup helper functions
 pub const setupGlobalProvider = @import("setup.zig").setupGlobalProvider;

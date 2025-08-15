@@ -9,6 +9,17 @@ const otel_api = @import("otel-api");
 const otel_sdk = @import("otel-sdk");
 const otel_exporters = @import("otel-exporters");
 
+// State structures for stateful callbacks
+const MemoryState = struct {
+    base_used: i64 = 1024 * 1024 * 512, // 512 MB base
+    base_total: i64 = 1024 * 1024 * 1024 * 8, // 8 GB total
+};
+
+const RequestState = struct {
+    total_requests: i64 = 0,
+    start_time: i64,
+};
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -16,6 +27,62 @@ pub fn main() !void {
 
     try basicProcessorDemo(allocator);
     try advancedProcessorDemo(allocator);
+}
+
+// Callback for observable counter (stateful) - total requests served
+fn totalRequestsCallback(allocator: std.mem.Allocator, result: *otel_api.metrics.ObservableResult(i64), state: *anyopaque) void {
+    const request_state: *RequestState = @ptrCast(@alignCast(state));
+
+    // Simulate increasing total requests
+    request_state.total_requests += std.crypto.random.intRangeAtMost(i64, 10, 100);
+
+    const attrs = otel_api.common.AttributeBuilder.init(allocator)
+        .add("server.name", .{ .string = "api-server-1" })
+        .add("server.region", .{ .string = "us-east-1" })
+        .add("protocol", .{ .string = "http/2" })
+        .finish(allocator) catch |err| {
+        std.log.err("Unable to build Total Request attributes. {}", .{err});
+        return;
+    };
+
+    result.observe(request_state.total_requests, attrs);
+}
+
+// Callback for observable gauge (stateless) - CPU utilization
+fn cpuUtilizationCallback(allocator: std.mem.Allocator, result: *otel_api.metrics.ObservableResult(f64)) void {
+    // Simulate CPU utilization between 20% and 85%
+    const cpu_percent = 20.0 + @as(f64, @floatFromInt(std.crypto.random.intRangeAtMost(u32, 0, 65)));
+
+    const attrs = otel_api.common.AttributeBuilder.init(allocator)
+        .add("server.name", .{ .string = "api-server-1" })
+        .add("cpu.core", .{ .string = "all" })
+        .add("measurement.type", .{ .string = "percentage" })
+        .finish(allocator) catch |err| {
+        std.log.err("Unable to build CPU Utilization attributes. {}", .{err});
+        return;
+    };
+
+    result.observe(cpu_percent, attrs);
+}
+
+// Callback for observable up-down counter (stateful) - memory usage
+fn memoryUsageCallback(allocator: std.mem.Allocator, result: *otel_api.metrics.ObservableResult(i64), state: *anyopaque) void {
+    const memory_state: *MemoryState = @ptrCast(@alignCast(state));
+
+    // Simulate memory fluctuations (can go up or down)
+    const change = std.crypto.random.intRangeAtMost(i64, -50 * 1024 * 1024, 100 * 1024 * 1024); // -50MB to +100MB
+    memory_state.base_used = @max(1024 * 1024 * 100, @min(memory_state.base_used + change, memory_state.base_total - 1024 * 1024 * 500)); // Keep within bounds
+
+    const attrs = otel_api.common.AttributeBuilder.init(allocator)
+        .add("server.name", .{ .string = "api-server-1" })
+        .add("memory.type", .{ .string = "heap" })
+        .add("unit", .{ .string = "bytes" })
+        .finish(allocator) catch |err| {
+        std.log.err("Unable to build memory usage attributes. {}", .{err});
+        return;
+    };
+
+    result.observe(memory_state.base_used, attrs);
 }
 
 /// Example that sets up a very simple meter provider with a console exporter.
@@ -141,6 +208,58 @@ pub fn basicProcessorDemo(allocator: std.mem.Allocator) !void {
     temperature_gauge.record(ctx, 23.8, temp_attrs);
     std.debug.print("  Temperature: 23.8°C (latest)\n", .{});
 
+    // Create observable instruments
+    std.debug.print("\n=== Creating Observable Instruments ===\n", .{});
+
+    // Observable counter for total requests served (stateful)
+    var request_state = RequestState{ .start_time = std.time.timestamp() };
+    const obs_counter = try meter.createObservableCounter(
+        i64,
+        "quic.server.total_requests",
+        "Total number of requests served since server start",
+        "requests",
+        null,
+        &[_]otel_api.metrics.TypeErasedCallback(i64){},
+    );
+    const counter_handle = try obs_counter.registerCallback(
+        RequestState,
+        totalRequestsCallback,
+        &request_state,
+    );
+    defer counter_handle.unregister();
+    std.debug.print("  ✓ Created observable counter: http.server.total_requests\n", .{});
+
+    // Observable gauge for CPU utilization (stateless)
+    const obs_gauge = try meter.createObservableGauge(
+        f64,
+        "system.cpu.utilization",
+        "Current CPU utilization percentage",
+        "percent",
+        null,
+        &[_]otel_api.metrics.TypeErasedCallback(f64){},
+    );
+    const gauge_handle = try obs_gauge.registerCallbackNoState(cpuUtilizationCallback);
+    defer gauge_handle.unregister();
+    std.debug.print("  ✓ Created observable gauge: system.cpu.utilization\n", .{});
+
+    // Observable up-down counter for memory usage (stateful)
+    var memory_state = MemoryState{};
+    const obs_updown = try meter.createObservableUpDownCounter(
+        i64,
+        "process.runtime.memory_usage",
+        "Current memory usage in bytes",
+        "bytes",
+        null,
+        &[_]otel_api.metrics.TypeErasedCallback(i64){},
+    );
+    const updown_handle = try obs_updown.registerCallback(
+        MemoryState,
+        memoryUsageCallback,
+        &memory_state,
+    );
+    defer updown_handle.unregister();
+    std.debug.print("  ✓ Created observable up-down counter: process.memory.usage\n", .{});
+
     // Force flush to trigger export of collected metrics
     std.debug.print("\n=== Forcing Metrics Export ===\n", .{});
     const flush_result = concrete_provider.forceFlush(5000); // 5 second timeout
@@ -158,7 +277,7 @@ pub fn basicProcessorDemo(allocator: std.mem.Allocator) !void {
 pub fn advancedProcessorDemo(allocator: std.mem.Allocator) !void {
     const concrete_provider = try otel_sdk.metrics.setupGlobalProviderWithViews(
         allocator,
-        .{otel_sdk.metrics.PeriodicReader.PipelineStep.init(5000)
+        .{otel_sdk.metrics.PeriodicReader.PipelineStep.init(5000) // ms
             .flowTo(otel_exporters.otlp.OtlpMetricExporter.PipelineStep.init(.{}))},
         .{},
     );
@@ -209,12 +328,63 @@ pub fn advancedProcessorDemo(allocator: std.mem.Allocator) !void {
     std.log.info("Created instruments, starting metric recording...", .{});
     std.log.info("Metrics will be exported every 5 seconds by the background thread", .{});
 
+    // Create observable instruments
+    std.log.info("Creating observable instruments...", .{});
+
+    // Observable counter for total requests served (stateful)
+    var request_state = RequestState{ .start_time = std.time.timestamp() };
+    const obs_counter = try meter.createObservableCounter(
+        i64,
+        "http.server.total_requests",
+        "Total number of requests served since server start",
+        "requests",
+        null,
+        &[_]otel_api.metrics.TypeErasedCallback(i64){},
+    );
+    const counter_handle = try obs_counter.registerCallback(
+        RequestState,
+        totalRequestsCallback,
+        &request_state,
+    );
+    defer counter_handle.unregister();
+
+    // Observable gauge for CPU utilization (stateless)
+    const obs_gauge = try meter.createObservableGauge(
+        f64,
+        "system.cpu.utilization",
+        "Current CPU utilization percentage",
+        "percent",
+        null,
+        &[_]otel_api.metrics.TypeErasedCallback(f64){},
+    );
+    const gauge_handle = try obs_gauge.registerCallbackNoState(cpuUtilizationCallback);
+    defer gauge_handle.unregister();
+
+    // Observable up-down counter for memory usage (stateful)
+    var memory_state = MemoryState{};
+    const obs_updown = try meter.createObservableUpDownCounter(
+        i64,
+        "process.runtime.memory_usage",
+        "Current memory usage in bytes",
+        "bytes",
+        null,
+        &[_]otel_api.metrics.TypeErasedCallback(i64){},
+    );
+    const updown_handle = try obs_updown.registerCallback(
+        MemoryState,
+        memoryUsageCallback,
+        &memory_state,
+    );
+    defer updown_handle.unregister();
+
+    std.log.info("Observable instruments created and callbacks registered", .{});
+
     // Create a context for recording
     const ctx = otel_api.Context.empty(allocator);
 
     // Simulate activity for 5 minutes (300 seconds)
     var i: u32 = 0;
-    while (i < 90) : (i += 1) {
+    while (i < 30) : (i += 1) {
         // Simulate HTTP requests
         request_counter.add(ctx, std.crypto.random.intRangeAtMost(i64, 1, 10), &[_]otel_api.AttributeKeyValue{});
 

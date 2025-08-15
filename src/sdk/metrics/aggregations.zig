@@ -93,6 +93,11 @@ pub fn SumAggregation(comptime T: type) type {
                     old_value = v;
                 }
                 break :blk true;
+            } else if (monotonic and T == f64) blk: {
+                const v = self.value.load(.acquire);
+                if (v > value) break :blk false;
+                self.value.store(value, .release);
+                break :blk false;
             } else blk: {
                 self.value.store(value, .release);
                 break :blk true;
