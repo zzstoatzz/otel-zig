@@ -16,6 +16,9 @@ pub const MetricMetadata = struct {
     unit: []const u8, // From original instrument (not transformable)
     instrument_type: InstrumentType,
     instrumentation_scope: api.InstrumentationScope,
+    /// Optional histogram bucket boundaries from advisory params (Stable)
+    /// Non-owning slice - owned by instrument, valid for aggregation lifetime
+    histogram_boundaries: ?[]const f64 = null,
 
     /// Pre-compute hash of static metadata for efficient lookups
     pub fn computeHash(

@@ -163,25 +163,17 @@ test "BasicMeter data collection through processor pipeline" {
     try testing.expect(mock_exporter.metricCount() > 0);
 
     // Check that we have the expected metric types
-    var found_counter = false;
-    var found_histogram = false;
+    var buffer: [1]sdk.MetricData = undefined;
 
-    for (0..mock_exporter.metricCount()) |i| {
-        if (mock_exporter.getMetric(i)) |metric| {
-            if (std.mem.eql(u8, metric.name, "http.requests")) {
-                found_counter = true;
-                try testing.expectEqual(sdk.MetricType.sum, metric.type);
-                try testing.expect(metric.data_points.len > 0);
-            } else if (std.mem.eql(u8, metric.name, "http.duration")) {
-                found_histogram = true;
-                try testing.expectEqual(sdk.MetricType.histogram, metric.type);
-                try testing.expect(metric.data_points.len > 0);
-            }
-        }
-    }
+    const counter_matches = mock_exporter.getMetricsNamed(&buffer, "http.requests");
+    try testing.expectEqual(@as(usize, 1), counter_matches.len);
+    try testing.expectEqual(sdk.MetricType.sum, counter_matches[0].type);
+    try testing.expect(counter_matches[0].data_points.len > 0);
 
-    try testing.expect(found_counter);
-    try testing.expect(found_histogram);
+    const histogram_matches = mock_exporter.getMetricsNamed(&buffer, "http.duration");
+    try testing.expectEqual(@as(usize, 1), histogram_matches.len);
+    try testing.expectEqual(sdk.MetricType.histogram, histogram_matches[0].type);
+    try testing.expect(histogram_matches[0].data_points.len > 0);
 }
 
 test "BasicMeter shutdown behavior" {
@@ -433,47 +425,286 @@ test "PeriodicReader with multiple instruments" {
     try testing.expect(mock_exporter.metricCount() > 0);
 
     // Check that we have the expected metric types
-    var found_counter = false;
-    var found_gauge = false;
-    var found_histogram = false;
-    var found_observable_counter = false;
-    var found_observable_gauge = false;
-    var found_observable_updown = false;
+    var buffer: [1]sdk.MetricData = undefined;
 
-    for (0..mock_exporter.metricCount()) |i| {
-        if (mock_exporter.getMetric(i)) |metric| {
-            if (std.mem.eql(u8, metric.name, "test.counter")) {
-                found_counter = true;
-                try testing.expectEqual(sdk.MetricType.sum, metric.type);
-                try testing.expect(metric.data_points.len > 0);
-            } else if (std.mem.eql(u8, metric.name, "test.gauge")) {
-                found_gauge = true;
-                try testing.expectEqual(sdk.MetricType.gauge, metric.type);
-                try testing.expect(metric.data_points.len > 0);
-            } else if (std.mem.eql(u8, metric.name, "test.histogram")) {
-                found_histogram = true;
-                try testing.expectEqual(sdk.MetricType.histogram, metric.type);
-                try testing.expect(metric.data_points.len > 0);
-            } else if (std.mem.eql(u8, metric.name, "test.observable.counter")) {
-                found_observable_counter = true;
-                try testing.expectEqual(sdk.MetricType.sum, metric.type);
-                try testing.expect(metric.data_points.len > 0);
-            } else if (std.mem.eql(u8, metric.name, "test.observable.gauge")) {
-                found_observable_gauge = true;
-                try testing.expectEqual(sdk.MetricType.gauge, metric.type);
-                try testing.expect(metric.data_points.len > 0);
-            } else if (std.mem.eql(u8, metric.name, "test.observable.updown")) {
-                found_observable_updown = true;
-                try testing.expectEqual(sdk.MetricType.sum, metric.type);
-                try testing.expect(metric.data_points.len > 0);
-            }
+    const counter_matches = mock_exporter.getMetricsNamed(&buffer, "test.counter");
+    try testing.expectEqual(@as(usize, 1), counter_matches.len);
+    try testing.expectEqual(sdk.MetricType.sum, counter_matches[0].type);
+    try testing.expect(counter_matches[0].data_points.len > 0);
+
+    const gauge_matches = mock_exporter.getMetricsNamed(&buffer, "test.gauge");
+    try testing.expectEqual(@as(usize, 1), gauge_matches.len);
+    try testing.expectEqual(sdk.MetricType.gauge, gauge_matches[0].type);
+    try testing.expect(gauge_matches[0].data_points.len > 0);
+
+    const histogram_matches = mock_exporter.getMetricsNamed(&buffer, "test.histogram");
+    try testing.expectEqual(@as(usize, 1), histogram_matches.len);
+    try testing.expectEqual(sdk.MetricType.histogram, histogram_matches[0].type);
+    try testing.expect(histogram_matches[0].data_points.len > 0);
+
+    const observable_counter_matches = mock_exporter.getMetricsNamed(&buffer, "test.observable.counter");
+    try testing.expectEqual(@as(usize, 1), observable_counter_matches.len);
+    try testing.expectEqual(sdk.MetricType.sum, observable_counter_matches[0].type);
+    try testing.expect(observable_counter_matches[0].data_points.len > 0);
+
+    const observable_gauge_matches = mock_exporter.getMetricsNamed(&buffer, "test.observable.gauge");
+    try testing.expectEqual(@as(usize, 1), observable_gauge_matches.len);
+    try testing.expectEqual(sdk.MetricType.gauge, observable_gauge_matches[0].type);
+    try testing.expect(observable_gauge_matches[0].data_points.len > 0);
+
+    const observable_updown_matches = mock_exporter.getMetricsNamed(&buffer, "test.observable.updown");
+    try testing.expectEqual(@as(usize, 1), observable_updown_matches.len);
+    try testing.expectEqual(sdk.MetricType.sum, observable_updown_matches[0].type);
+    try testing.expect(observable_updown_matches[0].data_points.len > 0);
+}
+
+test "Meter returns same instrument pointer for identical instruments" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const resource = try sdk.Resource.initOwned(allocator, .default);
+    var provider = sdk.MeterProvider.init(allocator, resource);
+    defer provider.deinit();
+
+    const scope = api.InstrumentationScope{ .name = "test.meter", .version = "1.0.0" };
+    var meter = try provider.getMeterWithScope(scope);
+
+    // Test sync instrument (Counter) - request same instrument twice
+    const counter1 = try meter.createCounter(i64, "test.counter", "Test counter", "requests", null);
+    const counter2 = try meter.createCounter(i64, "test.counter", "Test counter", "requests", null);
+
+    // Both should be bridge types pointing to the same SDK instrument
+    try testing.expect(counter1 == .bridge);
+    try testing.expect(counter2 == .bridge);
+    try testing.expectEqual(counter1.bridge.instrument_ptr, counter2.bridge.instrument_ptr);
+
+    // Test async instrument (ObservableCounter) - request same instrument twice
+    const empty_callbacks = [_]api.metrics.TypeErasedCallback(i64){};
+    const observable1 = try meter.createObservableCounter(i64, "test.observable", "Test observable", "requests", null, &empty_callbacks);
+    const observable2 = try meter.createObservableCounter(i64, "test.observable", "Test observable", "requests", null, &empty_callbacks);
+
+    // Both should be bridge types pointing to the same SDK instrument
+    try testing.expect(observable1 == .bridge);
+    try testing.expect(observable2 == .bridge);
+    try testing.expectEqual(observable1.bridge.instrument_ptr, observable2.bridge.instrument_ptr);
+}
+
+test "Histogram uses advisory explicit bucket boundaries" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const resource = try sdk.Resource.initOwned(allocator, .default);
+    var provider = sdk.MeterProvider.init(allocator, resource);
+    defer provider.deinit();
+
+    const mock_exporter = try allocator.create(MockMetricExporter);
+    mock_exporter.* = MockMetricExporter.init(allocator);
+
+    const reader = try allocator.create(sdk.ManualReader);
+    reader.* = try sdk.ManualReader.init(allocator, mock_exporter.metricExporter());
+
+    try provider.registerReader(reader.reader());
+
+    const scope = api.InstrumentationScope{ .name = "test.meter", .version = "1.0.0" };
+    var meter = try provider.getMeterWithScope(scope);
+
+    // Create custom bucket boundaries
+    const custom_boundaries = [_]f64{ 0.0, 10.0, 50.0, 100.0 };
+    const advisory_params = api.metrics.AdvisoryParams{
+        .explicit_bucket_boundaries = &custom_boundaries,
+        .attributes = null,
+    };
+
+    // Create histogram with advisory boundaries
+    const histogram = try meter.createHistogram(f64, "test.histogram", "Test histogram", "ms", advisory_params);
+
+    const ctx = &[_]api.ContextKeyValue{};
+    const empty_attributes = [_]api.AttributeKeyValue{};
+
+    // Record measurements that fall into different buckets
+    histogram.record(ctx, 5.0, &empty_attributes); // bucket 0 (0-10)
+    histogram.record(ctx, 25.0, &empty_attributes); // bucket 1 (10-50)
+    histogram.record(ctx, 75.0, &empty_attributes); // bucket 2 (50-100)
+    histogram.record(ctx, 150.0, &empty_attributes); // bucket 3 (100-∞)
+
+    // Force collection
+    reader.collect();
+
+    // Find the histogram metric using helper
+    var buffer: [1]sdk.MetricData = undefined;
+    const matches = mock_exporter.getMetricsNamed(&buffer, "test.histogram");
+    try testing.expectEqual(@as(usize, 1), matches.len);
+
+    const metric = matches[0];
+    try testing.expectEqual(sdk.MetricType.histogram, metric.type);
+    try testing.expect(metric.data_points.len > 0);
+
+    // Check that the histogram used our custom boundaries
+    const data_point = metric.data_points[0];
+    switch (data_point.value) {
+        .f64_histogram => |hist| {
+            // We should have 5 buckets: [0-10), [10-50), [50-100), [100-∞), and implicit (-∞-0)
+            // The bucket_counts length should be boundaries.len + 1
+            try testing.expectEqual(@as(usize, 5), hist.bucket_counts.len);
+
+            // Verify we got measurements in the expected buckets
+            try testing.expectEqual(@as(u64, 1), hist.bucket_counts[1]); // 5.0 in [0-10)
+            try testing.expectEqual(@as(u64, 1), hist.bucket_counts[2]); // 25.0 in [10-50)
+            try testing.expectEqual(@as(u64, 1), hist.bucket_counts[3]); // 75.0 in [50-100)
+            try testing.expectEqual(@as(u64, 1), hist.bucket_counts[4]); // 150.0 in [100-∞)
+        },
+        else => try testing.expect(false), // Should be f64_histogram
+    }
+}
+
+test "Advisory attributes filtering with and without views" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // Part 1: Test advisory attributes without views
+    {
+        const resource = try sdk.Resource.initOwned(allocator, .default);
+        var provider = sdk.MeterProvider.init(allocator, resource);
+        defer provider.deinit();
+
+        const mock_exporter = try allocator.create(MockMetricExporter);
+        mock_exporter.* = MockMetricExporter.init(allocator);
+
+        const reader = try allocator.create(sdk.ManualReader);
+        reader.* = try sdk.ManualReader.init(allocator, mock_exporter.metricExporter());
+
+        try provider.registerReader(reader.reader());
+
+        const scope = api.InstrumentationScope{ .name = "test.meter", .version = "1.0.0" };
+        var meter = try provider.getMeterWithScope(scope);
+
+        // Create counter with advisory attributes filtering
+        const allowed_attributes = [_][]const u8{ "method", "status" };
+        const advisory_params = api.metrics.AdvisoryParams{
+            .explicit_bucket_boundaries = null,
+            .attributes = &allowed_attributes,
+        };
+
+        const counter = try meter.createCounter(i64, "test.counter", "Test counter", "requests", advisory_params);
+
+        const ctx = &[_]api.ContextKeyValue{};
+
+        // Record measurements with multiple attributes
+        // Advisory params specify only "method" and "status" should be kept
+        const all_attributes = [_]api.AttributeKeyValue{
+            .{ .key = "method", .value = .{ .string = "GET" } },
+            .{ .key = "status", .value = .{ .int = 200 } },
+            .{ .key = "user_id", .value = .{ .string = "12345" } }, // Should be filtered out by advisory
+        };
+
+        counter.add(ctx, 10, &all_attributes);
+
+        // Force collection
+        reader.collect();
+
+        // Verify the counter metric was exported with filtered attributes
+        var buffer: [1]sdk.MetricData = undefined;
+        const matches = mock_exporter.getMetricsNamed(&buffer, "test.counter");
+        try testing.expectEqual(@as(usize, 1), matches.len);
+
+        const metric = matches[0];
+        try testing.expect(metric.data_points.len > 0);
+
+        // Check that only advisory-allowed attributes are present
+        const data_point = metric.data_points[0];
+        try testing.expectEqual(@as(usize, 2), data_point.attributes.len);
+
+        var found_method = false;
+        var found_status = false;
+        var found_user_id = false;
+
+        for (data_point.attributes) |attr| {
+            if (std.mem.eql(u8, attr.key, "method")) found_method = true;
+            if (std.mem.eql(u8, attr.key, "status")) found_status = true;
+            if (std.mem.eql(u8, attr.key, "user_id")) found_user_id = true;
         }
+
+        try testing.expect(found_method);
+        try testing.expect(found_status);
+        try testing.expect(!found_user_id); // Should have been filtered out
     }
 
-    try testing.expect(found_counter);
-    try testing.expect(found_gauge);
-    try testing.expect(found_histogram);
-    try testing.expect(found_observable_counter);
-    try testing.expect(found_observable_gauge);
-    try testing.expect(found_observable_updown);
+    // Part 2: Test with a view that overrides advisory params
+    {
+        const resource = try sdk.Resource.initOwned(allocator, .default);
+        var provider = sdk.MeterProvider.init(allocator, resource);
+        defer provider.deinit();
+
+        // Register a view that filters to only "user_id"
+        const view_allowed_attributes = [_][]const u8{"user_id"};
+        const view = @import("view.zig"){
+            .instrument_selector = .{ .name = "test.counter" },
+            .name = null,
+            .description = null,
+            .attribute_allowed_keys = &view_allowed_attributes,
+            .aggregation_override = null,
+        };
+        try provider.addView(view);
+
+        const mock_exporter = try allocator.create(MockMetricExporter);
+        mock_exporter.* = MockMetricExporter.init(allocator);
+
+        const reader = try allocator.create(sdk.ManualReader);
+        reader.* = try sdk.ManualReader.init(allocator, mock_exporter.metricExporter());
+
+        try provider.registerReader(reader.reader());
+
+        const scope = api.InstrumentationScope{ .name = "test.meter", .version = "1.0.0" };
+        var meter = try provider.getMeterWithScope(scope);
+
+        // Create counter with advisory params (method, status)
+        const allowed_attributes = [_][]const u8{ "method", "status" };
+        const advisory_params = api.metrics.AdvisoryParams{
+            .explicit_bucket_boundaries = null,
+            .attributes = &allowed_attributes,
+        };
+
+        const counter = try meter.createCounter(i64, "test.counter", "Test counter", "requests", advisory_params);
+
+        const ctx = &[_]api.ContextKeyValue{};
+
+        // Record with attributes
+        const all_attributes = [_]api.AttributeKeyValue{
+            .{ .key = "method", .value = .{ .string = "GET" } },
+            .{ .key = "status", .value = .{ .int = 200 } },
+            .{ .key = "user_id", .value = .{ .string = "12345" } },
+        };
+
+        counter.add(ctx, 20, &all_attributes);
+
+        // Force collection
+        reader.collect();
+
+        // Verify view took precedence over advisory params
+        var buffer: [1]sdk.MetricData = undefined;
+        const matches = mock_exporter.getMetricsNamed(&buffer, "test.counter");
+        try testing.expectEqual(@as(usize, 1), matches.len);
+
+        const metric = matches[0];
+        try testing.expect(metric.data_points.len > 0);
+
+        // Check that only view-allowed attributes are present
+        const data_point = metric.data_points[0];
+        try testing.expectEqual(@as(usize, 1), data_point.attributes.len);
+
+        var found_method = false;
+        var found_status = false;
+        var found_user_id = false;
+
+        for (data_point.attributes) |attr| {
+            if (std.mem.eql(u8, attr.key, "method")) found_method = true;
+            if (std.mem.eql(u8, attr.key, "status")) found_status = true;
+            if (std.mem.eql(u8, attr.key, "user_id")) found_user_id = true;
+        }
+
+        // Only user_id should be present (view overrides advisory)
+        try testing.expect(!found_method);
+        try testing.expect(!found_status);
+        try testing.expect(found_user_id);
+    }
 }

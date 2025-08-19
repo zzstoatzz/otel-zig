@@ -65,6 +65,9 @@ pub fn Observable(comptime T: type) type {
         /// View support
         views: []const sdk.View.Application,
 
+        /// Advisory parameters (Stable: ExplicitBucketBoundaries, Development: Attributes)
+        advisory_params: ?api.metrics.AdvisoryParams,
+
         /// Initialize the observable counter
         pub fn init(
             name: []const u8,
@@ -73,6 +76,7 @@ pub fn Observable(comptime T: type) type {
             instrument_type: sdk.InstrumentType,
             parent_meter: *sdk.Meter,
             config: AsyncInstrumentConfig,
+            advisory_params: ?api.metrics.AdvisoryParams,
         ) !Self {
             // Precompute the hash values that don't change per datapoint.
             const metadata_hash = sdk.MetricMetadata.computeHash(
@@ -93,6 +97,24 @@ pub fn Observable(comptime T: type) type {
                 parent_meter.scope.schema_url,
                 parent_meter.provider.allocator,
             );
+
+            // Clone advisory params to ensure instrument owns the memory
+            const owned_advisory_params = if (advisory_params) |params| blk: {
+                var owned = params;
+                // Clone explicit_bucket_boundaries if present (Stable)
+                if (params.explicit_bucket_boundaries) |boundaries| {
+                    owned.explicit_bucket_boundaries = try parent_meter.provider.allocator.dupe(f64, boundaries);
+                }
+                // Clone attributes if present (Development)
+                if (params.attributes) |attrs| {
+                    const owned_attrs = try parent_meter.provider.allocator.alloc([]const u8, attrs.len);
+                    for (attrs, 0..) |attr, i| {
+                        owned_attrs[i] = try parent_meter.provider.allocator.dupe(u8, attr);
+                    }
+                    owned.attributes = owned_attrs;
+                }
+                break :blk owned;
+            } else null;
 
             // Create internal metrics instruments if configured
             var callback_duration_histogram = api.metrics.Histogram(f64){ .noop = "otel.sdk.metrics.async.callback.duration" };
@@ -151,6 +173,7 @@ pub fn Observable(comptime T: type) type {
                 .callback_executions_counter = callback_executions_counter,
                 .callback_errors_counter = callback_errors_counter,
                 .views = view_applications,
+                .advisory_params = owned_advisory_params,
             };
         }
 
@@ -158,6 +181,19 @@ pub fn Observable(comptime T: type) type {
         pub fn deinit(self: *Self, _: std.mem.Allocator) void {
             self.mutex.lock();
             defer self.mutex.unlock();
+
+            // Free owned advisory params
+            if (self.advisory_params) |params| {
+                if (params.explicit_bucket_boundaries) |boundaries| {
+                    self.meter.provider.allocator.free(boundaries);
+                }
+                if (params.attributes) |attrs| {
+                    for (attrs) |attr| {
+                        self.meter.provider.allocator.free(attr);
+                    }
+                    self.meter.provider.allocator.free(attrs);
+                }
+            }
 
             self.callbacks.deinit(self.meter.provider.allocator);
             self.meter.provider.allocator.free(self.views);
@@ -309,6 +345,7 @@ pub fn Observable(comptime T: type) type {
                         .unit = self.unit orelse "", // Unit not transformable per spec
                         .instrument_type = self.instrument_type,
                         .instrumentation_scope = self.meter.scope,
+                        .histogram_boundaries = if (self.advisory_params) |adv| adv.explicit_bucket_boundaries else null,
                     };
 
                     reader.recordMeasurement(

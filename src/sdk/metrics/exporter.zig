@@ -246,4 +246,21 @@ pub const MockMetricExporter = struct {
         if (index >= self.exported_metrics.items.len) return null;
         return self.exported_metrics.items[index];
     }
+
+    /// Get metrics matching the provided name, writing them into the provided buffer.
+    /// Returns a slice of the buffer containing the matching metrics.
+    pub fn getMetricsNamed(self: *MockMetricExporter, buffer: []sdk.MetricData, name: []const u8) []sdk.MetricData {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var count: usize = 0;
+        for (self.exported_metrics.items) |metric| {
+            if (count >= buffer.len) break;
+            if (std.mem.eql(u8, metric.name, name)) {
+                buffer[count] = metric;
+                count += 1;
+            }
+        }
+        return buffer[0..count];
+    }
 };

@@ -15,6 +15,12 @@
 //!
 //! The example simulates an HTTP client making requests to a server, with full
 //! observability instrumentation showing real-world telemetry patterns.
+//!
+//! Metrics output:
+//! - `numbers_read` - counter
+//! - `numbers_detailed - histogram view of number_values
+//! - `numbers_by_thread - histogram view of number_values
+//! - `app_uptime` - observable gauge
 
 const std = @import("std");
 const otel_api = @import("otel-api");
@@ -705,10 +711,10 @@ fn httpServerThread(shared_state: *SharedState, config: Config) !void {
         const product: u64 = @as(u64, a) * @as(u64, b);
 
         // Check if product is >= 2^31
-        const max_value: u64 = 1 << 31; // 2^31
+        const max_value: u64 = (1 << 31) + 0xFFFF; // 2^31 + some more buffer
         if (product >= max_value) {
             try request.respond("Product too large", .{ .status = .bad_request });
-            span.setStatus(.{ .code = .@"error", .description = "Product exceeds 2^31 limit" });
+            span.setStatus(.{ .code = .@"error", .description = "Product exceeds limits" });
             span.setAttribute(.{ .key = "product", .value = .{ .int = @intCast(product) } });
             span.setAttribute(.{ .key = "limit", .value = .{ .int = @intCast(max_value) } });
             continue;

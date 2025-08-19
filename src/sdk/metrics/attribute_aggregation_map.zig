@@ -19,11 +19,10 @@ pub const AttributeAggregationEntry = struct {
     aggregation: Aggregation,
     attributes: []const api.AttributeKeyValue,
     metadata: sdk.MetricMetadata, // Complete metadata for export
-    allocator: std.mem.Allocator, // For cleaning up owned attributes
 
-    pub fn deinit(self: *@This()) void {
-        self.aggregation.deinit(self.allocator);
-        api.AttributeKeyValue.deinitOwnedSlice(self.allocator, self.attributes);
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        self.aggregation.deinit(allocator);
+        api.AttributeKeyValue.deinitOwnedSlice(allocator, self.attributes);
     }
 };
 
@@ -72,7 +71,6 @@ pub const AttributeAggregationMap = struct {
                         .attributes = &[_]api.AttributeKeyValue{},
                     },
                 },
-                .allocator = allocator,
             },
             .mutex = .{},
         };
@@ -85,9 +83,9 @@ pub const AttributeAggregationMap = struct {
 
         // Clean up aggregation entries that need allocator cleanup
         for (0..self.next_free.load(.monotonic)) |i| {
-            self.aggregation_pool[i].deinit();
+            self.aggregation_pool[i].deinit(self.allocator);
         }
-        self.overflow_aggregation.deinit();
+        self.overflow_aggregation.deinit(self.allocator);
         self.aggregations.deinit();
     }
 
@@ -138,13 +136,12 @@ pub const AttributeAggregationMap = struct {
             },
             .attributes = owned_attributes,
             .metadata = metadata,
-            .allocator = self.allocator,
         };
 
         // Store in map
         self.aggregations.put(combined_hash, entry) catch {
             // On error, clean up and return overflow
-            entry.deinit();
+            entry.deinit(self.allocator);
             return &self.overflow_aggregation;
         };
 
@@ -170,9 +167,17 @@ pub const AttributeAggregationMap = struct {
                 .i64 => .{ .last_value_i64 = .init() },
                 .f64 => .{ .last_value_f64 = .init() },
             },
-            .Histogram => switch (value) {
-                .i64 => .{ .histogram_i64 = try .init(self.allocator, .{}) },
-                .f64 => .{ .histogram_f64 = try .init(self.allocator, .{}) },
+            .Histogram => blk: {
+                // Use advisory bucket boundaries if provided (Stable)
+                // Non-owning reference - boundaries owned by instrument
+                const config = sdk.aggregations.HistogramAggregationConfig{
+                    .boundaries = metadata.histogram_boundaries orelse &sdk.aggregations.DEFAULT_HISTOGRAM_BOUNDARIES,
+                    .record_min_max = true,
+                };
+                break :blk switch (value) {
+                    .i64 => .{ .histogram_i64 = try .init(self.allocator, config) },
+                    .f64 => .{ .histogram_f64 = try .init(self.allocator, config) },
+                };
             },
         };
     }
@@ -227,9 +232,8 @@ pub const AttributeAggregationMap = struct {
                 .aggregation = aggregation,
                 .attributes = try api.AttributeKeyValue.initOwnedSlice(allocator, entry.attributes),
                 .metadata = entry.metadata,
-                .allocator = allocator,
             });
-            entry.deinit();
+            entry.deinit(self.allocator);
         }
         self.overflow_aggregation.aggregation.reset();
         self.next_free.store(0, .monotonic);

@@ -41,12 +41,14 @@ fn Instrument(comptime inst_type: api.metrics.InstrumentType, comptime base_type
                 meter: *sdk.Meter,
                 metadata_hash: u64,
                 views: []sdk.View.Application,
+                advisory_params: ?api.metrics.AdvisoryParams,
 
                 pub fn init(
                     name: []const u8,
                     description: ?[]const u8,
                     unit: ?[]const u8,
                     parent_meter: *sdk.Meter,
+                    advisory_params: ?api.metrics.AdvisoryParams,
                 ) !Self {
                     // Precompute the hash values that don't change per datapoint.
                     const metadata_hash = sdk.MetricMetadata.computeHash(
@@ -68,6 +70,24 @@ fn Instrument(comptime inst_type: api.metrics.InstrumentType, comptime base_type
                         parent_meter.provider.allocator,
                     );
 
+                    // Clone advisory params to ensure instrument owns the memory
+                    const owned_advisory_params = if (advisory_params) |params| blk: {
+                        var owned = params;
+                        // Clone explicit_bucket_boundaries if present (Stable)
+                        if (params.explicit_bucket_boundaries) |boundaries| {
+                            owned.explicit_bucket_boundaries = try parent_meter.provider.allocator.dupe(f64, boundaries);
+                        }
+                        // Clone attributes if present (Development)
+                        if (params.attributes) |attrs| {
+                            const owned_attrs = try parent_meter.provider.allocator.alloc([]const u8, attrs.len);
+                            for (attrs, 0..) |attr, i| {
+                                owned_attrs[i] = try parent_meter.provider.allocator.dupe(u8, attr);
+                            }
+                            owned.attributes = owned_attrs;
+                        }
+                        break :blk owned;
+                    } else null;
+
                     return .{
                         .name = name,
                         .description = description,
@@ -75,10 +95,23 @@ fn Instrument(comptime inst_type: api.metrics.InstrumentType, comptime base_type
                         .meter = parent_meter,
                         .metadata_hash = metadata_hash,
                         .views = view_applications,
+                        .advisory_params = owned_advisory_params,
                     };
                 }
 
                 pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+                    // Free owned advisory params
+                    if (self.advisory_params) |params| {
+                        if (params.explicit_bucket_boundaries) |boundaries| {
+                            allocator.free(boundaries);
+                        }
+                        if (params.attributes) |attrs| {
+                            for (attrs) |attr| {
+                                allocator.free(attr);
+                            }
+                            allocator.free(attrs);
+                        }
+                    }
                     allocator.free(self.views);
                 }
 
@@ -106,17 +139,47 @@ fn Instrument(comptime inst_type: api.metrics.InstrumentType, comptime base_type
                         // Skip drop aggregations
                         if (view.drops()) continue;
 
-                        // Transform attributes according to view
-                        const attrs = view.transformAttributes(attributes, allocator) catch |e| blk: {
-                            api.common.reportErrorWithAllocator(.{
-                                .component = .meter,
-                                .context = null,
-                                .error_type = .internal,
-                                .message = "Unable to transform attributes with view",
-                                .operation = @tagName(inst_type) ++ ".add(" ++ @typeName(ValueType) ++ ")",
-                                .source_error = e,
-                            }, allocator);
-                            break :blk attributes; // On error, use original attributes
+                        // Transform attributes according to view, with advisory params as fallback
+                        const attrs = blk: {
+                            // Check if view specifies attribute filtering
+                            if (view.view.attribute_allowed_keys) |_| {
+                                // View specifies attributes, use view's transform
+                                break :blk view.transformAttributes(attributes, allocator) catch |e| {
+                                    api.common.reportErrorWithAllocator(.{
+                                        .component = .meter,
+                                        .context = null,
+                                        .error_type = .internal,
+                                        .message = "Unable to transform attributes with view",
+                                        .operation = @tagName(inst_type) ++ ".add(" ++ @typeName(ValueType) ++ ")",
+                                        .source_error = e,
+                                    }, allocator);
+                                    break :blk attributes; // On error, use original attributes
+                                };
+                            } else if (self.advisory_params) |advisory| {
+                                // No view attribute filtering, check advisory params (Development status)
+                                if (advisory.attributes) |allowed_keys| {
+                                    // Filter to advisory-specified attributes
+                                    var filtered = std.ArrayList(api.AttributeKeyValue).empty;
+                                    defer filtered.deinit(allocator);
+
+                                    for (attributes) |attr| {
+                                        for (allowed_keys) |allowed_key| {
+                                            if (std.mem.eql(u8, attr.key, allowed_key)) {
+                                                filtered.append(allocator, attr) catch break :blk attributes;
+                                                break;
+                                            }
+                                        }
+                                    }
+
+                                    break :blk filtered.toOwnedSlice(allocator) catch attributes;
+                                } else {
+                                    // No advisory attributes, use all attributes
+                                    break :blk view.transformAttributes(attributes, allocator) catch attributes;
+                                }
+                            } else {
+                                // No view or advisory filtering, use all attributes
+                                break :blk view.transformAttributes(attributes, allocator) catch attributes;
+                            }
                         };
 
                         // Create transformed metadata
@@ -126,6 +189,7 @@ fn Instrument(comptime inst_type: api.metrics.InstrumentType, comptime base_type
                             .unit = self.unit orelse "", // Unit not transformable per spec
                             .instrument_type = inst_type,
                             .instrumentation_scope = self.meter.scope,
+                            .histogram_boundaries = if (self.advisory_params) |adv| adv.explicit_bucket_boundaries else null,
                         };
 
                         // Forward to all readers
@@ -153,12 +217,14 @@ fn Instrument(comptime inst_type: api.metrics.InstrumentType, comptime base_type
                 meter: *sdk.Meter,
                 metadata_hash: u64,
                 views: []sdk.View.Application,
+                advisory_params: ?api.metrics.AdvisoryParams,
 
                 pub fn init(
                     name: []const u8,
                     description: ?[]const u8,
                     unit: ?[]const u8,
                     parent_meter: *sdk.Meter,
+                    advisory_params: ?api.metrics.AdvisoryParams,
                 ) !Self {
                     // Precompute the hash values that don't change per datapoint.
                     const metadata_hash = sdk.MetricMetadata.computeHash(
@@ -180,6 +246,24 @@ fn Instrument(comptime inst_type: api.metrics.InstrumentType, comptime base_type
                         parent_meter.provider.allocator,
                     );
 
+                    // Clone advisory params to ensure instrument owns the memory
+                    const owned_advisory_params = if (advisory_params) |params| blk: {
+                        var owned = params;
+                        // Clone explicit_bucket_boundaries if present (Stable)
+                        if (params.explicit_bucket_boundaries) |boundaries| {
+                            owned.explicit_bucket_boundaries = try parent_meter.provider.allocator.dupe(f64, boundaries);
+                        }
+                        // Clone attributes if present (Development)
+                        if (params.attributes) |attrs| {
+                            const owned_attrs = try parent_meter.provider.allocator.alloc([]const u8, attrs.len);
+                            for (attrs, 0..) |attr, i| {
+                                owned_attrs[i] = try parent_meter.provider.allocator.dupe(u8, attr);
+                            }
+                            owned.attributes = owned_attrs;
+                        }
+                        break :blk owned;
+                    } else null;
+
                     return .{
                         .name = name,
                         .description = description,
@@ -187,10 +271,23 @@ fn Instrument(comptime inst_type: api.metrics.InstrumentType, comptime base_type
                         .meter = parent_meter,
                         .metadata_hash = metadata_hash,
                         .views = view_applications,
+                        .advisory_params = owned_advisory_params,
                     };
                 }
 
                 pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+                    // Free owned advisory params
+                    if (self.advisory_params) |params| {
+                        if (params.explicit_bucket_boundaries) |boundaries| {
+                            allocator.free(boundaries);
+                        }
+                        if (params.attributes) |attrs| {
+                            for (attrs) |attr| {
+                                allocator.free(attr);
+                            }
+                            allocator.free(attrs);
+                        }
+                    }
                     allocator.free(self.views);
                 }
 
@@ -212,17 +309,47 @@ fn Instrument(comptime inst_type: api.metrics.InstrumentType, comptime base_type
                         // Skip drop aggregations
                         if (view.drops()) continue;
 
-                        // Transform attributes according to view
-                        const attrs = view.transformAttributes(attributes, allocator) catch |e| blk: {
-                            api.common.reportErrorWithAllocator(.{
-                                .component = .meter,
-                                .context = null,
-                                .error_type = .internal,
-                                .message = "Unable to transform attributes with view",
-                                .operation = @tagName(inst_type) ++ ".record(" ++ @typeName(ValueType) ++ ")",
-                                .source_error = e,
-                            }, allocator);
-                            break :blk attributes; // On error, use original attributes
+                        // Transform attributes according to view, with advisory params as fallback
+                        const attrs = blk: {
+                            // Check if view specifies attribute filtering
+                            if (view.view.attribute_allowed_keys) |_| {
+                                // View specifies attributes, use view's transform
+                                break :blk view.transformAttributes(attributes, allocator) catch |e| {
+                                    api.common.reportErrorWithAllocator(.{
+                                        .component = .meter,
+                                        .context = null,
+                                        .error_type = .internal,
+                                        .message = "Unable to transform attributes with view",
+                                        .operation = @tagName(inst_type) ++ ".record(" ++ @typeName(ValueType) ++ ")",
+                                        .source_error = e,
+                                    }, allocator);
+                                    break :blk attributes; // On error, use original attributes
+                                };
+                            } else if (self.advisory_params) |advisory| {
+                                // No view attribute filtering, check advisory params (Development status)
+                                if (advisory.attributes) |allowed_keys| {
+                                    // Filter to advisory-specified attributes
+                                    var filtered = std.ArrayList(api.AttributeKeyValue).empty;
+                                    defer filtered.deinit(allocator);
+
+                                    for (attributes) |attr| {
+                                        for (allowed_keys) |allowed_key| {
+                                            if (std.mem.eql(u8, attr.key, allowed_key)) {
+                                                filtered.append(allocator, attr) catch break :blk attributes;
+                                                break;
+                                            }
+                                        }
+                                    }
+
+                                    break :blk filtered.toOwnedSlice(allocator) catch attributes;
+                                } else {
+                                    // No advisory attributes, use all attributes
+                                    break :blk view.transformAttributes(attributes, allocator) catch attributes;
+                                }
+                            } else {
+                                // No view or advisory filtering, use all attributes
+                                break :blk view.transformAttributes(attributes, allocator) catch attributes;
+                            }
                         };
 
                         // Create transformed metadata
@@ -232,6 +359,7 @@ fn Instrument(comptime inst_type: api.metrics.InstrumentType, comptime base_type
                             .unit = self.unit orelse "", // Unit not transformable per spec
                             .instrument_type = inst_type,
                             .instrumentation_scope = self.meter.scope,
+                            .histogram_boundaries = if (self.advisory_params) |adv| adv.explicit_bucket_boundaries else null,
                         };
 
                         // Forward to all readers

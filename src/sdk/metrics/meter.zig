@@ -11,25 +11,103 @@ const sdk = struct {
     };
 };
 
+/// Represents the identifying fields of an instrument per OTel spec.
+/// Two instruments are "identical" if all these fields match.
+/// Note: description is NOT part of identity per data-model.md spec
+pub const InstrumentIdentity = struct {
+    /// Instrument name (case-insensitive in comparisons)
+    name: []const u8,
+    /// Instrument unit (null treated as empty string)
+    unit: []const u8,
+    /// Instrument type (Counter, Gauge, etc.)
+    instrument_type: sdk.metrics.InstrumentType,
+};
+
+/// HashMap context for InstrumentIdentity with case-insensitive name comparison
+pub const InstrumentIdentityContext = struct {
+    pub fn hash(_: @This(), identity: InstrumentIdentity) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+
+        // Hash name case-insensitively by converting to lowercase during hash
+        for (identity.name) |c| {
+            hasher.update(&[_]u8{std.ascii.toLower(c)});
+        }
+
+        // Hash unit normally (already normalized to "" if null)
+        hasher.update(identity.unit);
+
+        // Hash instrument type
+        hasher.update(std.mem.asBytes(&identity.instrument_type));
+
+        return hasher.final();
+    }
+
+    pub fn eql(_: @This(), a: InstrumentIdentity, b: InstrumentIdentity) bool {
+        // Case-insensitive name comparison
+        if (!std.ascii.eqlIgnoreCase(a.name, b.name)) return false;
+
+        // Exact comparison for unit (already normalized)
+        if (!std.mem.eql(u8, a.unit, b.unit)) return false;
+
+        // Type must match
+        if (a.instrument_type != b.instrument_type) return false;
+
+        return true;
+    }
+};
+
+/// ArrayHashMap context for InstrumentIdentity (for observables with consistent iteration)
+pub const InstrumentIdentityArrayContext = struct {
+    pub fn hash(_: @This(), identity: InstrumentIdentity) u32 {
+        var hasher = std.hash.Wyhash.init(0);
+
+        // Hash name case-insensitively
+        for (identity.name) |c| {
+            hasher.update(&[_]u8{std.ascii.toLower(c)});
+        }
+
+        // Hash unit
+        hasher.update(identity.unit);
+
+        // Hash instrument type
+        hasher.update(std.mem.asBytes(&identity.instrument_type));
+
+        return @truncate(hasher.final());
+    }
+
+    pub fn eql(_: @This(), a: InstrumentIdentity, b: InstrumentIdentity, _: usize) bool {
+        // Case-insensitive name comparison
+        if (!std.ascii.eqlIgnoreCase(a.name, b.name)) return false;
+
+        // Exact comparison for unit
+        if (!std.mem.eql(u8, a.unit, b.unit)) return false;
+
+        // Type must match
+        if (a.instrument_type != b.instrument_type) return false;
+
+        return true;
+    }
+};
+
 /// Basic meter implementation (formerly StandardMeter)
 pub const Meter = struct {
     provider: *sdk.metrics.MeterProvider, // non-owning
     scope: api.InstrumentationScope, // non-owning
     is_shutdown: std.atomic.Value(bool),
 
-    // Synchronous instruments
-    counters_i64: std.ArrayList(*sdk.metrics.sync_instr.StandardCounter(i64)),
-    counters_f64: std.ArrayList(*sdk.metrics.sync_instr.StandardCounter(f64)),
-    up_down_counters_i64: std.ArrayList(*sdk.metrics.sync_instr.StandardUpDownCounter(i64)),
-    up_down_counters_f64: std.ArrayList(*sdk.metrics.sync_instr.StandardUpDownCounter(f64)),
-    gauges_i64: std.ArrayList(*sdk.metrics.sync_instr.StandardGauge(i64)),
-    gauges_f64: std.ArrayList(*sdk.metrics.sync_instr.StandardGauge(f64)),
-    histograms_i64: std.ArrayList(*sdk.metrics.sync_instr.StandardHistogram(i64)),
-    histograms_f64: std.ArrayList(*sdk.metrics.sync_instr.StandardHistogram(f64)),
+    // Synchronous instruments - HashMaps keyed by InstrumentIdentity
+    counters_i64: std.HashMapUnmanaged(InstrumentIdentity, *sdk.metrics.sync_instr.StandardCounter(i64), InstrumentIdentityContext, 80),
+    counters_f64: std.HashMapUnmanaged(InstrumentIdentity, *sdk.metrics.sync_instr.StandardCounter(f64), InstrumentIdentityContext, 80),
+    up_down_counters_i64: std.HashMapUnmanaged(InstrumentIdentity, *sdk.metrics.sync_instr.StandardUpDownCounter(i64), InstrumentIdentityContext, 80),
+    up_down_counters_f64: std.HashMapUnmanaged(InstrumentIdentity, *sdk.metrics.sync_instr.StandardUpDownCounter(f64), InstrumentIdentityContext, 80),
+    gauges_i64: std.HashMapUnmanaged(InstrumentIdentity, *sdk.metrics.sync_instr.StandardGauge(i64), InstrumentIdentityContext, 80),
+    gauges_f64: std.HashMapUnmanaged(InstrumentIdentity, *sdk.metrics.sync_instr.StandardGauge(f64), InstrumentIdentityContext, 80),
+    histograms_i64: std.HashMapUnmanaged(InstrumentIdentity, *sdk.metrics.sync_instr.StandardHistogram(i64), InstrumentIdentityContext, 80),
+    histograms_f64: std.HashMapUnmanaged(InstrumentIdentity, *sdk.metrics.sync_instr.StandardHistogram(f64), InstrumentIdentityContext, 80),
 
-    // Observable instruments
-    observables_i64: std.ArrayList(*sdk.metrics.async_instr.Observable(i64)),
-    observables_f64: std.ArrayList(*sdk.metrics.async_instr.Observable(f64)),
+    // Observable instruments - ArrayHashMaps for consistent iteration order
+    observables_i64: std.ArrayHashMapUnmanaged(InstrumentIdentity, *sdk.metrics.async_instr.Observable(i64), InstrumentIdentityArrayContext, false),
+    observables_f64: std.ArrayHashMapUnmanaged(InstrumentIdentity, *sdk.metrics.async_instr.Observable(f64), InstrumentIdentityArrayContext, false),
 
     // Configuration for async instruments
     async_config: sdk.metrics.async_instr.AsyncInstrumentConfig,
@@ -57,29 +135,29 @@ pub const Meter = struct {
     }
 
     pub fn deinit(self: *Meter) void {
-        const instruments = .{
-            self.counters_i64,
-            self.counters_f64,
-            self.up_down_counters_i64,
-            self.up_down_counters_f64,
-            self.gauges_i64,
-            self.gauges_f64,
-            self.histograms_i64,
-            self.histograms_f64,
-            self.observables_i64,
-            self.observables_f64,
+        const all_maps = .{
+            &self.counters_i64,
+            &self.counters_f64,
+            &self.up_down_counters_i64,
+            &self.up_down_counters_f64,
+            &self.gauges_i64,
+            &self.gauges_f64,
+            &self.histograms_i64,
+            &self.histograms_f64,
+            &self.observables_i64,
+            &self.observables_f64,
         };
-        inline for (instruments) |list| {
-            for (list.items) |instrument| {
-                instrument.deinit(self.provider.allocator);
-                self.provider.allocator.destroy(instrument);
+        inline for (all_maps) |map_ptr| {
+            var iter = map_ptr.iterator();
+            while (iter.next()) |entry| {
+                // Free duped strings from identity
+                self.provider.allocator.free(entry.key_ptr.name);
+                self.provider.allocator.free(entry.key_ptr.unit);
+                // Clean up instrument
+                entry.value_ptr.*.deinit(self.provider.allocator);
+                self.provider.allocator.destroy(entry.value_ptr.*);
             }
-            // The captured var is const, which blocks calling
-            // deinit. But ArrayLists are just pointers to memory
-            // so I can get away with calling deinit on a mutable
-            // copy.
-            var mutable_list = list;
-            mutable_list.deinit(self.provider.allocator);
+            map_ptr.deinit(self.provider.allocator);
         }
     }
 
@@ -94,32 +172,18 @@ pub const Meter = struct {
         unit: ?[]const u8,
         advisory: ?api.metrics.AdvisoryParams,
     ) !api.metrics.Counter(i64) {
-        _ = advisory; // Ignore advisory parameters for now
-        if (self.is_shutdown.load(.acquire)) {
-            return api.metrics.Counter(i64){ .noop = name };
-        }
-
-        // Validate parameters in debug mode
-        const validated_name = api.metrics.validateInstrumentName(name);
-        const validated_description = api.metrics.validateInstrumentDescription(description);
-        const validated_unit = api.metrics.validateInstrumentUnit(unit);
-
-        const counter = try self.provider.allocator.create(sdk.metrics.sync_instr.StandardCounter(i64));
-        errdefer self.provider.allocator.destroy(counter);
-
-        counter.* = try sdk.metrics.sync_instr.StandardCounter(i64).init(
-            validated_name,
-            validated_description,
-            validated_unit,
-            self,
+        return self.internalCreateSyncInstrument(
+            sdk.metrics.sync_instr.StandardCounter(i64),
+            api.metrics.Counter(i64),
+            &self.counters_i64,
+            .{
+                .name = api.metrics.validateInstrumentName(name),
+                .unit = api.metrics.validateInstrumentUnit(unit) orelse "",
+                .instrument_type = .Counter,
+            },
+            api.metrics.validateInstrumentDescription(description),
+            advisory,
         );
-        errdefer counter.deinit(self.provider.allocator);
-
-        try self.counters_i64.append(self.provider.allocator, counter);
-
-        return api.metrics.Counter(i64){
-            .bridge = .init(counter),
-        };
     }
 
     pub fn createCounterF64(
@@ -129,32 +193,18 @@ pub const Meter = struct {
         unit: ?[]const u8,
         advisory: ?api.metrics.AdvisoryParams,
     ) !api.metrics.Counter(f64) {
-        _ = advisory; // Ignore advisory parameters for now
-        if (self.is_shutdown.load(.acquire)) {
-            return api.metrics.Counter(f64){ .noop = name };
-        }
-
-        // Validate parameters in debug mode
-        const validated_name = api.metrics.validateInstrumentName(name);
-        const validated_description = api.metrics.validateInstrumentDescription(description);
-        const validated_unit = api.metrics.validateInstrumentUnit(unit);
-
-        const counter = try self.provider.allocator.create(sdk.metrics.sync_instr.StandardCounter(f64));
-        errdefer self.provider.allocator.destroy(counter);
-
-        counter.* = try sdk.metrics.sync_instr.StandardCounter(f64).init(
-            validated_name,
-            validated_description,
-            validated_unit,
-            self,
+        return self.internalCreateSyncInstrument(
+            sdk.metrics.sync_instr.StandardCounter(f64),
+            api.metrics.Counter(f64),
+            &self.counters_f64,
+            .{
+                .name = api.metrics.validateInstrumentName(name),
+                .unit = api.metrics.validateInstrumentUnit(unit) orelse "",
+                .instrument_type = .Counter,
+            },
+            api.metrics.validateInstrumentDescription(description),
+            advisory,
         );
-        errdefer counter.deinit(self.provider.allocator);
-
-        try self.counters_f64.append(self.provider.allocator, counter);
-
-        return api.metrics.Counter(f64){
-            .bridge = .init(counter),
-        };
     }
 
     pub fn createUpDownCounterI64(
@@ -164,32 +214,18 @@ pub const Meter = struct {
         unit: ?[]const u8,
         advisory: ?api.metrics.AdvisoryParams,
     ) !api.metrics.UpDownCounter(i64) {
-        _ = advisory; // Ignore advisory parameters for now
-        if (self.is_shutdown.load(.acquire)) {
-            return api.metrics.UpDownCounter(i64){ .noop = name };
-        }
-
-        // Validate parameters in debug mode
-        const validated_name = api.metrics.validateInstrumentName(name);
-        const validated_description = api.metrics.validateInstrumentDescription(description);
-        const validated_unit = api.metrics.validateInstrumentUnit(unit);
-
-        const counter = try self.provider.allocator.create(sdk.metrics.sync_instr.StandardUpDownCounter(i64));
-        errdefer self.provider.allocator.destroy(counter);
-
-        counter.* = try sdk.metrics.sync_instr.StandardUpDownCounter(i64).init(
-            validated_name,
-            validated_description,
-            validated_unit,
-            self,
+        return self.internalCreateSyncInstrument(
+            sdk.metrics.sync_instr.StandardUpDownCounter(i64),
+            api.metrics.UpDownCounter(i64),
+            &self.up_down_counters_i64,
+            .{
+                .name = api.metrics.validateInstrumentName(name),
+                .unit = api.metrics.validateInstrumentUnit(unit) orelse "",
+                .instrument_type = .UpDownCounter,
+            },
+            api.metrics.validateInstrumentDescription(description),
+            advisory,
         );
-        errdefer counter.deinit(self.provider.allocator);
-
-        try self.up_down_counters_i64.append(self.provider.allocator, counter);
-
-        return api.metrics.UpDownCounter(i64){
-            .bridge = .init(counter),
-        };
     }
 
     pub fn createUpDownCounterF64(
@@ -199,32 +235,18 @@ pub const Meter = struct {
         unit: ?[]const u8,
         advisory: ?api.metrics.AdvisoryParams,
     ) !api.metrics.UpDownCounter(f64) {
-        _ = advisory; // Ignore advisory parameters for now
-        if (self.is_shutdown.load(.acquire)) {
-            return api.metrics.UpDownCounter(f64){ .noop = name };
-        }
-
-        // Validate parameters in debug mode
-        const validated_name = api.metrics.validateInstrumentName(name);
-        const validated_description = api.metrics.validateInstrumentDescription(description);
-        const validated_unit = api.metrics.validateInstrumentUnit(unit);
-
-        const counter = try self.provider.allocator.create(sdk.metrics.sync_instr.StandardUpDownCounter(f64));
-        errdefer self.provider.allocator.destroy(counter);
-
-        counter.* = try sdk.metrics.sync_instr.StandardUpDownCounter(f64).init(
-            validated_name,
-            validated_description,
-            validated_unit,
-            self,
+        return self.internalCreateSyncInstrument(
+            sdk.metrics.sync_instr.StandardUpDownCounter(f64),
+            api.metrics.UpDownCounter(f64),
+            &self.up_down_counters_f64,
+            .{
+                .name = api.metrics.validateInstrumentName(name),
+                .unit = api.metrics.validateInstrumentUnit(unit) orelse "",
+                .instrument_type = .UpDownCounter,
+            },
+            api.metrics.validateInstrumentDescription(description),
+            advisory,
         );
-        errdefer counter.deinit(self.provider.allocator);
-
-        try self.up_down_counters_f64.append(self.provider.allocator, counter);
-
-        return api.metrics.UpDownCounter(f64){
-            .bridge = .init(counter),
-        };
     }
 
     pub fn createGaugeI64(
@@ -234,32 +256,18 @@ pub const Meter = struct {
         unit: ?[]const u8,
         advisory: ?api.metrics.AdvisoryParams,
     ) !api.metrics.Gauge(i64) {
-        _ = advisory; // Ignore advisory parameters for now
-        if (self.is_shutdown.load(.acquire)) {
-            return api.metrics.Gauge(i64){ .noop = name };
-        }
-
-        // Validate parameters in debug mode
-        const validated_name = api.metrics.validateInstrumentName(name);
-        const validated_description = api.metrics.validateInstrumentDescription(description);
-        const validated_unit = api.metrics.validateInstrumentUnit(unit);
-
-        const counter = try self.provider.allocator.create(sdk.metrics.sync_instr.StandardGauge(i64));
-        errdefer self.provider.allocator.destroy(counter);
-
-        counter.* = try sdk.metrics.sync_instr.StandardGauge(i64).init(
-            validated_name,
-            validated_description,
-            validated_unit,
-            self,
+        return self.internalCreateSyncInstrument(
+            sdk.metrics.sync_instr.StandardGauge(i64),
+            api.metrics.Gauge(i64),
+            &self.gauges_i64,
+            .{
+                .name = api.metrics.validateInstrumentName(name),
+                .unit = api.metrics.validateInstrumentUnit(unit) orelse "",
+                .instrument_type = .Gauge,
+            },
+            api.metrics.validateInstrumentDescription(description),
+            advisory,
         );
-        errdefer counter.deinit(self.provider.allocator);
-
-        try self.gauges_i64.append(self.provider.allocator, counter);
-
-        return api.metrics.Gauge(i64){
-            .bridge = .init(counter),
-        };
     }
 
     pub fn createGaugeF64(
@@ -269,32 +277,18 @@ pub const Meter = struct {
         unit: ?[]const u8,
         advisory: ?api.metrics.AdvisoryParams,
     ) !api.metrics.Gauge(f64) {
-        _ = advisory; // Ignore advisory parameters for now
-        if (self.is_shutdown.load(.acquire)) {
-            return api.metrics.Gauge(f64){ .noop = name };
-        }
-
-        // Validate parameters in debug mode
-        const validated_name = api.metrics.validateInstrumentName(name);
-        const validated_description = api.metrics.validateInstrumentDescription(description);
-        const validated_unit = api.metrics.validateInstrumentUnit(unit);
-
-        const counter = try self.provider.allocator.create(sdk.metrics.sync_instr.StandardGauge(f64));
-        errdefer self.provider.allocator.destroy(counter);
-
-        counter.* = try sdk.metrics.sync_instr.StandardGauge(f64).init(
-            validated_name,
-            validated_description,
-            validated_unit,
-            self,
+        return self.internalCreateSyncInstrument(
+            sdk.metrics.sync_instr.StandardGauge(f64),
+            api.metrics.Gauge(f64),
+            &self.gauges_f64,
+            .{
+                .name = api.metrics.validateInstrumentName(name),
+                .unit = api.metrics.validateInstrumentUnit(unit) orelse "",
+                .instrument_type = .Gauge,
+            },
+            api.metrics.validateInstrumentDescription(description),
+            advisory,
         );
-        errdefer counter.deinit(self.provider.allocator);
-
-        try self.gauges_f64.append(self.provider.allocator, counter);
-
-        return api.metrics.Gauge(f64){
-            .bridge = .init(counter),
-        };
     }
 
     pub fn createHistogramI64(
@@ -304,32 +298,18 @@ pub const Meter = struct {
         unit: ?[]const u8,
         advisory: ?api.metrics.AdvisoryParams,
     ) !api.metrics.Histogram(i64) {
-        _ = advisory; // Ignore advisory parameters for now
-        if (self.is_shutdown.load(.acquire)) {
-            return api.metrics.Histogram(i64){ .noop = name };
-        }
-
-        // Validate parameters in debug mode
-        const validated_name = api.metrics.validateInstrumentName(name);
-        const validated_description = api.metrics.validateInstrumentDescription(description);
-        const validated_unit = api.metrics.validateInstrumentUnit(unit);
-
-        const histogram = try self.provider.allocator.create(sdk.metrics.sync_instr.StandardHistogram(i64));
-        errdefer self.provider.allocator.destroy(histogram);
-
-        histogram.* = try sdk.metrics.sync_instr.StandardHistogram(i64).init(
-            validated_name,
-            validated_description,
-            validated_unit,
-            self,
+        return self.internalCreateSyncInstrument(
+            sdk.metrics.sync_instr.StandardHistogram(i64),
+            api.metrics.Histogram(i64),
+            &self.histograms_i64,
+            .{
+                .name = api.metrics.validateInstrumentName(name),
+                .unit = api.metrics.validateInstrumentUnit(unit) orelse "",
+                .instrument_type = .Histogram,
+            },
+            api.metrics.validateInstrumentDescription(description),
+            advisory,
         );
-        errdefer histogram.deinit(self.provider.allocator);
-
-        try self.histograms_i64.append(self.provider.allocator, histogram);
-
-        return api.metrics.Histogram(i64){
-            .bridge = .init(histogram),
-        };
     }
 
     pub fn createHistogramF64(
@@ -339,32 +319,68 @@ pub const Meter = struct {
         unit: ?[]const u8,
         advisory: ?api.metrics.AdvisoryParams,
     ) !api.metrics.Histogram(f64) {
-        _ = advisory; // Ignore advisory parameters for now
+        return self.internalCreateSyncInstrument(
+            sdk.metrics.sync_instr.StandardHistogram(f64),
+            api.metrics.Histogram(f64),
+            &self.histograms_f64,
+            .{
+                .name = api.metrics.validateInstrumentName(name),
+                .unit = api.metrics.validateInstrumentUnit(unit) orelse "",
+                .instrument_type = .Histogram,
+            },
+            api.metrics.validateInstrumentDescription(description),
+            advisory,
+        );
+    }
+
+    /// Internal helper to create synchronous instruments with common logic
+    fn internalCreateSyncInstrument(
+        self: *Meter,
+        comptime SdkInstrument: type,
+        comptime ApiInstrument: type,
+        instrument_map: *std.HashMapUnmanaged(InstrumentIdentity, *SdkInstrument, InstrumentIdentityContext, 80),
+        identity: InstrumentIdentity,
+        description: ?[]const u8,
+        advisory: ?api.metrics.AdvisoryParams,
+    ) !ApiInstrument {
         if (self.is_shutdown.load(.acquire)) {
-            return api.metrics.Histogram(f64){ .noop = name };
+            return ApiInstrument{ .noop = identity.name };
         }
 
-        // Validate parameters in debug mode
-        const validated_name = api.metrics.validateInstrumentName(name);
-        const validated_description = api.metrics.validateInstrumentDescription(description);
-        const validated_unit = api.metrics.validateInstrumentUnit(unit);
+        // Check if identical instrument already exists
+        if (instrument_map.get(identity)) |existing_instrument| {
+            // Return new bridge wrapper around existing SDK instrument
+            return ApiInstrument{ .bridge = .init(existing_instrument) };
+        }
 
-        const histogram = try self.provider.allocator.create(sdk.metrics.sync_instr.StandardHistogram(f64));
-        errdefer self.provider.allocator.destroy(histogram);
+        // Create new instrument
+        const instrument = try self.provider.allocator.create(SdkInstrument);
+        errdefer self.provider.allocator.destroy(instrument);
 
-        histogram.* = try sdk.metrics.sync_instr.StandardHistogram(f64).init(
-            validated_name,
-            validated_description,
-            validated_unit,
+        instrument.* = try SdkInstrument.init(
+            identity.name,
+            description,
+            identity.unit,
             self,
+            advisory,
         );
-        errdefer histogram.deinit(self.provider.allocator);
+        errdefer instrument.deinit(self.provider.allocator);
 
-        try self.histograms_f64.append(self.provider.allocator, histogram);
-
-        return api.metrics.Histogram(f64){
-            .bridge = .init(histogram),
+        // Dupe strings for cache ownership
+        const owned_identity = InstrumentIdentity{
+            .name = try self.provider.allocator.dupe(u8, identity.name),
+            .unit = try self.provider.allocator.dupe(u8, identity.unit),
+            .instrument_type = identity.instrument_type,
         };
+        errdefer {
+            self.provider.allocator.free(owned_identity.name);
+            self.provider.allocator.free(owned_identity.unit);
+        }
+
+        // Store in map using owned identity as key
+        try instrument_map.put(self.provider.allocator, owned_identity, instrument);
+
+        return ApiInstrument{ .bridge = .init(instrument) };
     }
 
     // Observable instrument creation methods
@@ -379,10 +395,12 @@ pub const Meter = struct {
     ) !api.metrics.ObservableInstrument(i64) {
         return self.internalCreateObservable(
             i64,
-            name,
-            description,
-            unit,
-            .ObservableCounter,
+            .{
+                .name = api.metrics.validateInstrumentName(name),
+                .unit = api.metrics.validateInstrumentUnit(unit) orelse "",
+                .instrument_type = .ObservableCounter,
+            },
+            api.metrics.validateInstrumentDescription(description),
             advisory,
             callbacks,
         );
@@ -398,10 +416,12 @@ pub const Meter = struct {
     ) !api.metrics.ObservableInstrument(f64) {
         return self.internalCreateObservable(
             f64,
-            name,
-            description,
-            unit,
-            .ObservableCounter,
+            .{
+                .name = api.metrics.validateInstrumentName(name),
+                .unit = api.metrics.validateInstrumentUnit(unit) orelse "",
+                .instrument_type = .ObservableCounter,
+            },
+            api.metrics.validateInstrumentDescription(description),
             advisory,
             callbacks,
         );
@@ -417,10 +437,12 @@ pub const Meter = struct {
     ) !api.metrics.ObservableInstrument(i64) {
         return self.internalCreateObservable(
             i64,
-            name,
-            description,
-            unit,
-            .ObservableGauge,
+            .{
+                .name = api.metrics.validateInstrumentName(name),
+                .unit = api.metrics.validateInstrumentUnit(unit) orelse "",
+                .instrument_type = .ObservableGauge,
+            },
+            api.metrics.validateInstrumentDescription(description),
             advisory,
             callbacks,
         );
@@ -436,10 +458,12 @@ pub const Meter = struct {
     ) !api.metrics.ObservableInstrument(f64) {
         return self.internalCreateObservable(
             f64,
-            name,
-            description,
-            unit,
-            .ObservableGauge,
+            .{
+                .name = api.metrics.validateInstrumentName(name),
+                .unit = api.metrics.validateInstrumentUnit(unit) orelse "",
+                .instrument_type = .ObservableGauge,
+            },
+            api.metrics.validateInstrumentDescription(description),
             advisory,
             callbacks,
         );
@@ -455,10 +479,12 @@ pub const Meter = struct {
     ) !api.metrics.ObservableInstrument(i64) {
         return self.internalCreateObservable(
             i64,
-            name,
-            description,
-            unit,
-            .ObservableUpDownCounter,
+            .{
+                .name = api.metrics.validateInstrumentName(name),
+                .unit = api.metrics.validateInstrumentUnit(unit) orelse "",
+                .instrument_type = .ObservableUpDownCounter,
+            },
+            api.metrics.validateInstrumentDescription(description),
             advisory,
             callbacks,
         );
@@ -475,10 +501,12 @@ pub const Meter = struct {
     ) !api.metrics.ObservableInstrument(f64) {
         return self.internalCreateObservable(
             f64,
-            name,
-            description,
-            unit,
-            .ObservableUpDownCounter,
+            .{
+                .name = api.metrics.validateInstrumentName(name),
+                .unit = api.metrics.validateInstrumentUnit(unit) orelse "",
+                .instrument_type = .ObservableUpDownCounter,
+            },
+            api.metrics.validateInstrumentDescription(description),
             advisory,
             callbacks,
         );
@@ -487,37 +515,49 @@ pub const Meter = struct {
     fn internalCreateObservable(
         self: *Meter,
         comptime T: type,
-        name: []const u8,
+        identity: InstrumentIdentity,
         description: ?[]const u8,
-        unit: ?[]const u8,
-        instrument_type: sdk.metrics.InstrumentType,
         advisory: ?api.metrics.AdvisoryParams,
         callbacks: []const api.metrics.TypeErasedCallback(T),
     ) !api.metrics.ObservableInstrument(T) {
-        _ = advisory; // Ignore advisory parameters for now
-
-        // short ciruit if the meter is shutdown.
+        // short circuit if the meter is shutdown.
         if (self.is_shutdown.load(.monotonic)) {
-            return api.metrics.ObservableInstrument(T){ .noop = name };
+            return api.metrics.ObservableInstrument(T){ .noop = identity.name };
         }
 
-        // Validate parameters in debug mode
-        const validated_name = api.metrics.validateInstrumentName(name);
-        const validated_description = api.metrics.validateInstrumentDescription(description);
-        const validated_unit = api.metrics.validateInstrumentUnit(unit);
+        // Get the appropriate map
+        const observable_map = switch (T) {
+            i64 => &self.observables_i64,
+            f64 => &self.observables_f64,
+            else => @compileError("ObservableInstrument must be of type i64 or f64"),
+        };
 
-        // Allocate memory.
+        // Check if identical instrument already exists
+        if (observable_map.get(identity)) |existing_observable| {
+            // Register the creation time callbacks on existing instrument
+            for (callbacks) |cb| {
+                _ = existing_observable.registerCallback(cb);
+            }
+
+            // Return new bridge wrapper around existing SDK instrument
+            return api.metrics.ObservableInstrument(T){
+                .bridge = api.metrics.AsyncInstrumentBridge(T).init(existing_observable),
+            };
+        }
+
+        // Create new observable instrument
         const observable = try self.provider.allocator.create(sdk.metrics.async_instr.Observable(T));
         errdefer self.provider.allocator.destroy(observable);
 
         // Initialize.
         observable.* = try sdk.metrics.async_instr.Observable(T).init(
-            validated_name,
-            validated_description,
-            validated_unit,
-            instrument_type,
+            identity.name,
+            description,
+            identity.unit,
+            identity.instrument_type,
             self,
             self.async_config,
+            advisory,
         );
         errdefer observable.deinit(self.provider.allocator);
 
@@ -526,12 +566,19 @@ pub const Meter = struct {
             _ = observable.registerCallback(cb);
         }
 
-        // store in the right collection
-        switch (T) {
-            i64 => try self.observables_i64.append(self.provider.allocator, observable),
-            f64 => try self.observables_f64.append(self.provider.allocator, observable),
-            else => @compileError("ObservableInstrument must be of type i64 or f64"),
+        // Dupe strings for cache ownership
+        const owned_identity = InstrumentIdentity{
+            .name = try self.provider.allocator.dupe(u8, identity.name),
+            .unit = try self.provider.allocator.dupe(u8, identity.unit),
+            .instrument_type = identity.instrument_type,
+        };
+        errdefer {
+            self.provider.allocator.free(owned_identity.name);
+            self.provider.allocator.free(owned_identity.unit);
         }
+
+        // Store in the appropriate map using owned identity as key
+        try observable_map.put(self.provider.allocator, owned_identity, observable);
 
         // erase the type.
         return api.metrics.ObservableInstrument(T){
@@ -546,7 +593,14 @@ pub const Meter = struct {
     pub fn triggerObservables(self: *const Meter, allocator: std.mem.Allocator, reader: sdk.metrics.Reader) void {
         // TODO this whole struct is missing a mutex? maybe 2: one for observables and one for sync instruments.
 
-        for (self.observables_i64.items) |observable| observable.triggerObserve(allocator, reader);
-        for (self.observables_f64.items) |observable| observable.triggerObserve(allocator, reader);
+        var iter_i64 = self.observables_i64.iterator();
+        while (iter_i64.next()) |entry| {
+            entry.value_ptr.*.triggerObserve(allocator, reader);
+        }
+
+        var iter_f64 = self.observables_f64.iterator();
+        while (iter_f64.next()) |entry| {
+            entry.value_ptr.*.triggerObserve(allocator, reader);
+        }
     }
 };
