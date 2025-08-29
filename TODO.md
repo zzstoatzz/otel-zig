@@ -1,301 +1,46 @@
 # TODO - OpenTelemetry Zig Implementation
 
-## Trace API Implementation
+# Tracer
 
-This document tracks the remaining work for the OpenTelemetry Zig implementation. The core API and SDK infrastructure (Phases 1-5) are complete. The focus is now on advanced features, quality improvements, and documentation.
+- [X] Switch the OTLP exporter to use Protobuf instead of JSON.
+- [ ] Update the trace ID ratio sampling.
+  - Make the descriptions align with the spec requirements
+  - Validate the ratio algo
+  - support more from the trace state.
+- [ ] Update the parent sampling decorator.
+  - Add support for overriding the parent set decisions.
+  - Make the descriptions align with the spec reqs.
+  - Validate the logic.
+- [ ] create an iterator/parser for loading tracestate; Eliminate the need for allocation to read the tracestate
+  - Make it use the builder; this will require making the builder support pre-pending changes rather than preserving order.
+  - Make it slice instead of a struct, as it should be immutable.
+  - Make it avoid allocators as much as possbile; the builder should be used for where the mutation/allocation happens.
+- [ ] ID generators should return typed IDs, rather than the underlying array length.
+- [ ] Should Spans be allocated by an arena to make it easier to clean up for the tracer?
+- [ ] Who should be the owner of the attributes attached to the span start options?
+  - Validation can be moved out of the `startSpan()` if a builder does it and the options object owns them.
+  - But that will require some helpers for simple cases.
+- [ ] The Span.Context objects aren't really dealing with the ownership aspects yet.
+- [ ] Is there a way to reduce the logic in the start span method?
+  - Preload timestamp/span context in the options creation maybe?
+  - Allow the option to influence the sampling decision through the options?
+  - Compute trace/span id in the option creation as well?
+- [ ] Logger sytle interface for span events?
+- [ ] Thread local context and stack storage?
+- [ ] Trace doesn't match the new naming and import syntaxes.
+- [X] Fix missing span status bug.
 
-## Project Status Summary
+# Metrics
 
-**Current State:** The OpenTelemetry Zig implementation has reached significant maturity with all core functionality complete and major quality improvements recently implemented.
+- [ ] Histogram configurations need to be supported. Instruments need support for configurations generally.
+- [ ] Can the SDK reduce the duplication by making more things templated?
+- [ ] Stop ignoring the advisory parameter on the meter methods.
+- [ ] Audit the orders of the mutex(es) on the meter.
+  - Observables are triggered (iterated over) by the reader,
+  - While the non-observables are modified by the meter when creating new meters.
 
-### Major Recent Completions ✅
+## Logs
 
-**Phase 9.1 - Duplicate Key Handling (Just Completed)**
-- ✅ Full OpenTelemetry specification compliance for unique keys in collections
-- ✅ Last-wins deduplication across AttributeBuilder, ResourceBuilder, and BaggageBuilder
-- ✅ O(n) performance optimization with HashMap-based algorithm
-- ✅ 15 comprehensive test cases covering all scenarios and edge cases
-- ✅ Zero breaking changes to existing APIs
-
-**Phases 6-8.5 - Complete Tracing Infrastructure**
-- ✅ Full tracing API and SDK implementation with RecordingSpan, StandardTracer, TracerProvider
-- ✅ OTLP and console exporters with HTTP transport and JSON serialization
-- ✅ Advanced sampling (TraceIdRatioBasedSampler, ParentBasedSampler) with CRC32 hash-based logic
-- ✅ BatchSpanProcessor with POSIX threading and configurable batching options
-- ✅ Dynamic Event/Link APIs with validation, dropped count tracking, and limits enforcement
-- ✅ Memory-safe two-phase span lifecycle (.end()/.deinit()) following Zig RAII patterns
-
-### Architecture Highlights
-
-- **Three-Signal Support:** Complete logs, metrics, and tracing with consistent patterns
-- **Provider Registry:** Intuitive setupGlobalProvider() pattern with pipeline configuration
-- **Memory Safety:** Rigorous RAII patterns, proper cleanup, and leak-free operation
-- **Performance:** Zero-allocation designs, efficient deduplication, and optimized data structures
-- **Specification Compliance:** Full adherence to OpenTelemetry specifications with comprehensive validation
-- **Testing:** Extensive test coverage with 150+ tests across API, SDK, and exporters
-
-### Next Phase Focus
-
-**Phase 9 Remaining:** Error handling cleanup, performance benchmarking, and comprehensive integration testing
-**Phase 10:** Documentation, usage examples, and final API polish
-
-### Phase 6 - Core SDK Infrastructure (Complete)
-- [x] Basic SDK span implementation (`RecordingSpan`)
-- [x] Basic SDK tracer implementation (`StandardTracer`)
-- [x] Basic SDK tracer provider implementation (`StandardTracerProvider`)
-- [x] Simple span processor (`SimpleSpanProcessor`)
-- [x] Integration with existing console exporter
-- [x] Basic unit tests for core SDK functionality
-
-**Implementation Notes:**
-- **Memory Ownership Model:** Allocator stored in StandardTracerProvider and shared through tracers to spans
-- **Console Exporter:** Create a new console trace exporter following the metrics exporter pattern (uses protobuf definitions, outputs OTLP JSON format)
-- **Thread Safety:** SDK should be thread-safe, consistent with metrics and logs implementations; mutex at processor level only
-- **ID Generation:** Simple PRNG seeded with CSPRNG value for initial implementation
-- **Resource Management:** TracerProvider holds the resource (same pattern as LoggerProvider and MeterProvider)
-- **SimpleSpanProcessor:** Exports synchronously on span.end(), fails silently on export errors
-- **Span Processor Interface:** Follow processor.zig model with bridge pattern and union for testing
-- **Testing:** Focus on individual component tests, create test_phase6_sdk.zig following Phase 5 API model; keep minimal for Phase 6
-- **Span State Machine:** Prevent double-ending of spans
-- **Timestamp Source:** Use same timestamp mechanism as logs SDK
-- **Error Handling:** Use error unions where API allows, handle errors silently where API dictates
-- **Span Limits Enforcement:** Defer to Phase 8
-- **Memory Ownership:** Allocator flows from TracerProvider → Tracer → RecordingSpan
-- **ID Generation:** Use simple random generation for Phase 6, defer sophisticated ID generation to later phases
-- **RecordingSpan Lifecycle:** Created by tracer, accumulates data during recording, becomes immutable on end, freed after export
-- **Parent Span Context:** RecordingSpan stores full copy of parent's SpanContext
-- **Context Injection:** Caller responsible for injecting span into context after creation
-- **Protobuf Integration:** Use generated types directly from `src/exporters/otlp/proto/opentelemetry/proto/trace`
-
-**Implementation Results:**
-- **RecordingSpan:** Successfully accumulates attributes, events, links, and status; implements state machine to prevent double-ending
-- **StandardTracer:** Creates spans with proper ID generation using ChaCha PRNG; supports parent-child relationships
-- **StandardTracerProvider:** Thread-safe tracer management with caching; proper resource association
-- **SimpleSpanProcessor:** Synchronous export on span.end() with silent error handling
-- **Console Trace Exporter:** Outputs proper OTLP JSON format with full span data serialization
-- **Working Example:** `simple_trace_sdk.zig` demonstrates parent-child spans, attributes, events, and JSON export
-- **Memory Management:** Identified areas for improvement (span cleanup after export, context cleanup)
-- **Test Coverage:** Basic unit tests plus working end-to-end example
-
-### Phase 7 - Trace Exporters (Complete)
-- [x] **OTLP trace exporter implementation** - HTTP/JSON transport with full span data conversion
-- [x] **JSON serialization** - Complete OTLP-compliant JSON format for trace data
-- [x] **Example programs demonstrating trace export** - Working OTLP trace export example
-- [x] **HTTP transport integration** - Uses Zig's std.http.Client for OTLP requests
-- [x] **Basic configuration support** - Endpoint, headers, timeout configuration
-
-**Implementation Notes:**
-- **Files Created:** Complete rewrite of `src/exporters/otlp/traces.zig`, updated `examples/simple_trace_otlp.zig`
-- **OTLP Compliance:** Full JSON format support with proper span serialization, trace/span ID hex encoding
-- **HTTP Transport:** Successfully sends trace data to OTLP collectors via HTTP POST
-- **Data Conversion:** Handles optional attributes/events/links, proper timestamp conversion, status codes
-- **Integration:** Uses existing SDK infrastructure (SpanExporter interface, bridge pattern)
-- **Example Output:** Working parent-child span relationships with full telemetry data export
-- **Known Issue:** HTTP client cleanup assertion during shutdown (cosmetic, doesn't affect functionality)
-
-### Phase 8 - Advanced SDK Features (Complete)
-- [x] **SDK Sampling Implementation** - Implement concrete samplers:
-  - [x] ~~`AlwaysOnSampler`~~ - **Decision: Use API `keep` variant instead** (zero-cost abstraction)
-  - [x] `TraceIdRatioBasedSampler` - Hash-based ratio sampling with CRC32
-  - [x] `ParentBasedSampler` - Delegates to parent span's sampling decision, with configurable root sampler fallback
-- [x] `BatchSpanProcessor` implementation
-- [x] Span limits enforcement in SDK
-- [x] Resource management for traces
-- [x] **Advanced span features (proper event/link collection)** - Complete event and link management system
-- [x] Span attribute limits enforcement
-- [x] **Dynamic Event/Link APIs** - Complete implementation with validation, dropped count tracking, and OTLP export
-
-🎉 **Complete Event and Link Management System** - Successfully implemented comprehensive event and link functionality including dynamic addition APIs, strict validation, dropped count tracking, enhanced limits enforcement, and full OTLP export integration.
-
-**Implementation Notes:**
-- **Files Created:** `src/sdk/trace/samplers/trace_id_ratio_based.zig`, `src/sdk/trace/samplers/always_on.zig` (simplified), `src/sdk/trace/samplers/parent_based.zig`, `src/sdk/trace/samplers/root.zig`, `examples/test_sampling.zig`, `src/sdk/trace/batch_span_processor.zig`, `examples/batch_spans.zig`, `examples/simple_batch_test.zig`
-- **Integration Points:** Added sampler field to `StandardTracerProvider`, integrated sampling logic in `StandardTracer.startSpan()`
-- **Sampling Logic:** Proper handling of `drop` (noop spans), `record_only` (unsampled recording), `record_and_sample` (sampled recording)
-- **TraceIdRatioBasedSampler:** CRC32 hash-based sampling with proper ratio clamping and deterministic behavior
-- **ParentBasedSampler:** Spec-compliant implementation - follows parent sampling decisions exactly, delegates to root sampler for root spans, preserves trace state
-- **Default Behavior:** Uses `drop` variant (AlwaysOff) for zero-cost default sampling
-- **Test Coverage:** Comprehensive sampling test example demonstrating all sampler types and behaviors including parent-child relationships
-- **Breaking Changes:** Updated all examples and tests to include sampler parameter in `StandardTracerProvider.init()`
-- **Performance:** Zero allocation for simple always-on/always-off cases, bridge pattern only for complex samplers
-- **BatchSpanProcessor:** Complete implementation with interval-based export, POSIX threading, bridge pattern integration, and deep span cloning for memory safety. Includes configurable queue size, drop-newest overflow behavior, force flush, and graceful shutdown with remaining span export. Working examples demonstrate batching behavior and performance benefits over SimpleSpanProcessor.
-- **Span Limits Enforcement:** Complete implementation enforces all OpenTelemetry span limits during `span.end()` including max attributes, max events, max links, attribute key/value length limits, and per-event/per-link attribute limits. Truncates excess data silently to maintain performance.
-- **Resource Management:** Fixed critical memory safety bug in `Resource.merge()` where schema_url was not properly cloned, causing double-free crashes in applications using merged resources. Now properly creates owned copies for memory safety.
-- **Advanced Event/Link Collection:** Complete implementation of dynamic event and link management with validation, dropped count tracking, and OTLP export integration.
-
-### Phase 8.5 - Advanced Event/Link Implementation (Complete)
-- [x] **Dynamic Link Addition API** - Complete `addLink(Link)` implementation with bridge pattern integration
-- [x] **Enhanced Event API** - Unified `addEvent(Event)` API replacing component-based approach for consistency
-- [x] **Comprehensive Validation** - Strict validation with custom errors (`InvalidEventName`, `InvalidLink`)
-- [x] **Dropped Count Tracking** - Full tracking of dropped attributes, events, and links with OTLP export support
-- [x] **Enhanced Limits Enforcement** - Per-event/per-link attribute limits with proper count tracking
-- [x] **API Breaking Changes Migration** - All examples and tests updated to new Event struct API
-- [x] **Error Handling System** - New common errors module with proper error propagation
-- [x] **Memory Safety** - Caller-owned data model with proper const correctness
-- [x] **OTLP Export Integration** - Dropped counts exported in JSON format for observability
-- [x] **Comprehensive Testing** - 17 new unit tests covering all Event/Link functionality
-
-**Event/Link Implementation Details:**
-- **Files Created/Modified:** `src/api/common/errors.zig`, `src/api/trace/span.zig`, `src/sdk/trace/data.zig`, `src/exporters/otlp/traces.zig`, `src/sdk/test_phase8_events_links.zig`
-- **API Changes:** Removed `addEvent(name, attributes, timestamp)`, renamed `addEventStruct` → `addEvent(Event)`, added `addLink(Link)`
-- **Bridge Pattern:** Both Event and Link APIs follow consistent struct-based approach with proper bridge pattern integration
-- **Validation Logic:** Events require non-empty names; Links require valid trace_id/span_id (not all zeros)
-- **Memory Model:** Maintained caller-owned attribute data approach for zero-copy performance
-- **Limits Architecture:** Enhanced `enforceLimits()` with dropped count tracking, applied at `span.end()` for consistency
-- **Error Design:** Custom error types with clear semantics and proper propagation through bridge pattern
-- **OpenTelemetry Compliance:** Full spec compliance for event ordering, link validation, and dropped count reporting
-- **Integration Testing:** All examples updated and verified working with new APIs
-- **Performance Impact:** Minimal overhead added while maintaining zero-allocation design goals
-
-### Phase 9 - Quality & Performance
-
-**Phase 9 Progress Summary:** Significant progress made with major quality improvements completed. Provider registry enhancements and comprehensive duplicate key handling are now complete, bringing the implementation into full OpenTelemetry specification compliance for key-value collections. Focus areas remain on performance benchmarking, error handling refinement, and comprehensive testing infrastructure.
-
-- [x] Make the provider registry easier to work with.
-  - [x] Implement a more intuitive API for building, registering, and destroying providers.
-- [x] **Duplicate Key Handling** - Complete OpenTelemetry specification compliance across all builders
-  - [x] AttributeBuilder - Last-wins deduplication with order preservation
-  - [x] ResourceBuilder - Integrated with Resource.merge() semantics
-  - [x] BaggageBuilder - Metadata-preserving deduplication
-  - [x] Comprehensive test coverage (15 new test cases)
-  - [x] O(n) performance optimization at finish() time only
-- [ ] Add a forced flush to the LoggerProvider.
-- [ ] **Error Handling Cleanup** - Refine error handling strategy from Phase 4, implementing hybrid approach (programming errors return errors, resource failures handled silently)
-- [ ] Performance benchmarks for trace operations
-- [ ] Memory usage optimization
-  - [x] ~~Implement proper span cleanup after export in SimpleSpanProcessor~~ - **Completed via two-phase lifecycle**
-  - [x] ~~Add context cleanup helpers for span creation lifecycle~~ - **Completed, examples updated**
-  - [ ] Optimize RecordingSpan memory allocations (pool attributes/events arrays)
-- [ ] Comprehensive trace integration tests
-- [ ] Stress testing for high-throughput scenarios
-- [ ] Memory leak detection in long-running traces
-
-### Phase 9.5 - Recent Completions
-- [x] **API Compliance Fix** - `startSpan` now spec-compliant (returns only span, not span+context)
-- [x] **TraceId/SpanId Type System** - Proper types in common API layer with trace-specific ID generation
-- [x] **Memory-Safe Span Lifecycle** - Two-phase .end()/.deinit() pattern following Zig RAII
-- [x] **Example Memory Management** - All trace examples now leak-free with proper context cleanup
-- **Resource Merging Bug Fix** - Fixed critical memory safety bug in `Resource.merge()` where schema_url was not properly cloned, causing double-free crashes. Now properly creates owned copies of schema URLs for merged resources.
-- **Dynamic Link Addition** - Complete `addLink(Link)` API implementation with validation, bridge pattern integration, and spec compliance
-- **Enhanced Event Management** - Updated `addEvent` API to use Event struct, with comprehensive validation and error handling
-- **Dropped Count Tracking** - Full implementation tracking dropped attributes, events, and links with OTLP export support
-- **Advanced Limits Enforcement** - Enhanced `enforceLimits()` with proper per-event/per-link attribute count enforcement and dropped count tracking
-- **API Consistency** - Unified Event/Link APIs using struct-based parameters for better type safety and consistency
-- **Comprehensive Validation** - Strict validation for event names and link span contexts with custom error types (`InvalidEventName`, `InvalidLink`)
-- **Examples Updated** - All trace examples updated to use new Event API and working correctly
-- **Duplicate Key Handling** - Complete implementation of last-wins deduplication across all three builders (AttributeBuilder, ResourceBuilder, BaggageBuilder) ensuring OpenTelemetry specification compliance with unique keys in collections. Deduplication occurs at finish() time using O(n) algorithm with HashMap optimization, preserving order based on first appearance while using values from last occurrence. Includes 15 comprehensive test cases covering all scenarios and edge cases.
-
-### Phase 9.1 - Duplicate Key Handling Implementation (Complete)
-- [x] **AttributeBuilder Deduplication** - Inline last-wins deduplication in finish() method
-- [x] **ResourceBuilder Deduplication** - Integrated with Resource.merge() semantics for proper precedence
-- [x] **BaggageBuilder Deduplication** - Preserves metadata from last occurrence during deduplication
-- [x] **Comprehensive Test Coverage** - 15 new test cases across all builders
-- [x] **Specification Compliance** - Ensures unique keys as required by OpenTelemetry specification
-- [x] **Performance Optimization** - O(n) deduplication only at finish() time, no building overhead
-
-**Implementation Details:**
-- **Algorithm:** HashMap-based deduplication tracking last occurrence index of each key
-- **Behavior:** Last-wins strategy where duplicate keys are resolved by keeping the value from the final occurrence
-- **Order Preservation:** Final collection maintains order based on first appearance of each key
-- **Memory Management:** Temporary HashMap allocations cleaned up via defer, no memory leaks
-- **Error Handling:** Follows existing builder error patterns with invalid variant propagation
-- **API Compatibility:** Zero breaking changes to existing builder APIs
-- **Integration:** Seamlessly integrated into existing finish() methods without disrupting workflow
-
-**Test Coverage:**
-- **AttributeBuilder:** 5 test cases covering last-wins, order preservation, type changes, edge cases
-- **BaggageBuilder:** 5 test cases covering metadata preservation, functional chaining, order preservation
-- **ResourceBuilder:** 5 test cases covering merge operations, defaults integration, complex scenarios
-- **Edge Cases:** Empty collections, all-duplicate collections, no-duplicate collections
-- **Regression Testing:** All existing tests continue to pass, fixed tests that relied on duplicate behavior
-
-**Files Modified:**
-- `src/api/common/attributes.zig` - Added inline deduplication to AttributeBuilder.finish()
-- `src/api/baggage/baggage.zig` - Added inline deduplication to BaggageBuilder.finish()
-- `src/sdk/resource/resource.zig` - Added deduplication and fixed Resource.merge() attribute order
-- Updated existing tests that expected duplicate key behavior to work with deduplicated results
-
-**Specification Compliance Achieved:**
-- OpenTelemetry Common Specification: "The keys in each such collection are unique, i.e. there MUST NOT exist more than one key-value pair with the same key."
-- Resource SDK Specification: "If a key exists on both the old and updating resource, the value of the updating resource MUST be picked."
-- Baggage API Specification: "Each name in Baggage MUST be associated with exactly one value."
-</text>
-
-### 9.2 - Pipeline architecture improvements
-
-[X] **Pipeline Architecture Enhancement**: Modify the pipeline system to use stable pointers instead of move semantics
-[X] **Enhanced forceFlush**: Consider adding immediate collection back with proper synchronization
-[ ] **Background Thread Management**: Explore more sophisticated thread lifecycle management patterns
-
-### Phase 10 - Documentation & Polish
-- [ ] Comprehensive trace API documentation
-- [ ] Usage examples for common tracing scenarios
-- [ ] Integration guides (e.g., adding tracing to DNS example)
-- [ ] Best practices documentation
-- [ ] Migration guide from other tracing libraries
-- [ ] Final API polish based on usage experience
-- [ ] **Advanced Export Configuration** - Trace export pipeline configuration, retry handling, batching options
-
-## Missing Propagators
-- [ ] **B3 Propagator** - Zipkin B3 trace context propagation format
-  - [ ] Multi-header B3 format (`X-B3-TraceId`, `X-B3-SpanId`, etc.)
-  - [ ] Single-header B3 format (`b3: {trace_id}-{span_id}-{sampled}-{parent_span_id}`)
-  - [ ] B3 sampling flag handling
-  - [ ] Unit tests for B3 propagation
-
-## Testing & Quality
-- [x] **Event/Link Unit Tests** - Comprehensive testing for advanced span features with 17 test cases covering event validation, link validation, dropped count tracking, limits enforcement, and API consistency
-- [x] **Example Migration** - All trace examples successfully updated to use new Event/Link APIs and verified working
-- [x] **Duplicate Key Handling Tests** - Comprehensive test suite with 15 new test cases across all builders:
-  - [x] **AttributeBuilder Tests** - 5 test cases covering last-wins behavior, order preservation, type changes, and edge cases
-  - [x] **BaggageBuilder Tests** - 5 test cases covering metadata preservation, functional chaining, and duplicate resolution
-  - [x] **ResourceBuilder Tests** - 5 test cases covering merge operations, defaults integration, and complex scenarios
-  - [ ] **Regression Testing** - All existing tests updated and verified to work with new deduplication behavior
-  - [ ] **Trace Integration Tests** - End-to-end context flow testing
-
-  ### Phase 9.2 - Enhanced Input Validation
-
-  #### **9.2.1 Link Validation**
-  - [ ] **Add**: Link validation in `startSpan` for `SpanStartOptions.links`
-    - Validate `Link.span_context` is valid (non-zero trace_id/span_id)
-    - Validate `Link.attributes` using same pattern as other attribute validation
-    - Apply same debug-mode only validation pattern
-  - [ ] **Add**: Link validation in `Span.addLink()`
-    - Same validation patterns as startSpan links
-    - Consistent error reporting and safe defaults
-  - [ ] Cross-service trace propagation scenarios
-  - [ ] Context propagation with different carriers
-  - [ ] Sampling decision propagation
-  - [ ] Error handling in propagation chains
-- [ ] **Unit Tests for Trace Exporters** - Comprehensive testing for OTLP and other trace exporters
-- [ ] Performance benchmarks for context operations
-- [ ] Stress testing for high-throughput scenarios
-- [ ] Memory leak detection in long-running contexts
-
-## Specification Compliance
-- [ ] **Strict W3C Trace Context compliance**
-  - [ ] Complete version handling (currently supports version 00 only)
-  - [ ] Full validation rules for trace headers
-  - [ ] Proper error handling for malformed headers
-  - [ ] Edge case handling per W3C specification
-- [ ] OpenTelemetry specification compliance validation
-- [ ] Cross-language compatibility verification
-
-## Documentation & Examples
-- [ ] Comprehensive API documentation
-- [ ] Usage examples for trace context propagation
-- [ ] Integration guides for common web frameworks
-- [ ] Best practices documentation
-- [ ] Migration guide from other tracing libraries
-
-## Performance & Optimization
-- [ ] Zero-allocation context propagation paths
-- [ ] Benchmark comparison with other OpenTelemetry implementations
-- [ ] Memory usage optimization for high-cardinality traces
-- [ ] CPU profiling of trace operations
-- [ ] **Compression Support** - Implement gzip compression for OTLP exporters (logs, traces, metrics)
-
-## Future Considerations
-- [ ] OpenTracing compatibility layer (if needed)
-- [ ] Custom propagator plugin system
-- [ ] Trace context compression for large contexts
-- [ ] Distributed trace visualization tools integration
+- [ ] Maybe an option for default attributes.
+- [X] Convience methods in the API for when one isn't using metrics or tracing.
+- [X] Extract trace id and span id from the context if provided null.

@@ -7,7 +7,7 @@ const otel_api = @import("otel-api");
 /// for caching loggers, meters, and tracers across different providers.
 pub const InstrumentationScopeMapContext = struct {
     pub fn hash(_: @This(), key: otel_api.InstrumentationScope) u64 {
-        return key.hashCode();
+        return key.hash();
     }
 
     pub fn eql(_: @This(), a: otel_api.InstrumentationScope, b: otel_api.InstrumentationScope) bool {

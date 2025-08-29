@@ -8,40 +8,50 @@
 //! and integrate with the existing context system.
 
 const std = @import("std");
-const ContextKey = @import("../context/context_key.zig").ContextKey;
-const SpanContext = @import("span_context.zig").SpanContext;
-const BaggageKeyValue = @import("../baggage/baggage.zig").BaggageKeyValue;
-const TraceId = @import("../common/types.zig").TraceId;
-const SpanId = @import("../common/types.zig").SpanId;
+const api = struct {
+    const baggage = struct {
+        const BaggageKeyValue = @import("../baggage/baggage.zig").BaggageKeyValue;
+    };
+    const common = struct {
+        const TraceId = @import("../common/types.zig").TraceId;
+        const SpanId = @import("../common/types.zig").SpanId;
+    };
+    const context = struct {
+        const ContextKey = @import("../context/context_key.zig").ContextKey;
+    };
+    const trace = struct {
+        const Span = @import("span.zig").Span;
+    };
+};
 
 /// Context key for the currently active span context.
 /// This represents the span that is currently executing in the local context.
-pub const active_span_context_key = ContextKey(SpanContext, "otel.trace.active_span_context");
+pub const active_span_context_key = api.context.ContextKey(api.trace.Span.Context, "otel.trace.active_span_context");
 
 /// Context key for remote span context extracted from carriers.
 /// This is used to store span context that was extracted from incoming
 /// requests or messages, typically from HTTP headers or message metadata.
-pub const remote_span_context_key = ContextKey(SpanContext, "otel.trace.remote_span_context");
+pub const remote_span_context_key = api.context.ContextKey(api.trace.Span.Context, "otel.trace.remote_span_context");
 
 /// Context key for trace-specific baggage.
 /// This stores baggage key-value pairs that should be propagated
 /// along with trace context across service boundaries.
-pub const trace_baggage_key = ContextKey([]BaggageKeyValue, "otel.trace.baggage");
+pub const trace_baggage_key = api.context.ContextKey([]api.baggage.BaggageKeyValue, "otel.trace.baggage");
 
 /// Context key for sampling decision.
 /// This stores whether the current trace should be sampled, which
 /// can be used by sampling strategies to make consistent decisions.
-pub const sampling_decision_key = ContextKey(bool, "otel.trace.sampling_decision");
+pub const sampling_decision_key = api.context.ContextKey(bool, "otel.trace.sampling_decision");
 
 /// Context key for trace flags.
 /// This stores the W3C trace flags that should be propagated
 /// with the trace context.
-pub const trace_flags_key = ContextKey(u8, "otel.trace.flags");
+pub const trace_flags_key = api.context.ContextKey(u8, "otel.trace.flags");
 
 /// Context key for trace state.
 /// This stores the W3C trace state string that carries vendor-specific
 /// trace identification data.
-pub const trace_state_key = ContextKey([]const u8, "otel.trace.state");
+pub const trace_state_key = api.context.ContextKey([]const u8, "otel.trace.state");
 
 test "trace context keys have unique identifiers" {
     const testing = std.testing;
@@ -67,9 +77,9 @@ test "trace context keys have correct value types" {
     const testing = std.testing;
 
     // Test that keys have the expected value types
-    try testing.expect(active_span_context_key.ValueType == SpanContext);
-    try testing.expect(remote_span_context_key.ValueType == SpanContext);
-    try testing.expect(trace_baggage_key.ValueType == []BaggageKeyValue);
+    try testing.expect(active_span_context_key.ValueType == api.trace.Span.Context);
+    try testing.expect(remote_span_context_key.ValueType == api.trace.Span.Context);
+    try testing.expect(trace_baggage_key.ValueType == []api.baggage.BaggageKeyValue);
     try testing.expect(sampling_decision_key.ValueType == bool);
     try testing.expect(trace_flags_key.ValueType == u8);
     try testing.expect(trace_state_key.ValueType == []const u8);
@@ -90,10 +100,10 @@ test "trace context keys have correct names" {
 test "context keys can wrap and unwrap values" {
     const testing = std.testing;
 
-    // Test SpanContext key
-    const span_ctx = SpanContext{
-        .trace_id = TraceId.fromBytes([_]u8{0x01} ** 16),
-        .span_id = SpanId.fromBytes([_]u8{0x02} ** 8),
+    // Test Span.Context key
+    const span_ctx = api.trace.Span.Context{
+        .trace_id = api.common.TraceId.fromBytes([_]u8{0x01} ** 16),
+        .span_id = api.common.SpanId.fromBytes([_]u8{0x02} ** 8),
         .trace_flags = 1,
         .trace_state = null,
         .is_remote = false,
@@ -131,9 +141,9 @@ test "context keys validate value types correctly" {
     const testing = std.testing;
 
     // Test correct type validation
-    const span_ctx = SpanContext{
-        .trace_id = TraceId.fromBytes([_]u8{0x01} ** 16),
-        .span_id = SpanId.fromBytes([_]u8{0x02} ** 8),
+    const span_ctx = api.trace.Span.Context{
+        .trace_id = api.common.TraceId.fromBytes([_]u8{0x01} ** 16),
+        .span_id = api.common.SpanId.fromBytes([_]u8{0x02} ** 8),
         .trace_flags = 1,
         .trace_state = null,
         .is_remote = false,

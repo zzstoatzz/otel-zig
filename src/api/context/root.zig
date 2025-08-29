@@ -11,13 +11,14 @@
 const std = @import("std");
 
 // Re-export context types
-pub const Context = @import("context.zig").Context;
+pub const ContextBuilder = @import("context.zig").ContextBuilder;
+pub const ContextKeyValue = @import("context.zig").ContextKeyValue;
 pub const ContextKey = @import("context_key.zig").ContextKey;
+pub const ContextValue = @import("context_key.zig").ContextValue;
 
 // Re-export propagation types
 pub const TextMapCarrier = @import("propagation.zig").TextMapCarrier;
 pub const TextMapPropagator = @import("propagation.zig").TextMapPropagator;
-pub const NoopPropagator = @import("propagation.zig").NoopPropagator;
 
 test {
     std.testing.refAllDecls(@This());

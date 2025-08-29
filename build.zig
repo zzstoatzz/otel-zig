@@ -199,7 +199,11 @@ pub fn build(b: *std.Build) void {
 
     // Comprehensive error handling tests
     const comprehensive_error_tests = b.addTest(.{
-        .root_source_file = b.path("src/test/error_handling_comprehensive.zig"),
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/test/error_handling_comprehensive.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     comprehensive_error_tests.root_module.addImport("otel-api", otel_api_mod);
     comprehensive_error_tests.root_module.addImport("otel-sdk", otel_sdk_mod);
@@ -233,9 +237,11 @@ pub fn build(b: *std.Build) void {
     // DNS Query Logging Example
     const dns_query_example = b.addExecutable(.{
         .name = "dns_query_logging",
-        .root_source_file = b.path("examples/dns_query_logging.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/dns_query_logging.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     dns_query_example.root_module.addImport("otel-api", otel_api_mod);
     dns_query_example.root_module.addImport("otel-sdk", otel_sdk_mod);
@@ -248,9 +254,11 @@ pub fn build(b: *std.Build) void {
     // DNS Query Logging OTLP Example
     const dns_query_otlp_example = b.addExecutable(.{
         .name = "dns_query_logging_otlp",
-        .root_source_file = b.path("examples/dns_query_logging_otlp.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/dns_query_logging_otlp.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     dns_query_otlp_example.root_module.addImport("otel-api", otel_api_mod);
     dns_query_otlp_example.root_module.addImport("otel-sdk", otel_sdk_mod);
@@ -263,9 +271,11 @@ pub fn build(b: *std.Build) void {
     // DNS Query std.log Bridge Example
     const dns_query_std_log_console_example = b.addExecutable(.{
         .name = "dns_query_std_log_console",
-        .root_source_file = b.path("examples/dns_query_std_log_console.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/dns_query_std_log_console.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     dns_query_std_log_console_example.root_module.addImport("otel-api", otel_api_mod);
     dns_query_std_log_console_example.root_module.addImport("otel-sdk", otel_sdk_mod);
@@ -278,9 +288,11 @@ pub fn build(b: *std.Build) void {
     // DNS Query std.log Bridge OTLP Example
     const dns_query_std_log_otlp_example = b.addExecutable(.{
         .name = "dns_query_std_log_otlp",
-        .root_source_file = b.path("examples/dns_query_std_log_otlp.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/dns_query_std_log_otlp.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     dns_query_std_log_otlp_example.root_module.addImport("otel-api", otel_api_mod);
     dns_query_std_log_otlp_example.root_module.addImport("otel-sdk", otel_sdk_mod);
@@ -290,74 +302,14 @@ pub fn build(b: *std.Build) void {
     const dns_query_std_log_otlp_step = b.step("example-dns-query-std-log-otlp", "Run DNS query std.log bridge OTLP example");
     dns_query_std_log_otlp_step.dependOn(&run_dns_query_std_log_otlp.step);
 
-    // Logs Batch Example
-    const logs_batch_example = b.addExecutable(.{
-        .name = "logs_batch",
-        .root_source_file = b.path("examples/logs_batch_example.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    logs_batch_example.root_module.addImport("otel-api", otel_api_mod);
-    logs_batch_example.root_module.addImport("otel-sdk", otel_sdk_mod);
-    logs_batch_example.root_module.addImport("otel-exporters", otel_exporters_mod);
-    b.installArtifact(logs_batch_example);
-
-    const run_logs_batch = b.addRunArtifact(logs_batch_example);
-    const logs_batch_step = b.step("example-logs-batch", "Run logs batch processor example");
-    logs_batch_step.dependOn(&run_logs_batch.step);
-
-    // Metrics Demo Example
-    const metrics_demo_example = b.addExecutable(.{
-        .name = "metrics_demo",
-        .root_source_file = b.path("examples/metrics_demo.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    metrics_demo_example.root_module.addImport("otel-api", otel_api_mod);
-    metrics_demo_example.root_module.addImport("otel-sdk", otel_sdk_mod);
-    metrics_demo_example.root_module.addImport("otel-exporters", otel_exporters_mod);
-
-    const run_metrics_demo = b.addRunArtifact(metrics_demo_example);
-    const metrics_demo_step = b.step("example-metrics", "Run metrics demo example");
-    metrics_demo_step.dependOn(&run_metrics_demo.step);
-
-    // Metrics Histogram Example
-    const metrics_histogram_example = b.addExecutable(.{
-        .name = "metrics_histogram",
-        .root_source_file = b.path("examples/metrics_histogram.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    metrics_histogram_example.root_module.addImport("otel", otel_mod);
-    metrics_histogram_example.root_module.addImport("otel-api", otel_api_mod);
-    metrics_histogram_example.root_module.addImport("otel-sdk", otel_sdk_mod);
-    metrics_histogram_example.root_module.addImport("otel-exporters", otel_exporters_mod);
-
-    const run_metrics_histogram = b.addRunArtifact(metrics_histogram_example);
-    const metrics_histogram_step = b.step("example-metrics-histogram", "Run metrics histogram example");
-    metrics_histogram_step.dependOn(&run_metrics_histogram.step);
-
-    // View System Demo Example
-    const view_system_demo_example = b.addExecutable(.{
-        .name = "view_system_demo",
-        .root_source_file = b.path("examples/view_system_demo.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    view_system_demo_example.root_module.addImport("otel-api", otel_api_mod);
-    view_system_demo_example.root_module.addImport("otel-sdk", otel_sdk_mod);
-    view_system_demo_example.root_module.addImport("otel-exporters", otel_exporters_mod);
-
-    const run_view_system_demo = b.addRunArtifact(view_system_demo_example);
-    const view_system_demo_step = b.step("example-view-system", "Run view system demo example");
-    view_system_demo_step.dependOn(&run_view_system_demo.step);
-
     // Comprehensive Metrics OTLP Example
     const metrics_comprehensive_otlp_example = b.addExecutable(.{
         .name = "metrics_comprehensive_otlp",
-        .root_source_file = b.path("examples/metrics_histogram_otlp.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/metrics_histogram_otlp.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     metrics_comprehensive_otlp_example.root_module.addImport("otel", otel_mod);
     metrics_comprehensive_otlp_example.root_module.addImport("otel-api", otel_api_mod);
@@ -371,9 +323,11 @@ pub fn build(b: *std.Build) void {
     // Simple Trace SDK Example
     const simple_trace_sdk_example = b.addExecutable(.{
         .name = "simple_trace_sdk",
-        .root_source_file = b.path("examples/simple_trace_sdk.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/simple_trace_sdk.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     simple_trace_sdk_example.root_module.addImport("otel-api", otel_api_mod);
     simple_trace_sdk_example.root_module.addImport("otel-sdk", otel_sdk_mod);
@@ -387,9 +341,11 @@ pub fn build(b: *std.Build) void {
     // Comprehensive Trace SDK Example
     const comprehensive_trace_sdk_example = b.addExecutable(.{
         .name = "comprehensive_trace_sdk",
-        .root_source_file = b.path("examples/comprehensive_trace_sdk.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/comprehensive_trace_sdk.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     comprehensive_trace_sdk_example.root_module.addImport("otel-api", otel_api_mod);
     comprehensive_trace_sdk_example.root_module.addImport("otel-sdk", otel_sdk_mod);
@@ -403,9 +359,11 @@ pub fn build(b: *std.Build) void {
     // Simple Trace OTLP Example
     const simple_trace_otlp_example = b.addExecutable(.{
         .name = "simple_trace_otlp",
-        .root_source_file = b.path("examples/simple_trace_otlp.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/simple_trace_otlp.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     simple_trace_otlp_example.root_module.addImport("otel-api", otel_api_mod);
     simple_trace_otlp_example.root_module.addImport("otel-sdk", otel_sdk_mod);
@@ -416,60 +374,14 @@ pub fn build(b: *std.Build) void {
     const simple_trace_otlp_step = b.step("example-simple-trace-otlp", "Run simple trace OTLP example");
     simple_trace_otlp_step.dependOn(&run_simple_trace_otlp.step);
 
-    // Sampling Test Example
-    const sampling_test_example = b.addExecutable(.{
-        .name = "test_sampling",
-        .root_source_file = b.path("examples/test_sampling.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    sampling_test_example.root_module.addImport("otel-api", otel_api_mod);
-    sampling_test_example.root_module.addImport("otel-sdk", otel_sdk_mod);
-    sampling_test_example.root_module.addImport("otel-exporters", otel_exporters_mod);
-    b.installArtifact(sampling_test_example);
-
-    const run_sampling_test = b.addRunArtifact(sampling_test_example);
-    const sampling_test_step = b.step("example-sampling-test", "Run sampling test example");
-    sampling_test_step.dependOn(&run_sampling_test.step);
-
-    // Batch Spans Example
-    const batch_spans_example = b.addExecutable(.{
-        .name = "batch_spans",
-        .root_source_file = b.path("examples/batch_spans.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    batch_spans_example.root_module.addImport("otel-api", otel_api_mod);
-    batch_spans_example.root_module.addImport("otel-sdk", otel_sdk_mod);
-    batch_spans_example.root_module.addImport("otel-exporters", otel_exporters_mod);
-    b.installArtifact(batch_spans_example);
-
-    const run_batch_spans = b.addRunArtifact(batch_spans_example);
-    const batch_spans_step = b.step("example-batch-spans", "Run batch spans example");
-    batch_spans_step.dependOn(&run_batch_spans.step);
-
-    // Simple Batch Test Example
-    const simple_batch_test_example = b.addExecutable(.{
-        .name = "simple_batch_test",
-        .root_source_file = b.path("examples/simple_batch_test.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    simple_batch_test_example.root_module.addImport("otel-api", otel_api_mod);
-    simple_batch_test_example.root_module.addImport("otel-sdk", otel_sdk_mod);
-    simple_batch_test_example.root_module.addImport("otel-exporters", otel_exporters_mod);
-    b.installArtifact(simple_batch_test_example);
-
-    const run_simple_batch_test = b.addRunArtifact(simple_batch_test_example);
-    const simple_batch_test_step = b.step("example-simple-batch-test", "Run simple batch test example");
-    simple_batch_test_step.dependOn(&run_simple_batch_test.step);
-
     // Error Handling Demo Example
     const error_handling_demo_example = b.addExecutable(.{
         .name = "error_handling_demo",
-        .root_source_file = b.path("examples/error_handling_demo.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/error_handling_demo.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     error_handling_demo_example.root_module.addImport("otel-api", otel_api_mod);
     error_handling_demo_example.root_module.addImport("otel-sdk", otel_sdk_mod);
@@ -483,9 +395,11 @@ pub fn build(b: *std.Build) void {
     // Validation Test Example
     const validation_test_example = b.addExecutable(.{
         .name = "validation_test",
-        .root_source_file = b.path("examples/validation_test.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/validation_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     validation_test_example.root_module.addImport("otel-api", otel_api_mod);
     validation_test_example.root_module.addImport("otel-sdk", otel_sdk_mod);
@@ -496,29 +410,14 @@ pub fn build(b: *std.Build) void {
     const validation_test_step = b.step("example-validation-test", "Run validation test example");
     validation_test_step.dependOn(&run_validation_test.step);
 
-    // Span Links Demo Example
-    const span_links_demo_example = b.addExecutable(.{
-        .name = "span_links_demo",
-        .root_source_file = b.path("examples/span_links_demo.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    span_links_demo_example.root_module.addImport("otel", otel_mod);
-    span_links_demo_example.root_module.addImport("otel-api", otel_api_mod);
-    span_links_demo_example.root_module.addImport("otel-sdk", otel_sdk_mod);
-    span_links_demo_example.root_module.addImport("otel-exporters", otel_exporters_mod);
-    b.installArtifact(span_links_demo_example);
-
-    const run_span_links_demo = b.addRunArtifact(span_links_demo_example);
-    const span_links_demo_step = b.step("example-span-links-demo", "Run span links demo example");
-    span_links_demo_step.dependOn(&run_span_links_demo.step);
-
     // Force Flush Test Example
     const force_flush_test_example = b.addExecutable(.{
         .name = "test_force_flush",
-        .root_source_file = b.path("examples/test_force_flush.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/test_force_flush.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     force_flush_test_example.root_module.addImport("otel-api", otel_api_mod);
     force_flush_test_example.root_module.addImport("otel-sdk", otel_sdk_mod);
@@ -529,26 +428,42 @@ pub fn build(b: *std.Build) void {
     const force_flush_test_step = b.step("example-force-flush-test", "Run force flush test example");
     force_flush_test_step.dependOn(&run_force_flush_test.step);
 
+    // Multithreaded HTTP Telemetry Example
+    const multithreaded_http_example = b.addExecutable(.{
+        .name = "multithreaded_http_telemetry",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/multithreaded_http_telemetry.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    multithreaded_http_example.root_module.addImport("otel-api", otel_api_mod);
+    multithreaded_http_example.root_module.addImport("otel-sdk", otel_sdk_mod);
+    multithreaded_http_example.root_module.addImport("otel-exporters", otel_exporters_mod);
+    multithreaded_http_example.root_module.addImport("otel-semconv", otel_semconv_mod);
+    b.installArtifact(multithreaded_http_example);
+
+    const run_multithreaded_http = b.addRunArtifact(multithreaded_http_example);
+    if (b.args) |args| {
+        run_multithreaded_http.addArgs(args);
+    }
+    const multithreaded_http_step = b.step("example-multithreaded-http", "Run multithreaded HTTP telemetry example");
+    multithreaded_http_step.dependOn(&run_multithreaded_http.step);
+
     // All examples step
     const examples_step = b.step("examples", "Run all examples");
     examples_step.dependOn(&run_dns_query.step);
     examples_step.dependOn(&run_dns_query_otlp.step);
     examples_step.dependOn(&run_dns_query_std_log_console.step);
     examples_step.dependOn(&run_dns_query_std_log_otlp.step);
-    examples_step.dependOn(&run_logs_batch.step);
-    examples_step.dependOn(&run_metrics_demo.step);
-    examples_step.dependOn(&run_metrics_histogram.step);
-    examples_step.dependOn(&run_view_system_demo.step);
     examples_step.dependOn(&run_metrics_comprehensive_otlp.step);
     examples_step.dependOn(&run_simple_trace_sdk.step);
     examples_step.dependOn(&run_comprehensive_trace_sdk.step);
     examples_step.dependOn(&run_simple_trace_otlp.step);
-    examples_step.dependOn(&run_sampling_test.step);
-    examples_step.dependOn(&run_batch_spans.step);
-    examples_step.dependOn(&run_simple_batch_test.step);
+
     examples_step.dependOn(&run_validation_test.step);
-    examples_step.dependOn(&run_span_links_demo.step);
     examples_step.dependOn(&run_error_handling_demo.step);
     examples_step.dependOn(&run_validation_test.step);
     examples_step.dependOn(&run_force_flush_test.step);
+    examples_step.dependOn(&run_multithreaded_http.step);
 }

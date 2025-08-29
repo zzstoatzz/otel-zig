@@ -4,7 +4,6 @@ const provider_registry = @import("otel-api").provider_registry;
 const logs_processor = @import("processor.zig");
 const logs_provider = @import("logger_provider.zig");
 const Resource = @import("../resource/resource.zig").Resource;
-const ResourceBuilder = @import("../resource/resource.zig").ResourceBuilder;
 const detectResource = @import("../resource/detector.zig").detectResource;
 const LogRecordExporter = @import("exporter.zig").LogRecordExporter;
 const LogRecordProcessor = @import("processor.zig").LogRecordProcessor;
@@ -17,19 +16,12 @@ const DefaultProvider = logs_provider.LoggerProvider;
 fn createDefaultProviderValue(allocator: std.mem.Allocator) !DefaultProvider {
     // Step 1: Detect resource
     const detected_resource = try detectResource(allocator);
-    defer detected_resource.deinitOwned(allocator);
+    errdefer detected_resource.deinitOwned(allocator);
 
-    // Step 2: Merge resources
-    const merged_resource = try ResourceBuilder.init(allocator)
-        .addResource(detected_resource)
-        .withDefaults()
-        .finish(allocator);
-    errdefer merged_resource.deinitOwned(allocator);
-
-    // Step 3: Create provider
+    // Step 2: Create provider
     return DefaultProvider.init(
         allocator,
-        merged_resource,
+        detected_resource,
     );
 }
 

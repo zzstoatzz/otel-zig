@@ -9,22 +9,36 @@ const std = @import("std");
 const api = @import("otel-api");
 
 const sdk = struct {
-    const InstrumentType = @import("metadata.zig").InstrumentType;
+    const metrics = struct {
+        const AggregationType = @import("aggregations.zig").AggregationType;
+        const InstrumentType = @import("metadata.zig").InstrumentType;
+    };
+};
+
+// Label for the main struct.
+const View = @This();
+
+/// View configuration that transforms how metrics are collected
+// Instrument selector (all criteria are additive/AND-ed)
+instrument_selector: View.Selector,
+
+// Stream configuration (per OTel spec)
+name: ?[]const u8 = null, // Override instrument name
+description: ?[]const u8 = null, // Override instrument description
+attribute_allowed_keys: ?[]const []const u8 = null, // Allow list: null = keep all, empty = drop all
+aggregation_override: ?sdk.metrics.AggregationType = null, // Override instrument's default aggregation
+
+/// Default view that matches any instrument and applies no transformations
+pub const default: View = .{
+    .instrument_selector = .{}, // Matches everything, changes nothing.
 };
 
 /// Types of aggregations available for view override
-pub const AggregationType = enum {
-    sum,
-    last_value,
-    histogram,
-    drop, // Special case: don't aggregate at all
-};
-
 /// Instrument selector for matching instruments to views
-pub const InstrumentSelector = struct {
+pub const Selector = struct {
     // All fields are optional (null means match any)
     name: ?[]const u8 = null, // "*" = all, supports basic wildcards
-    type: ?sdk.InstrumentType = null, // Counter, Histogram, etc.
+    type: ?sdk.metrics.InstrumentType = null, // Counter, Histogram, etc.
     unit: ?[]const u8 = null, // Exact match
     meter_name: ?[]const u8 = null, // Exact match
     meter_version: ?[]const u8 = null, // Exact match
@@ -32,9 +46,9 @@ pub const InstrumentSelector = struct {
 
     /// Check if this selector matches the given instrument metadata
     pub fn matches(
-        self: *const @This(),
+        self: *const Selector,
         instrument_name: []const u8,
-        instrument_type: sdk.InstrumentType,
+        instrument_type: sdk.metrics.InstrumentType,
         instrument_unit: []const u8,
         meter_name: []const u8,
         meter_version: ?[]const u8,
@@ -80,52 +94,18 @@ pub const InstrumentSelector = struct {
     }
 };
 
-/// View configuration that transforms how metrics are collected
-pub const View = struct {
-    // Instrument selector (all criteria are additive/AND-ed)
-    instrument_selector: InstrumentSelector,
-
-    // Stream configuration (per OTel spec)
-    name: ?[]const u8 = null, // Override instrument name
-    description: ?[]const u8 = null, // Override instrument description
-    attribute_allowed_keys: ?[]const []const u8 = null, // Allow list: null = keep all, empty = drop all
-    aggregation_override: ?AggregationType = null, // Override instrument's default aggregation
-
-    // Note: Unit is NOT transformable per spec
-
-    /// Default view that matches any instrument and applies no transformations
-    pub const default: View = .{
-        .instrument_selector = .{}, // Matches everything
-    };
-
-    /// Check if this is a drop aggregation view
-    pub fn drops(self: *const @This()) bool {
-        return self.aggregation_override == .drop;
-    }
-
-    /// Get the effective name for this view (original or override)
-    pub fn getName(self: *const @This(), original_name: []const u8) []const u8 {
-        return self.name orelse original_name;
-    }
-
-    /// Get the effective description for this view (original or override)
-    pub fn getDescription(self: *const @This(), original_description: ?[]const u8) ?[]const u8 {
-        return self.description orelse original_description;
-    }
-};
-
 /// Application of a view to an instrument, handling attribute transformation
-pub const ViewApplication = struct {
+pub const Application = struct {
     view: View,
 
     /// Check if this application drops measurements
-    pub fn drops(self: *const @This()) bool {
-        return self.view.drops();
+    pub fn drops(self: *const Application) bool {
+        return self.view.aggregation_override == .drop;
     }
 
     /// Transform attributes according to view configuration
     pub fn transformAttributes(
-        self: *const @This(),
+        self: *const Application,
         input: []const api.AttributeKeyValue,
         allocator: std.mem.Allocator,
     ) ![]api.AttributeKeyValue {
@@ -144,33 +124,33 @@ pub const ViewApplication = struct {
         }
 
         // Filter to only specified keys
-        var filtered = std.ArrayList(api.AttributeKeyValue).init(allocator);
-        defer filtered.deinit();
+        var filtered = std.ArrayList(api.AttributeKeyValue).empty;
+        defer filtered.deinit(allocator);
 
         for (input) |attr| {
             for (keep_keys) |allowed_key| {
                 if (std.mem.eql(u8, attr.key, allowed_key)) {
-                    try filtered.append(attr);
+                    try filtered.append(allocator, attr);
                     break;
                 }
             }
         }
 
-        return try filtered.toOwnedSlice();
+        return try filtered.toOwnedSlice(allocator);
     }
 
     /// Get the effective name for this view application
-    pub fn getName(self: *const @This(), original_name: []const u8) []const u8 {
-        return self.view.getName(original_name);
+    pub fn getName(self: *const Application, original_name: []const u8) []const u8 {
+        return self.view.name orelse original_name;
     }
 
     /// Get the effective description for this view application
-    pub fn getDescription(self: *const @This(), original_description: ?[]const u8) ?[]const u8 {
-        return self.view.getDescription(original_description);
+    pub fn getDescription(self: *const Application, original_description: ?[]const u8) ?[]const u8 {
+        return self.view.description orelse original_description;
     }
 
     /// Get the aggregation type for this view (original selector or override)
-    pub fn getAggregationType(self: *const @This(), instrument_type: sdk.InstrumentType) AggregationType {
+    pub fn getAggregationType(self: *const Application, instrument_type: sdk.InstrumentType) sdk.metrics.AggregationType {
         if (self.view.aggregation_override) |override_type| {
             return override_type;
         }
@@ -188,7 +168,7 @@ pub const ViewApplication = struct {
 test "InstrumentSelector - basic matching" {
     const testing = std.testing;
 
-    const selector = InstrumentSelector{
+    const selector = View.Selector{
         .name = "http.requests",
         .type = .Counter,
     };
@@ -227,7 +207,7 @@ test "InstrumentSelector - basic matching" {
 test "InstrumentSelector - wildcard matching" {
     const testing = std.testing;
 
-    const selector = InstrumentSelector{
+    const selector = View.Selector{
         .name = "*",
     };
 
@@ -260,7 +240,7 @@ test "ViewApplication - attribute filtering" {
         .attribute_allowed_keys = &[_][]const u8{ "method", "status" },
     };
 
-    const app = ViewApplication{ .view = view };
+    const app = View.Application{ .view = view };
 
     const input_attrs = [_]api.AttributeKeyValue{
         .{ .key = "method", .value = .{ .string = "GET" } },
@@ -285,7 +265,7 @@ test "ViewApplication - drop all attributes" {
         .attribute_allowed_keys = &[_][]const u8{}, // Empty = drop all
     };
 
-    const app = ViewApplication{ .view = view };
+    const app = View.Application{ .view = view };
 
     const input_attrs = [_]api.AttributeKeyValue{
         .{ .key = "method", .value = .{ .string = "GET" } },
@@ -296,33 +276,4 @@ test "ViewApplication - drop all attributes" {
     defer allocator.free(filtered);
 
     try testing.expectEqual(@as(usize, 0), filtered.len);
-}
-
-test "View - name and description override" {
-    const testing = std.testing;
-
-    const view = View{
-        .instrument_selector = .{ .name = "http_requests" },
-        .name = "http.requests.total",
-        .description = "Total HTTP requests",
-    };
-
-    try testing.expectEqualStrings("http.requests.total", view.getName("http_requests"));
-    try testing.expectEqualStrings("Total HTTP requests", view.getDescription("Old description").?);
-}
-
-test "View - drop aggregation" {
-    const testing = std.testing;
-
-    const drop_view = View{
-        .instrument_selector = .{ .name = "debug.metric" },
-        .aggregation_override = .drop,
-    };
-
-    const normal_view = View{
-        .instrument_selector = .{ .name = "prod.metric" },
-    };
-
-    try testing.expect(drop_view.drops());
-    try testing.expect(!normal_view.drops());
 }

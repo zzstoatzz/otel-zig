@@ -183,12 +183,13 @@ pub inline fn isValidatingMode() bool {
 /// Default error handler that logs to stderr
 fn defaultErrorHandler(info: ErrorInfo, allocator: ?std.mem.Allocator) void {
     _ = allocator; // Not used in default handler for simplicity
-    const stderr = std.io.getStdErr().writer();
+    var stderr_writer = std.fs.File.stderr().writer(&.{});
+    const stderr = &stderr_writer.interface;
 
-    stderr.print("[OpenTelemetry Error] Component: {s}, Operation: {s}, Type: {s}, Message: {s}", .{
-        @tagName(info.component),
+    stderr.print("[OpenTelemetry Error] Component: {t}, Operation: {s}, Type: {t}, Message: {s}", .{
+        info.component,
         info.operation,
-        @tagName(info.error_type),
+        info.error_type,
         info.message,
     }) catch return; // Don't fail if we can't log the error
 
@@ -449,7 +450,7 @@ pub const MockErrorHandler = struct {
     pub fn init(allocator: std.mem.Allocator) MockErrorHandler {
         return .{
             .allocator = allocator,
-            .errors = std.ArrayList(ErrorInfo).init(allocator),
+            .errors = .empty,
         };
     }
 
@@ -460,7 +461,7 @@ pub const MockErrorHandler = struct {
                 self.allocator.free(ctx);
             }
         }
-        self.errors.deinit();
+        self.errors.deinit(self.allocator);
     }
 
     pub fn handleError(self: *MockErrorHandler, info: ErrorInfo) void {
@@ -470,7 +471,7 @@ pub const MockErrorHandler = struct {
             cloned_info.context = self.allocator.dupe(u8, ctx) catch return;
         }
 
-        self.errors.append(cloned_info) catch return;
+        self.errors.append(self.allocator, cloned_info) catch return;
     }
 
     pub fn errorCount(self: *const MockErrorHandler) usize {
@@ -657,21 +658,21 @@ test "convenience error reporting functions" {
     const testing = std.testing;
 
     const TestData = struct {
-        var calls: std.ArrayList(ErrorInfo) = undefined;
+        var calls: std.ArrayList(ErrorInfo) = .empty;
         var allocator: std.mem.Allocator = undefined;
 
         fn init(alloc: std.mem.Allocator) void {
             allocator = alloc;
-            calls = std.ArrayList(ErrorInfo).init(alloc);
+            calls = .empty;
         }
 
         fn deinit() void {
-            calls.deinit();
+            calls.deinit(allocator);
         }
 
         fn testHandler(info: ErrorInfo, alloc: ?std.mem.Allocator) void {
             _ = alloc;
-            calls.append(info) catch return;
+            calls.append(allocator, info) catch return;
         }
 
         fn reset() void {
@@ -803,19 +804,20 @@ test "enhanced error reporting with source errors" {
 
     // Test convenience functions with source errors
     const TestData = struct {
-        var calls: std.ArrayList(ErrorInfo) = undefined;
+        var test_allocator: std.mem.Allocator = undefined;
+        var calls: std.ArrayList(ErrorInfo) = .empty;
 
         fn init(alloc: std.mem.Allocator) void {
-            calls = std.ArrayList(ErrorInfo).init(alloc);
+            test_allocator = alloc;
         }
 
         fn deinit() void {
-            calls.deinit();
+            calls.deinit(test_allocator);
         }
 
         fn testHandler(info: ErrorInfo, alloc: ?std.mem.Allocator) void {
             _ = alloc;
-            calls.append(info) catch return;
+            calls.append(test_allocator, info) catch return;
         }
 
         fn reset() void {

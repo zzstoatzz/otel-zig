@@ -8,8 +8,12 @@
 
 const std = @import("std");
 const otel_api = @import("otel-api");
+const sdk = struct {
+    const trace = struct {
+        const SpanData = @import("data.zig").SpanData;
+    };
+};
 
-const Context = otel_api.Context;
 const RecordingSpan = @import("data.zig").RecordingSpan;
 const SpanExporter = @import("exporter.zig").SpanExporter;
 const Resource = @import("../resource/resource.zig").Resource;
@@ -29,6 +33,7 @@ fn exportResultToProcessResult(result: ExportResult) ProcessResult {
     return switch (result) {
         .success => .success,
         .failure => .failure,
+        .timeout => .timeout,
     };
 }
 
@@ -81,12 +86,12 @@ pub const BasicSpanProcessor = struct {
         self.exporter = exporter;
     }
 
-    pub fn spanLimits(self: *const BasicSpanProcessor) otel_api.trace.SpanLimits {
+    pub fn spanLimits(self: *const BasicSpanProcessor) otel_api.trace.Span.Limits {
         _ = self;
         return .default;
     }
 
-    pub fn onEnd(self: *BasicSpanProcessor, span: *RecordingSpan) void {
+    pub fn onEnd(self: *BasicSpanProcessor, span: sdk.trace.SpanData, resource: Resource) void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -95,10 +100,10 @@ pub const BasicSpanProcessor = struct {
         }
 
         // Export single span immediately
-        const spans = [_]*RecordingSpan{span};
+        const spans = [_]sdk.trace.SpanData{span};
 
         if (self.exporter) |exporter| {
-            const result = exporter.exportSpans(&spans, Resource.empty);
+            const result = exporter.exportSpans(&spans, resource);
             if (result != .success) {
                 error_handler.reportError(.{
                     .component = .processor,
@@ -111,7 +116,7 @@ pub const BasicSpanProcessor = struct {
         }
     }
 
-    pub fn forceFlush(self: *BasicSpanProcessor, timeout_ms: ?u64) ProcessResult {
+    pub fn forceFlush(self: *BasicSpanProcessor, timeout_ms: ?u64) otel_api.common.FlushResult {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -121,7 +126,7 @@ pub const BasicSpanProcessor = struct {
 
         // Flush the exporter
         const result = if (self.exporter) |*exporter| exporter.forceFlush(timeout_ms) else ExportResult.success;
-        return exportResultToProcessResult(result);
+        return result.asFlushResult();
     }
 
     pub fn shutdown(self: *BasicSpanProcessor, timeout_ms: ?u64) ProcessResult {
@@ -136,7 +141,7 @@ pub const BasicSpanProcessor = struct {
 
         // Shutdown the exporter
         const result = if (self.exporter) |*exporter| exporter.shutdown(timeout_ms) else ExportResult.success;
-        return exportResultToProcessResult(result);
+        return result.asFlushResult().asProcessResult();
     }
 
     pub fn spanProcessor(self: *BasicSpanProcessor) SpanProcessor {

@@ -203,16 +203,28 @@ pub const AttributeAggregationMap = struct {
 
         // append the points to the snapshot.
         const next_free = self.next_free.load(.monotonic);
-        try entry_list.ensureUnusedCapacity(next_free);
+        try entry_list.ensureUnusedCapacity(allocator, next_free);
 
         // Reset the cardinality.
         for (self.aggregation_pool[0..next_free]) |*entry| {
             // In the current model, the collection is expected to use
             // an arena allocator. But that means we have to copy the
-            // attributes, since they are changing ownership and allocator,
+            // slices, since they are changing ownership and allocator,
             // and cannot use move semantics.
-            try entry_list.append(.{
-                .aggregation = entry.aggregation,
+            var aggregation = entry.aggregation;
+            switch (aggregation) {
+                .histogram_i64 => |*hist| {
+                    hist.counts = try allocator.dupe(std.atomic.Value(u64), hist.counts);
+                    hist.boundaries = try allocator.dupe(f64, hist.boundaries);
+                },
+                .histogram_f64 => |*hist| {
+                    hist.counts = try allocator.dupe(std.atomic.Value(u64), hist.counts);
+                    hist.boundaries = try allocator.dupe(f64, hist.boundaries);
+                },
+                else => {},
+            }
+            try entry_list.append(allocator, .{
+                .aggregation = aggregation,
                 .attributes = try api.AttributeKeyValue.initOwnedSlice(allocator, entry.attributes),
                 .metadata = entry.metadata,
                 .allocator = allocator,

@@ -130,7 +130,7 @@ pub const MockMetricExporter = struct {
     pub fn init(allocator: std.mem.Allocator) MockMetricExporter {
         return .{
             .allocator = allocator,
-            .exported_metrics = std.ArrayList(sdk.MetricData).init(allocator),
+            .exported_metrics = .empty,
             .export_count = .init(0),
             .export_result = .success,
             .flush_result = .success,
@@ -149,7 +149,7 @@ pub const MockMetricExporter = struct {
             if (data.unit) |d| self.allocator.free(d);
             self.allocator.free(data.data_points);
         }
-        self.exported_metrics.deinit();
+        self.exported_metrics.deinit(self.allocator);
     }
 
     pub fn destroy(self: *MockMetricExporter) void {
@@ -159,31 +159,47 @@ pub const MockMetricExporter = struct {
     pub fn exportMetrics(self: *MockMetricExporter, metrics: []const sdk.MetricData) api.common.ExportResult {
         _ = self.export_count.fetchAdd(1, .acq_rel);
 
-        var buffer = std.ArrayList(sdk.MetricData).init(self.allocator);
-        defer buffer.deinit();
-
         self.mutex.lock();
         defer self.mutex.unlock();
 
         for (metrics) |metric| {
-            // Deep copy the metric since the exporter needs to own the data
-            var data_points = std.ArrayList(sdk.MetricDataPoint).init(self.allocator);
-            for (metric.data_points) |point| {
-                var new_point = point;
-                new_point.attributes = api.AttributeKeyValue.initOwnedSlice(self.allocator, point.attributes) catch return .failure;
-                data_points.append(new_point) catch return .failure;
-            }
-            self.exported_metrics.append(.{
-                .name = self.allocator.dupe(u8, metric.name) catch return .failure,
-                .description = if (metric.description) |v| self.allocator.dupe(u8, v) catch return .failure else null,
-                .unit = if (metric.unit) |v| self.allocator.dupe(u8, v) catch return .failure else null,
-                .type = metric.type,
-                .data_points = data_points.toOwnedSlice() catch return .failure,
-                .scope = metric.scope,
-                .resource = metric.resource,
-            }) catch return .failure;
+            self.internalExportMetric(metric) catch return .failure;
         }
         return self.export_result;
+    }
+
+    fn internalExportMetric(self: *MockMetricExporter, metric_data: sdk.MetricData) !void {
+        // Deep copy the metric since the exporter needs to own the data
+        var data_points = std.ArrayList(sdk.MetricDataPoint).empty;
+        errdefer {
+            for (data_points.items) |data_point| api.AttributeKeyValue.deinitOwnedSlice(self.allocator, data_point.attributes);
+            data_points.deinit(self.allocator);
+        }
+        for (metric_data.data_points) |point| {
+            var new_point = point;
+            new_point.attributes = try api.AttributeKeyValue.initOwnedSlice(self.allocator, point.attributes);
+            errdefer api.AttributeKeyValue.deinitOwnedSlice(self.allocator, new_point.attributes);
+            try data_points.append(self.allocator, new_point);
+        }
+        const points = try data_points.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(points);
+
+        const name = try self.allocator.dupe(u8, metric_data.name);
+        errdefer self.allocator.free(name);
+        const description = if (metric_data.description) |v| try self.allocator.dupe(u8, v) else null;
+        errdefer if (description) |v| self.allocator.free(v);
+        const unit = if (metric_data.unit) |v| try self.allocator.dupe(u8, v) else null;
+        errdefer if (unit) |v| self.allocator.free(v);
+
+        try self.exported_metrics.append(self.allocator, .{
+            .name = name,
+            .description = description,
+            .unit = unit,
+            .type = metric_data.type,
+            .data_points = points,
+            .scope = metric_data.scope,
+            .resource = metric_data.resource,
+        });
     }
 
     pub fn forceFlush(self: *MockMetricExporter, timeout_ms: ?u64) api.common.ExportResult {

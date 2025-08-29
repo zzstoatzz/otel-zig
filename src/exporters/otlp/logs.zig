@@ -8,6 +8,7 @@ const ExportResult = api.common.ExportResult;
 const OtlpExporterConfig = @import("root.zig").OtlpExporterConfig;
 const Resource = sdk.resource.Resource;
 const ResourceBuilder = sdk.resource.ResourceBuilder;
+const convert = @import("convert.zig");
 
 // Import protobuf definitions
 const logs_v1 = @import("proto/opentelemetry/proto/logs/v1.pb.zig");
@@ -144,35 +145,37 @@ pub const OtlpLogExporter = struct {
             .http_protobuf, .grpc => "application/x-protobuf",
         };
 
+        // Add custom headers from config (simplified approach)
+        var extra_headers = try allocator.alloc(std.http.Header, self.config.headers.len);
+        defer allocator.free(extra_headers);
+        for (self.config.headers, 0..) |header, h| {
+            extra_headers[h] = header;
+        }
+
         // Create HTTP request
         const full_uri = try std.Uri.parse(full_url);
-        var server_header_buffer: [8192]u8 = undefined;
-        var req = try client.open(.POST, full_uri, .{
-            .server_header_buffer = &server_header_buffer,
+        var req = try client.request(.POST, full_uri, .{
+            .headers = .{
+                .content_type = .{ .override = content_type },
+                .user_agent = .{ .override = "otel-zig-otlp" },
+            },
+            .extra_headers = extra_headers,
         });
         defer req.deinit();
 
         // Set request headers
-        req.headers.content_type = .{ .override = content_type };
         req.transfer_encoding = .{ .content_length = @intCast(data.len) };
 
-        // Add custom headers from config (simplified approach)
-        if (self.config.headers.len > 0) {
-            var extra_headers = try allocator.alloc(std.http.Header, self.config.headers.len);
-            for (self.config.headers, 0..) |header, h| {
-                extra_headers[h] = header;
-            }
-            req.extra_headers = extra_headers;
-        }
-
         // Send request
-        try req.send();
-        try req.writeAll(data);
-        try req.finish();
-        try req.wait();
+        var bw = try req.sendBodyUnflushed(&.{});
+        try bw.writer.writeAll(data);
+        try bw.end();
+        try req.connection.?.flush();
+
+        const res = try req.receiveHead(&.{});
 
         // Check response status
-        switch (req.response.status) {
+        switch (res.head.status) {
             .ok => return .success,
             .bad_request, .unauthorized, .forbidden, .not_found => {
                 return .failure;
@@ -191,101 +194,70 @@ pub const OtlpLogExporter = struct {
         _ = self;
 
         // Create protobuf LogsData structure
-        var logs_data = logs_v1.LogsData{
-            .resource_logs = std.ArrayList(logs_v1.ResourceLogs).init(allocator),
-        };
+        var logs_data = try convertToProtoLogsData(allocator, records, resource);
 
-        // Convert resource
-        var resource_logs = logs_v1.ResourceLogs{
-            .resource = try convertResourceToProtobuf(allocator, resource),
-            .scope_logs = std.ArrayList(logs_v1.ScopeLogs).init(allocator),
-            .schema_url = protobuf.ManagedString.static(""),
-        };
-
-        // Convert scope logs
-        var scope_logs = logs_v1.ScopeLogs{
-            .scope = common_v1.InstrumentationScope{
-                .name = protobuf.ManagedString.static("zig-otel-logs"),
-                .version = protobuf.ManagedString.static("1.0.0"),
-                .attributes = std.ArrayList(common_v1.KeyValue).init(allocator),
-                .dropped_attributes_count = 0,
-            },
-            .log_records = std.ArrayList(logs_v1.LogRecord).init(allocator),
-            .schema_url = protobuf.ManagedString.static(""),
-        };
-
-        // Convert log records
-        for (records) |record| {
-            const protobuf_record = try convertLogRecordToProtobuf(allocator, record);
-            try scope_logs.log_records.append(protobuf_record);
-        }
-
-        try resource_logs.scope_logs.append(scope_logs);
-        try logs_data.resource_logs.append(resource_logs);
-
-        // Serialize to JSON using std.json.stringify
-        var json_buffer = std.ArrayList(u8).init(allocator);
-        try std.json.stringify(logs_data, .{}, json_buffer.writer());
-        return json_buffer.toOwnedSlice();
+        // Serialize to JSON
+        return @constCast(try logs_data.jsonEncode(.{}, allocator));
     }
 
     fn convertToProtobufFormat(self: *OtlpLogExporter, allocator: std.mem.Allocator, records: []const LogRecord, resource: Resource) ![]u8 {
         _ = self;
 
         // Create protobuf LogsData structure
-        var logs_data = logs_v1.LogsData{
-            .resource_logs = std.ArrayList(logs_v1.ResourceLogs).init(allocator),
-        };
-
-        // Convert resource
-        var resource_logs = logs_v1.ResourceLogs{
-            .resource = try convertResourceToProtobuf(allocator, resource),
-            .scope_logs = std.ArrayList(logs_v1.ScopeLogs).init(allocator),
-            .schema_url = protobuf.ManagedString.static(""),
-        };
-
-        // Convert scope logs
-        var scope_logs = logs_v1.ScopeLogs{
-            .scope = common_v1.InstrumentationScope{
-                .name = protobuf.ManagedString.static("zig-otel-logs"),
-                .version = protobuf.ManagedString.static("1.0.0"),
-                .attributes = std.ArrayList(common_v1.KeyValue).init(allocator),
-                .dropped_attributes_count = 0,
-            },
-            .log_records = std.ArrayList(logs_v1.LogRecord).init(allocator),
-            .schema_url = protobuf.ManagedString.static(""),
-        };
-
-        // Convert log records
-        for (records) |record| {
-            const protobuf_record = try convertLogRecordToProtobuf(allocator, record);
-            try scope_logs.log_records.append(protobuf_record);
-        }
-
-        try resource_logs.scope_logs.append(scope_logs);
-        try logs_data.resource_logs.append(resource_logs);
+        var logs_data = try convertToProtoLogsData(allocator, records, resource);
 
         // Serialize to protobuf binary format
-        return try logs_data.encode(allocator);
+        var proto_buffer = std.io.Writer.Allocating.init(allocator);
+        defer proto_buffer.deinit();
+        try logs_data.encode(&proto_buffer.writer, allocator);
+        return proto_buffer.toOwnedSlice();
     }
 };
 
-fn convertResourceToProtobuf(allocator: std.mem.Allocator, resource: Resource) !?resource_v1.Resource {
-    var pb_resource = resource_v1.Resource{
-        .attributes = std.ArrayList(common_v1.KeyValue).init(allocator),
-        .dropped_attributes_count = 0,
-        .entity_refs = std.ArrayList(common_v1.EntityRef).init(allocator),
+fn convertToProtoLogsData(allocator: std.mem.Allocator, records: []const LogRecord, resource: Resource) !logs_v1.LogsData {
+    // Create protobuf LogsData structure
+    var logs_data = logs_v1.LogsData{};
+
+    // Convert resource
+    var resource_logs = logs_v1.ResourceLogs{
+        .resource = try convert.resourceToProto(allocator, resource),
     };
 
-    for (resource.attributes) |attr| {
-        const pb_kv = common_v1.KeyValue{
-            .key = protobuf.ManagedString.managed(attr.key),
-            .value = try convertAttributeValueToProtobuf(allocator, attr.value),
-        };
-        try pb_resource.attributes.append(pb_kv);
+    // Convert scope logs
+    const MapType = std.HashMapUnmanaged(api.InstrumentationScope, std.ArrayList(LogRecord), sdk.common.InstrumentationScopeMapContext, 80);
+    var scope_map = MapType.empty;
+    defer {
+        var it = scope_map.iterator();
+        while (it.next()) |scope_entry| {
+            scope_entry.value_ptr.deinit(allocator);
+        }
+        scope_map.deinit(allocator);
     }
 
-    return pb_resource;
+    for (records) |record| {
+        const result = try scope_map.getOrPut(allocator, record.instrumentation_scope orelse api.InstrumentationScope.empty);
+        if (!result.found_existing) result.value_ptr.* = .empty;
+        try result.value_ptr.append(allocator, record);
+    }
+
+    var iter = scope_map.iterator();
+    while (iter.next()) |scope_entry| {
+        var scope_logs = logs_v1.ScopeLogs{
+            .scope = try convert.instrumentationScopeToProto(allocator, scope_entry.key_ptr.*),
+            .schema_url = scope_entry.key_ptr.schema_url orelse &.{},
+        };
+
+        for (scope_entry.value_ptr.*.items) |record| {
+            const protobuf_record = try convertLogRecordToProtobuf(allocator, record);
+            try scope_logs.log_records.append(allocator, protobuf_record);
+        }
+
+        try resource_logs.scope_logs.append(allocator, scope_logs);
+    }
+
+    try logs_data.resource_logs.append(allocator, resource_logs);
+
+    return logs_data;
 }
 
 fn convertLogRecordToProtobuf(allocator: std.mem.Allocator, record: LogRecord) !logs_v1.LogRecord {
@@ -294,22 +266,17 @@ fn convertLogRecordToProtobuf(allocator: std.mem.Allocator, record: LogRecord) !
         .time_unix_nano = @as(u64, @intCast(@max(0, timestamp_ns))),
         .observed_time_unix_nano = @as(u64, @intCast(@max(0, timestamp_ns))),
         .severity_number = mapSeverityToProtobuf(record.severity_number),
-        .severity_text = protobuf.ManagedString.managed(record.severity_number.toShortText()),
-        .body = if (record.body) |body| try convertAttributeValueToProtobuf(allocator, body) else null,
-        .attributes = std.ArrayList(common_v1.KeyValue).init(allocator),
+        .severity_text = record.severity_number.toShortText(),
+        .body = if (record.body) |body| try convert.attributeValueToProto(allocator, body) else null,
+        .event_name = record.event_name orelse &.{},
+        .flags = record.flags orelse 0,
+        .trace_id = if (record.trace_id) |tid| try allocator.dupe(u8, &tid.bytes) else &.{},
+        .span_id = if (record.span_id) |sid| try allocator.dupe(u8, &sid.bytes) else &.{},
         .dropped_attributes_count = 0,
-        .flags = 0,
-        .trace_id = protobuf.ManagedString.static(""),
-        .span_id = protobuf.ManagedString.static(""),
-        .event_name = protobuf.ManagedString.static(""),
     };
 
     for (record.attributes) |attr| {
-        const pb_kv = common_v1.KeyValue{
-            .key = protobuf.ManagedString.managed(attr.key),
-            .value = try convertAttributeValueToProtobuf(allocator, attr.value),
-        };
-        try pb_record.attributes.append(pb_kv);
+        try pb_record.attributes.append(allocator, try convert.attributeKeyValueToProto(allocator, attr));
     }
 
     return pb_record;
@@ -345,77 +312,6 @@ fn mapSeverityToProtobuf(severity: api.logs.Severity) logs_v1.SeverityNumber {
     };
 }
 
-fn convertAttributeValueToProtobuf(allocator: std.mem.Allocator, value: api.common.AttributeValue) !?common_v1.AnyValue {
-    const pb_value = switch (value) {
-        .string => |s| common_v1.AnyValue{
-            .value = .{ .string_value = protobuf.ManagedString.managed(s) },
-        },
-        .int => |i| common_v1.AnyValue{
-            .value = .{ .int_value = i },
-        },
-        .float => |f| common_v1.AnyValue{
-            .value = .{ .double_value = f },
-        },
-        .bool => |b| common_v1.AnyValue{
-            .value = .{ .bool_value = b },
-        },
-        .bool_array => |arr| blk: {
-            var pb_array = common_v1.ArrayValue{
-                .values = std.ArrayList(common_v1.AnyValue).init(allocator),
-            };
-            for (arr) |item| {
-                try pb_array.values.append(common_v1.AnyValue{
-                    .value = .{ .bool_value = item },
-                });
-            }
-            break :blk common_v1.AnyValue{
-                .value = .{ .array_value = pb_array },
-            };
-        },
-        .int_array => |arr| blk: {
-            var pb_array = common_v1.ArrayValue{
-                .values = std.ArrayList(common_v1.AnyValue).init(allocator),
-            };
-            for (arr) |item| {
-                try pb_array.values.append(common_v1.AnyValue{
-                    .value = .{ .int_value = item },
-                });
-            }
-            break :blk common_v1.AnyValue{
-                .value = .{ .array_value = pb_array },
-            };
-        },
-        .float_array => |arr| blk: {
-            var pb_array = common_v1.ArrayValue{
-                .values = std.ArrayList(common_v1.AnyValue).init(allocator),
-            };
-            for (arr) |item| {
-                try pb_array.values.append(common_v1.AnyValue{
-                    .value = .{ .double_value = item },
-                });
-            }
-            break :blk common_v1.AnyValue{
-                .value = .{ .array_value = pb_array },
-            };
-        },
-        .string_array => |arr| blk: {
-            var pb_array = common_v1.ArrayValue{
-                .values = std.ArrayList(common_v1.AnyValue).init(allocator),
-            };
-            for (arr) |item| {
-                try pb_array.values.append(common_v1.AnyValue{
-                    .value = .{ .string_value = protobuf.ManagedString.managed(item) },
-                });
-            }
-            break :blk common_v1.AnyValue{
-                .value = .{ .array_value = pb_array },
-            };
-        },
-    };
-
-    return pb_value;
-}
-
 test "OtlpLogExporter basic functionality" {
     const testing = std.testing;
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -433,9 +329,7 @@ test "OtlpLogExporter basic functionality" {
     defer exporter.deinit();
 
     // Create test resource
-    const resource = try ResourceBuilder.init(allocator)
-        .withDefaults()
-        .finish(allocator);
+    const resource = try Resource.initOwned(allocator, .default);
     defer resource.deinitOwned(allocator);
 
     // Create test log record
@@ -460,9 +354,7 @@ test "OtlpLogExporter transport selection" {
     const allocator = gpa.allocator();
 
     // Create test resource
-    const resource = try ResourceBuilder.init(allocator)
-        .withDefaults()
-        .finish(allocator);
+    const resource = try Resource.initOwned(allocator, .default);
     defer resource.deinitOwned(allocator);
 
     // Create test log record
@@ -548,71 +440,6 @@ test "OtlpLogExporter severity mapping" {
     try testing.expectEqual(logs_v1.SeverityNumber.SEVERITY_NUMBER_FATAL, mapSeverityToProtobuf(.fatal));
 }
 
-test "OtlpLogExporter attribute conversion" {
-    const testing = std.testing;
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    // Test string attribute
-    {
-        const attr_value = api.common.AttributeValue{ .string = "test_string" };
-        const pb_value = try convertAttributeValueToProtobuf(allocator, attr_value);
-        try testing.expect(pb_value != null);
-        try testing.expect(pb_value.?.value != null);
-        try testing.expectEqual(common_v1.AnyValue._value_case.string_value, std.meta.activeTag(pb_value.?.value.?));
-    }
-
-    // Test int attribute
-    {
-        const attr_value = api.common.AttributeValue{ .int = 42 };
-        const pb_value = try convertAttributeValueToProtobuf(allocator, attr_value);
-        try testing.expect(pb_value != null);
-        try testing.expect(pb_value.?.value != null);
-        try testing.expectEqual(common_v1.AnyValue._value_case.int_value, std.meta.activeTag(pb_value.?.value.?));
-        try testing.expectEqual(@as(i64, 42), pb_value.?.value.?.int_value);
-    }
-
-    // Test bool attribute
-    {
-        const attr_value = api.common.AttributeValue{ .bool = true };
-        const pb_value = try convertAttributeValueToProtobuf(allocator, attr_value);
-        try testing.expect(pb_value != null);
-        try testing.expect(pb_value.?.value != null);
-        try testing.expectEqual(common_v1.AnyValue._value_case.bool_value, std.meta.activeTag(pb_value.?.value.?));
-        try testing.expectEqual(true, pb_value.?.value.?.bool_value);
-    }
-
-    // Test float attribute
-    {
-        const attr_value = api.common.AttributeValue{ .float = 3.14 };
-        const pb_value = try convertAttributeValueToProtobuf(allocator, attr_value);
-        try testing.expect(pb_value != null);
-        try testing.expect(pb_value.?.value != null);
-        try testing.expectEqual(common_v1.AnyValue._value_case.double_value, std.meta.activeTag(pb_value.?.value.?));
-        try testing.expectEqual(@as(f64, 3.14), pb_value.?.value.?.double_value);
-    }
-
-    // Test array attribute
-    {
-        const int_array = [_]i64{ 1, 2, 3 };
-        const attr_value = api.common.AttributeValue{ .int_array = &int_array };
-        const pb_value = try convertAttributeValueToProtobuf(allocator, attr_value);
-        defer if (pb_value) |val| {
-            if (val.value) |v| {
-                switch (v) {
-                    .array_value => |arr| arr.values.deinit(),
-                    else => {},
-                }
-            }
-        };
-        try testing.expect(pb_value != null);
-        try testing.expect(pb_value.?.value != null);
-        try testing.expectEqual(common_v1.AnyValue._value_case.array_value, std.meta.activeTag(pb_value.?.value.?));
-        try testing.expectEqual(@as(usize, 3), pb_value.?.value.?.array_value.values.items.len);
-    }
-}
-
 test "OtlpLogExporter protobuf format validation" {
     const testing = std.testing;
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -620,9 +447,7 @@ test "OtlpLogExporter protobuf format validation" {
     const allocator = gpa.allocator();
 
     // Create test resource
-    const resource = try ResourceBuilder.init(allocator)
-        .withDefaults()
-        .finish(allocator);
+    const resource = try Resource.initOwned(allocator, .default);
     defer resource.deinitOwned(allocator);
 
     // Create test log record

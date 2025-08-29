@@ -209,26 +209,25 @@ pub fn main() !void {
     std.debug.print("✅ Demo completed successfully!\n", .{});
 }
 
-fn setupOpenTelemetryWithErrors(allocator: std.mem.Allocator) !*otel_sdk.trace.BasicTracerProvider {
+fn setupOpenTelemetryWithErrors(allocator: std.mem.Allocator) !*otel_sdk.trace.TracerProvider {
     // Set up OpenTelemetry with console export (less likely to fail than OTLP)
     return try otel_sdk.trace.setupGlobalProvider(
         allocator,
         .{otel_sdk.trace.BasicSpanProcessor.PipelineStep.init({})
-            .flowTo(otel_exporters.console.ConsoleTraceExporter.PipelineStep.init(.{}))},
+            .flowTo(otel_exporters.otlp.OtlpTraceExporter.PipelineStep.init(.{}))},
     );
 }
 
-fn cleanupOpenTelemetry(provider: *otel_sdk.trace.BasicTracerProvider) void {
+fn cleanupOpenTelemetry(provider: *otel_sdk.trace.TracerProvider) void {
     provider.deinit();
     provider.destroy();
 }
 
 fn demonstrateValidationErrors(allocator: std.mem.Allocator) !void {
-    const scope = try otel_api.InstrumentationScope.initSimple("error-demo", "1.0.0");
+    const scope = otel_api.InstrumentationScope{ .name = "error-demo", .version = "1.0.0" };
     var tracer = try otel_api.getGlobalTracerProvider().getTracerWithScope(scope);
 
-    const ctx = otel_api.Context.init(allocator);
-    defer ctx.deinit();
+    const ctx = &[_]otel_api.ContextKeyValue{};
 
     std.debug.print("1. Testing span name validation:\n", .{});
 
@@ -245,11 +244,11 @@ fn demonstrateValidationErrors(allocator: std.mem.Allocator) !void {
     std.debug.print("\n2. Testing attribute validation:\n", .{});
 
     // Test empty attribute key (reported in debug mode)
-    span2.setAttribute("", otel_api.common.AttributeValue{ .string = "invalid key" }) catch {};
+    span2.setAttribute(.{ .key = "", .value = .{ .string = "invalid key" } });
     std.debug.print("   Set attribute with empty key\n", .{});
 
     // Test valid attribute
-    span2.setAttribute("valid.key", otel_api.common.AttributeValue{ .string = "valid value" }) catch {};
+    span2.setAttribute(.{ .key = "valid.key", .value = .{ .string = "valid value" } });
     std.debug.print("   Set attribute with valid key\n", .{});
 
     std.debug.print("\n3. Testing batch attribute validation:\n", .{});
@@ -260,17 +259,17 @@ fn demonstrateValidationErrors(allocator: std.mem.Allocator) !void {
         .{ .key = "service.version", .value = .{ .string = "1.0.0" } },
         .{ .key = "", .value = .{ .int = 42 } }, // Invalid
     };
-    span2.setAttributes(&mixed_attributes) catch {};
+    span2.setAttributes(&mixed_attributes);
     std.debug.print("   Set batch attributes with 2 invalid keys\n", .{});
 
     std.debug.print("\n4. Testing AttributeBuilder validation:\n", .{});
 
     var builder = otel_api.common.AttributeBuilder.init(allocator);
-    builder = builder.add("valid.key", .{ .string = "ok" });
-    builder = builder.add("", .{ .string = "invalid!" }); // Should make builder invalid in debug
+    builder = builder.add(.{ .key = "valid.key", .value = .{ .string = "ok" } });
+    builder = builder.add(.{ .key = "", .value = .{ .string = "invalid!" } }); // Should make builder invalid in debug
     defer builder.deinit();
 
-    const attrs = try builder.finish(allocator);
+    const attrs = builder.finish(allocator) catch try allocator.alloc(otel_api.AttributeKeyValue, 0);
     defer otel_api.common.AttributeKeyValue.deinitOwnedSlice(allocator, attrs);
     std.debug.print("   Built attributes with invalid key, got {} final attributes\n", .{attrs.len});
 
@@ -323,11 +322,11 @@ fn demonstrateErrorTypes() !void {
 }
 
 fn measurePerformanceImpact(allocator: std.mem.Allocator) !void {
-    const scope = try otel_api.InstrumentationScope.initSimple("perf-test", "1.0.0");
+    _ = allocator;
+    const scope = otel_api.InstrumentationScope{ .name = "perf-test", .version = "1.0.0" };
     var tracer = try otel_api.getGlobalTracerProvider().getTracerWithScope(scope);
 
-    const ctx = otel_api.Context.init(allocator);
-    defer ctx.deinit();
+    const ctx = &.{};
 
     var span = try tracer.startSpan("performance-test", .{}, ctx);
     defer span.deinit();
@@ -340,7 +339,7 @@ fn measurePerformanceImpact(allocator: std.mem.Allocator) !void {
 
     for (0..iterations) |i| {
         const key = if (i % 100 == 0) "" else "test.key"; // 1% invalid keys
-        span.setAttribute(key, .{ .int = @intCast(i) }) catch {};
+        span.setAttribute(.{ .key = key, .value = .{ .int = @intCast(i) } });
     }
 
     const end_time = std.time.nanoTimestamp();
@@ -349,11 +348,11 @@ fn measurePerformanceImpact(allocator: std.mem.Allocator) !void {
 
     std.debug.print("Performance results:\n", .{});
     std.debug.print("  Total time: {d:.2}ms\n", .{@as(f64, @floatFromInt(duration_ns)) / 1_000_000.0});
-    std.debug.print("  Per operation: {}ns\n", .{ns_per_op});
+    std.debug.print("  Per operation: {d}ns\n", .{ns_per_op});
 
     if (otel_api.common.isValidatingMode()) {
         std.debug.print("  Mode: Debug (validation enabled)\n", .{});
-        std.debug.print("  Expected ~{}% validation errors\n", .{1});
+        std.debug.print("  Expected ~{d}% validation errors\n", .{1});
     } else {
         std.debug.print("  Mode: Release (validation disabled)\n", .{});
         std.debug.print("  No validation overhead\n", .{});
@@ -367,30 +366,34 @@ fn demonstrateErrorRecovery(allocator: std.mem.Allocator) !void {
 
     // Demonstrate graceful recovery from builder errors
     var builder = otel_api.common.AttributeBuilder.init(allocator);
-    builder = builder.add("service.name", .{ .string = "demo" });
-    builder = builder.add("", .{ .string = "this will fail in debug" });
-    builder = builder.add("service.version", .{ .string = "1.0.0" });
+    builder = builder.add(.{ .key = "service.name", .value = .{ .string = "demo" } });
+    builder = builder.add(.{ .key = "", .value = .{ .string = "this will fail in debug" } });
+    builder = builder.add(.{ .key = "service.version", .value = .{ .string = "1.0.0" } });
 
-    const result = try builder.finish(allocator);
+    const result = builder.finish(allocator) catch try allocator.alloc(otel_api.AttributeKeyValue, 0);
     defer otel_api.common.AttributeKeyValue.deinitOwnedSlice(allocator, result);
 
     std.debug.print("   Attempted to build 3 attributes, got {} (graceful recovery)\n", .{result.len});
 
     std.debug.print("\n2. Defensive span creation:\n", .{});
 
-    const scope = try otel_api.InstrumentationScope.initSimple("recovery-test", "1.0.0");
+    const scope = otel_api.InstrumentationScope{ .name = "recovery-test", .version = "1.0.0" };
     var tracer = try otel_api.getGlobalTracerProvider().getTracerWithScope(scope);
 
-    const ctx = otel_api.Context.init(allocator);
-    defer ctx.deinit();
+    const ctx = &[_]otel_api.ContextKeyValue{};
 
     // Defensive span creation with fallback
     const span_name = ""; // Problematic input
-    const safe_name = if (span_name.len > 0) span_name else "unknown_operation";
 
-    var span = try tracer.startSpan(safe_name, .{}, ctx);
+    var span = try tracer.startSpan(span_name, .{}, ctx);
     defer span.deinit();
-    std.debug.print("   Created span with defensive naming\n", .{});
+    std.debug.print("   Created span with invalid name ({s})\n", .{switch (span) {
+        .bridge => |b| blk: {
+            const ptr: *otel_sdk.trace.RecordingSpan = @ptrCast(@alignCast(b.span_ptr));
+            break :blk ptr.name;
+        },
+        else => "--invalid span type for validation--",
+    }});
 
     std.debug.print("\n3. Batch operation resilience:\n", .{});
 
@@ -402,8 +405,15 @@ fn demonstrateErrorRecovery(allocator: std.mem.Allocator) !void {
         .{ .key = "", .value = .{ .bool = true } },
     };
 
-    span.setAttributes(&problematic_attrs) catch {};
-    std.debug.print("   Set {} attributes with some invalid keys (operation completed)\n", .{problematic_attrs.len});
+    span.setAttributes(&problematic_attrs);
+    std.debug.print("   Set {d} attributes with some invalid keys (operation completed)\n", .{problematic_attrs.len});
+    std.debug.print("   Got {d} attributes when reading\n", .{switch (span) {
+        .bridge => |b| blk: {
+            const ptr: *otel_sdk.trace.RecordingSpan = @ptrCast(@alignCast(b.span_ptr));
+            break :blk ptr.attributes.len;
+        },
+        else => 10000,
+    }});
 
     span.end(null);
 

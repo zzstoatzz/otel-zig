@@ -10,14 +10,18 @@
 
 const std = @import("std");
 const otel_api = @import("otel-api");
+const sdk = struct {
+    const Resource = @import("../resource/resource.zig").Resource;
+    const trace = struct {
+        const SpanData = @import("data.zig").SpanData;
+    };
+};
 
 const ProcessResult = otel_api.common.ProcessResult;
 const ExportResult = otel_api.common.ExportResult;
-const SpanLimits = otel_api.trace.SpanLimits;
 const RecordingSpan = @import("data.zig").RecordingSpan;
 const SpanExporter = @import("exporter.zig").SpanExporter;
 const MockSpanExporter = @import("exporter.zig").MockSpanExporter;
-const Resource = @import("../resource/resource.zig").Resource;
 
 // Import error handler for structured error reporting
 const error_handler = otel_api.common;
@@ -26,38 +30,6 @@ const error_handler = otel_api.common;
 const processor_zig = @import("processor.zig");
 const SpanProcessor = processor_zig.SpanProcessor;
 const BridgeSpanProcessor = processor_zig.BridgeSpanProcessor;
-
-/// Noop exporter for initial BatchSpanProcessor state
-const NoopExporter = struct {
-    pub fn exportSpans(self: *NoopExporter, spans: []const *RecordingSpan, resource: Resource) ExportResult {
-        _ = self;
-        _ = spans;
-        _ = resource;
-        return .success;
-    }
-
-    pub fn forceFlush(self: *NoopExporter, timeout_ms: ?u64) ExportResult {
-        _ = self;
-        _ = timeout_ms;
-        return .success;
-    }
-
-    pub fn shutdown(self: *NoopExporter, timeout_ms: ?u64) ExportResult {
-        _ = self;
-        _ = timeout_ms;
-        return .success;
-    }
-
-    pub fn deinit(self: *NoopExporter) void {
-        _ = self;
-    }
-
-    pub fn destroy(self: *NoopExporter) void {
-        _ = self;
-    }
-};
-
-var noop_exporter_instance = NoopExporter{};
 
 /// Configuration for BatchSpanProcessor PipelineStep
 pub const BatchConfig = struct {
@@ -77,28 +49,12 @@ pub const BatchSpanProcessor = struct {
     );
 
     pub fn _initFn(self: *BatchSpanProcessor, config: BatchConfig, allocator: std.mem.Allocator) !void {
-        self.* = .{
-            .allocator = allocator,
-            .exporter = SpanExporter{ .bridge = @import("exporter.zig").BridgeSpanExporter.init(&noop_exporter_instance) },
-            .resource = @import("../resource/resource.zig").Resource.empty,
-            .mutex = .{},
-            .condition = .{},
-            .is_shutdown = std.atomic.Value(bool).init(false),
-            .is_running = std.atomic.Value(bool).init(false),
-            .flush_in_progress = std.atomic.Value(bool).init(false),
-            .export_in_progress = std.atomic.Value(bool).init(false),
-            .flush_complete = .{},
-            .export_complete = .{},
-            .thread = null,
-            .export_interval_ms = config.export_interval_ms orelse 5000,
-            .max_queue_size = config.max_queue_size orelse 2048,
-            .span_queue = std.ArrayList(*RecordingSpan).init(allocator),
-        };
+        self.* = init(allocator, null, config);
         try self.start();
     }
+
     allocator: std.mem.Allocator,
-    exporter: SpanExporter,
-    resource: Resource,
+    exporter: ?SpanExporter,
     mutex: std.Thread.Mutex,
     condition: std.Thread.Condition,
     is_shutdown: std.atomic.Value(bool),
@@ -110,7 +66,7 @@ pub const BatchSpanProcessor = struct {
     thread: ?std.Thread,
     export_interval_ms: u32,
     max_queue_size: usize,
-    span_queue: std.ArrayList(*RecordingSpan),
+    span_queue: std.ArrayList(struct { resource: sdk.Resource, data: sdk.trace.SpanData }),
 
     /// Initialize a new batch span processor
     /// export_interval_ms: How often to export spans (default: 5000ms = 5s)
@@ -119,33 +75,25 @@ pub const BatchSpanProcessor = struct {
     /// Owner of the processor must destroy the memory.
     pub fn init(
         allocator: std.mem.Allocator,
-        exporter: SpanExporter,
-        resource: Resource,
-        export_interval_ms: ?u32,
-        max_queue_size: ?usize,
-    ) !*BatchSpanProcessor {
-        const self = try allocator.create(BatchSpanProcessor);
-        errdefer allocator.destroy(self);
-
-        self.* = .{
+        exporter: ?SpanExporter,
+        config: BatchConfig,
+    ) BatchSpanProcessor {
+        return .{
             .allocator = allocator,
             .exporter = exporter,
-            .resource = resource,
             .mutex = .{},
             .condition = .{},
-            .is_shutdown = std.atomic.Value(bool).init(false),
-            .is_running = std.atomic.Value(bool).init(false),
-            .flush_in_progress = std.atomic.Value(bool).init(false),
-            .export_in_progress = std.atomic.Value(bool).init(false),
+            .is_shutdown = .init(false),
+            .is_running = .init(false),
+            .flush_in_progress = .init(false),
+            .export_in_progress = .init(false),
             .flush_complete = .{},
             .export_complete = .{},
             .thread = null,
-            .export_interval_ms = export_interval_ms orelse 5000,
-            .max_queue_size = max_queue_size orelse 2048,
-            .span_queue = std.ArrayList(*RecordingSpan).init(allocator),
+            .export_interval_ms = config.export_interval_ms orelse 5000,
+            .max_queue_size = config.max_queue_size orelse 2048,
+            .span_queue = .empty,
         };
-
-        return self;
     }
 
     pub fn setExporter(self: *BatchSpanProcessor, exporter: ?SpanExporter) !void {
@@ -189,26 +137,28 @@ pub const BatchSpanProcessor = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         for (self.span_queue.items) |span| {
-            span.deinitCloned();
+            span.data.deinitOwned(self.allocator);
         }
-        self.span_queue.deinit();
+        self.span_queue.deinit(self.allocator);
 
         // Clean up the exporter
-        self.exporter.deinit();
-        self.exporter.destroy();
+        if (self.exporter) |exporter| {
+            exporter.deinit();
+            exporter.destroy();
+        }
     }
 
     pub fn destroy(self: *BatchSpanProcessor) void {
         self.allocator.destroy(self);
     }
 
-    pub fn spanLimits(self: *BatchSpanProcessor) SpanLimits {
+    pub fn spanLimits(self: *BatchSpanProcessor) otel_api.trace.Span.Limits {
         _ = self;
         return .default;
     }
 
     /// Called when a span ends - adds span to batch queue
-    pub fn onEnd(self: *BatchSpanProcessor, span: *RecordingSpan) void {
+    pub fn onEnd(self: *BatchSpanProcessor, span: sdk.trace.SpanData, resource: sdk.Resource) void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -222,7 +172,7 @@ pub const BatchSpanProcessor = struct {
         }
 
         // Clone span for queuing (original will be deinitialized by caller)
-        const cloned_span = span.clone(self.allocator) catch |err| {
+        const cloned_span = sdk.trace.SpanData.initOwned(self.allocator, span) catch |err| {
             // Log error instead of silent drop
             error_handler.reportError(.{
                 .component = .processor,
@@ -236,8 +186,8 @@ pub const BatchSpanProcessor = struct {
         };
 
         // Add cloned span to queue
-        self.span_queue.append(cloned_span) catch |err| {
-            cloned_span.deinitCloned();
+        self.span_queue.append(self.allocator, .{ .resource = resource, .data = cloned_span }) catch |err| {
+            cloned_span.deinitOwned(self.allocator);
             // Log queue overflow
             error_handler.reportError(.{
                 .component = .processor,
@@ -252,7 +202,7 @@ pub const BatchSpanProcessor = struct {
     }
 
     /// Force export all queued spans immediately
-    pub fn forceFlush(self: *BatchSpanProcessor, timeout_ms: ?u64) ProcessResult {
+    pub fn forceFlush(self: *BatchSpanProcessor, timeout_ms: ?u64) otel_api.common.FlushResult {
         // Quick check without mutex
         if (self.is_shutdown.load(.acquire)) {
             return .failure;
@@ -320,7 +270,7 @@ pub const BatchSpanProcessor = struct {
 
         // Export spans (mutex is held)
         if (self.span_queue.items.len > 0) {
-            const spans_to_export = self.span_queue.toOwnedSlice() catch |err| {
+            const spans_to_export = self.span_queue.toOwnedSlice(self.allocator) catch |err| {
                 error_handler.reportError(.{
                     .component = .processor,
                     .operation = "batch_export",
@@ -333,26 +283,24 @@ pub const BatchSpanProcessor = struct {
 
             // Temporarily release mutex for export
             self.mutex.unlock();
-            const result = self.exporter.exportSpans(spans_to_export, self.resource);
-            self.mutex.lock();
-
-            // Clean up spans
-            for (spans_to_export) |span| {
-                span.deinitCloned();
+            if (self.exporter) |exporter| {
+                for (spans_to_export) |data_pair| {
+                    _ = exporter.exportSpans(&.{data_pair.data}, data_pair.resource);
+                }
+            }
+            for (spans_to_export) |data_pair| {
+                data_pair.data.deinitOwned(self.allocator);
             }
             self.allocator.free(spans_to_export);
-
-            if (result != .success) {
-                return .failure;
-            }
+            self.mutex.lock();
         }
 
         // Flush the exporter
         self.mutex.unlock();
-        const flush_result = self.exporter.forceFlush(timeout_ms);
+        const flush_result = if (self.exporter) |exporter| exporter.forceFlush(timeout_ms) else ExportResult.success;
         self.mutex.lock();
 
-        return flush_result.asProcessResult();
+        return flush_result.asFlushResult();
     }
 
     /// Shutdown the processor
@@ -368,8 +316,8 @@ pub const BatchSpanProcessor = struct {
         self.condition.signal();
 
         // Shutdown the exporter
-        const result = self.exporter.shutdown(timeout_ms);
-        return result.asProcessResult();
+        const result = if (self.exporter) |exporter| exporter.shutdown(timeout_ms) else ExportResult.success;
+        return result.asFlushResult().asProcessResult();
     }
 
     /// Export all queued spans (must be called with mutex held)
@@ -379,11 +327,15 @@ pub const BatchSpanProcessor = struct {
         }
 
         // Export all queued spans
-        _ = self.exporter.exportSpans(self.span_queue.items, self.resource);
+        if (self.exporter) |exporter| {
+            for (self.span_queue.items) |item| {
+                _ = exporter.exportSpans(&.{item.data}, item.resource);
+            }
+        }
 
         // Clean up exported spans
         for (self.span_queue.items) |span| {
-            span.deinitCloned();
+            span.data.deinitOwned(self.allocator);
         }
         self.span_queue.clearRetainingCapacity();
     }
@@ -458,17 +410,11 @@ test "BatchSpanProcessor - basic initialization and cleanup" {
     const mock_exporter = try allocator.create(MockSpanExporter);
     mock_exporter.* = MockSpanExporter.init(allocator);
 
-    const resource = Resource{
-        .attributes = &.{},
-        .schema_url = null,
-    };
-
-    const processor = try BatchSpanProcessor.init(
+    const processor = try allocator.create(BatchSpanProcessor);
+    processor.* = BatchSpanProcessor.init(
         allocator,
         mock_exporter.spanExporter(),
-        resource,
-        100, // Very short interval for testing
-        5, // Small queue for testing
+        .{ .export_interval_ms = 100, .max_queue_size = 5 },
     );
     defer {
         processor.deinit();
@@ -494,25 +440,22 @@ test "BatchSpanProcessor - span queuing and export" {
     const mock_exporter = try allocator.create(MockSpanExporter);
     mock_exporter.* = MockSpanExporter.init(allocator);
 
-    const resource = Resource{
-        .attributes = &.{},
-        .schema_url = null,
-    };
-
-    const processor = try BatchSpanProcessor.init(
+    const processor = try allocator.create(BatchSpanProcessor);
+    processor.* = BatchSpanProcessor.init(
         allocator,
         mock_exporter.spanExporter(),
-        resource,
-        50, // Short interval
-        10, // Small queue
+        .{ .export_interval_ms = 50, .max_queue_size = 10 },
     );
-    defer {
-        processor.deinit();
-        processor.destroy();
-    }
+
+    const resource = try sdk.Resource.initOwned(allocator, .{ .attributes = &.{} });
+    var provider = @import("tracer_provider.zig").TracerProvider.init(allocator, resource, .{ .random = .init() }, .keep);
+    defer provider.deinit();
+
+    try provider.registerProcessor(processor.spanProcessor());
+    const tracer = try provider.getTracerWithScope(.empty);
 
     // Create proper RecordingSpan for testing
-    const span_context = otel_api.trace.SpanContext{
+    const span_context = otel_api.trace.Span.Context{
         .trace_id = otel_api.common.TraceId{ .bytes = [_]u8{1} ** 16 },
         .span_id = otel_api.common.SpanId{ .bytes = [_]u8{1} ** 8 },
         .trace_flags = 0,
@@ -520,30 +463,20 @@ test "BatchSpanProcessor - span queuing and export" {
         .is_remote = false,
     };
 
-    const recording_span = try @import("data.zig").RecordingSpan.init(
-        allocator,
-        "test-span",
-        span_context,
-        null, // parent_span_context
-        .internal,
-        @import("../common/clock.zig").getTimestamp(),
-        &[_]otel_api.common.AttributeKeyValue{}, // initial_attributes
-        &[_]otel_api.trace.Link{}, // initial_links
-        otel_api.trace.SpanLimits.default,
-        @ptrCast(processor), // processor
-        null, // processorOnEndFn
-    );
+    const recording_span_ctx = try otel_api.trace.trace_context.withActiveSpanContext(allocator, &.{}, span_context);
+    defer otel_api.ContextKeyValue.deinitOwnedSlice(allocator, recording_span_ctx);
+    var recording_span = try tracer.startSpan("test-span", .{}, recording_span_ctx);
     defer recording_span.deinit();
 
     // Test adding span to queue
-    processor.onEnd(recording_span);
+    recording_span.end(null);
 
     processor.mutex.lock();
     try testing.expectEqual(@as(usize, 1), processor.span_queue.items.len);
     processor.mutex.unlock();
 
     // Test force flush
-    try testing.expectEqual(ProcessResult.success, processor.forceFlush(null));
+    try testing.expectEqual(otel_api.common.FlushResult.success, processor.forceFlush(null));
     try testing.expectEqual(@as(usize, 1), mock_exporter.spanCount());
 
     processor.mutex.lock();
@@ -564,39 +497,37 @@ test "BatchSpanProcessor - queue overflow drops newest" {
     const mock_exporter = try allocator.create(MockSpanExporter);
     mock_exporter.* = MockSpanExporter.init(allocator);
 
-    const resource = Resource{
-        .attributes = &.{},
-        .schema_url = null,
-    };
-
-    const processor = try BatchSpanProcessor.init(
+    const processor = try allocator.create(BatchSpanProcessor);
+    processor.* = BatchSpanProcessor.init(
         allocator,
         mock_exporter.spanExporter(),
-        resource,
-        1000, // Long interval
-        2, // Very small queue
+        .{ .export_interval_ms = 1000, .max_queue_size = 2 },
     );
-    defer {
-        processor.deinit();
-        processor.destroy();
-    }
+
+    const resource = try sdk.Resource.initOwned(allocator, .{ .attributes = &.{} });
+    var provider = @import("tracer_provider.zig").TracerProvider.init(allocator, resource, .{ .random = .init() }, .keep);
+    defer provider.deinit();
+
+    try provider.registerProcessor(processor.spanProcessor());
+
+    const tracer = try provider.getTracerWithScope(.empty);
 
     // Create proper RecordingSpans for testing
-    const span_context1 = otel_api.trace.SpanContext{
+    const span_context1 = otel_api.trace.Span.Context{
         .trace_id = otel_api.common.TraceId{ .bytes = [_]u8{1} ** 16 },
         .span_id = otel_api.common.SpanId{ .bytes = [_]u8{1} ** 8 },
         .trace_flags = 0,
         .trace_state = null,
         .is_remote = false,
     };
-    const span_context2 = otel_api.trace.SpanContext{
+    const span_context2 = otel_api.trace.Span.Context{
         .trace_id = otel_api.common.TraceId{ .bytes = [_]u8{2} ** 16 },
         .span_id = otel_api.common.SpanId{ .bytes = [_]u8{2} ** 8 },
         .trace_flags = 0,
         .trace_state = null,
         .is_remote = false,
     };
-    const span_context3 = otel_api.trace.SpanContext{
+    const span_context3 = otel_api.trace.Span.Context{
         .trace_id = otel_api.common.TraceId{ .bytes = [_]u8{3} ** 16 },
         .span_id = otel_api.common.SpanId{ .bytes = [_]u8{3} ** 8 },
         .trace_flags = 0,
@@ -604,61 +535,31 @@ test "BatchSpanProcessor - queue overflow drops newest" {
         .is_remote = false,
     };
 
-    const span1 = try @import("data.zig").RecordingSpan.init(
-        allocator,
-        "test-span-1",
-        span_context1,
-        null,
-        .internal,
-        @import("../common/clock.zig").getTimestamp(),
-        &[_]otel_api.common.AttributeKeyValue{}, // initial_attributes
-        &[_]otel_api.trace.Link{}, // initial_links
-        otel_api.trace.SpanLimits.default,
-        @ptrCast(processor), // processor
-        null, // processorOnEndFn
-    );
+    const span1_ctx = try otel_api.trace.trace_context.withActiveSpanContext(allocator, &.{}, span_context1);
+    defer otel_api.ContextKeyValue.deinitOwnedSlice(allocator, span1_ctx);
+    var span1 = try tracer.startSpan("test-span-1", .{}, span1_ctx);
     defer span1.deinit();
 
-    const span2 = try @import("data.zig").RecordingSpan.init(
-        allocator,
-        "test-span-2",
-        span_context2,
-        null,
-        .internal,
-        @import("../common/clock.zig").getTimestamp(),
-        &[_]otel_api.common.AttributeKeyValue{}, // initial_attributes
-        &[_]otel_api.trace.Link{}, // initial_links
-        otel_api.trace.SpanLimits.default,
-        @ptrCast(processor), // processor
-        null, // processorOnEndFn
-    );
+    const span2_ctx = try otel_api.trace.trace_context.withActiveSpanContext(allocator, &.{}, span_context2);
+    defer otel_api.ContextKeyValue.deinitOwnedSlice(allocator, span2_ctx);
+    var span2 = try tracer.startSpan("test-span-2", .{}, span2_ctx);
     defer span2.deinit();
 
-    const span3 = try @import("data.zig").RecordingSpan.init(
-        allocator,
-        "test-span-3",
-        span_context3,
-        null,
-        .internal,
-        @import("../common/clock.zig").getTimestamp(),
-        &[_]otel_api.common.AttributeKeyValue{}, // initial_attributes
-        &[_]otel_api.trace.Link{}, // initial_links
-        otel_api.trace.SpanLimits.default,
-        @ptrCast(processor), // processor
-        null, // processorOnEndFn
-    );
+    const span3_ctx = try otel_api.trace.trace_context.withActiveSpanContext(allocator, &.{}, span_context3);
+    defer otel_api.ContextKeyValue.deinitOwnedSlice(allocator, span3_ctx);
+    var span3 = try tracer.startSpan("test-span-3", .{}, span3_ctx);
     defer span3.deinit();
 
     // Fill queue to capacity
-    processor.onEnd(span1);
-    processor.onEnd(span2);
+    span1.end(null);
+    span2.end(null);
 
     processor.mutex.lock();
     try testing.expectEqual(@as(usize, 2), processor.span_queue.items.len);
     processor.mutex.unlock();
 
     // This should be dropped (newest dropped policy)
-    processor.onEnd(span3);
+    span3.end(null);
 
     processor.mutex.lock();
     try testing.expectEqual(@as(usize, 2), processor.span_queue.items.len); // Still 2
@@ -675,32 +576,28 @@ test "BatchSpanProcessor - shutdown behavior" {
     otel_api.common.setMockErrorHandler(&mock_error_handler);
     defer otel_api.common.clearMockErrorHandler();
 
-    const mock_exporter = try allocator.create(MockSpanExporter);
-    mock_exporter.* = MockSpanExporter.init(allocator);
+    const resource = try sdk.Resource.initOwned(allocator, .{ .attributes = &.{} });
+    var provider = @import("tracer_provider.zig").TracerProvider.init(allocator, resource, .{ .random = .init() }, .keep);
+    defer provider.deinit();
 
-    const resource = Resource{
-        .attributes = &.{},
-        .schema_url = null,
-    };
+    var processor: *BatchSpanProcessor = undefined;
+    try @import("../common/pipeline.zig").buildPipeline(&provider).withCaptured(
+        BatchSpanProcessor.PipelineStep.init(.{
+            .export_interval_ms = 1000,
+            .max_queue_size = 2,
+        }),
+        &processor,
+    ).done();
 
-    const processor = try BatchSpanProcessor.init(
-        allocator,
-        mock_exporter.spanExporter(),
-        resource,
-        100,
-        10,
-    );
-    defer {
-        processor.deinit();
-        processor.destroy();
-    }
+    const tracer = try provider.getTracerWithScope(.empty);
 
     // Test shutdown
+    try testing.expect(processor.is_shutdown.load(.monotonic) == false);
     try testing.expectEqual(ProcessResult.success, processor.shutdown(null));
     try testing.expect(processor.is_shutdown.load(.unordered));
 
     // Operations after shutdown should handle gracefully
-    const span_context = otel_api.trace.SpanContext{
+    const span_context = otel_api.trace.Span.Context{
         .trace_id = otel_api.common.TraceId{ .bytes = [_]u8{1} ** 16 },
         .span_id = otel_api.common.SpanId{ .bytes = [_]u8{1} ** 8 },
         .trace_flags = 0,
@@ -708,22 +605,12 @@ test "BatchSpanProcessor - shutdown behavior" {
         .is_remote = false,
     };
 
-    const test_span = try @import("data.zig").RecordingSpan.init(
-        allocator,
-        "test-span",
-        span_context,
-        null,
-        .internal,
-        @import("../common/clock.zig").getTimestamp(),
-        &[_]otel_api.common.AttributeKeyValue{}, // initial_attributes
-        &[_]otel_api.trace.Link{}, // initial_links
-        otel_api.trace.SpanLimits.default,
-        @ptrCast(processor), // processor
-        null, // processorOnEndFn
-    );
+    const test_span_ctx = try otel_api.trace.trace_context.withActiveSpanContext(allocator, &.{}, span_context);
+    defer otel_api.ContextKeyValue.deinitOwnedSlice(allocator, test_span_ctx);
+    var test_span = try tracer.startSpan("test-span", .{}, test_span_ctx);
     defer test_span.deinit();
 
-    processor.onEnd(test_span); // Should be handled gracefully after shutdown
+    test_span.end(null); // Should be handled gracefully after shutdown
 
-    try testing.expectEqual(ProcessResult.failure, processor.forceFlush(null));
+    try testing.expectEqual(otel_api.common.FlushResult.failure, processor.forceFlush(null));
 }

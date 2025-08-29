@@ -4,8 +4,14 @@
 //! and zero-runtime-overhead access to context values.
 
 const std = @import("std");
-const BaggageKeyValue = @import("../baggage/baggage.zig").BaggageKeyValue;
-const SpanContext = @import("../trace/span_context.zig").SpanContext;
+const api = struct {
+    const baggage = struct {
+        const BaggageKeyValue = @import("../baggage/baggage.zig").BaggageKeyValue;
+    };
+    const trace = struct {
+        const Span = @import("../trace/span.zig").Span;
+    };
+};
 
 /// Context value types that can be stored in a context.
 /// This is a simplified version without span/baggage references.
@@ -16,9 +22,32 @@ pub const ContextValue = union(enum) {
     unsigned: u64,
     float: f64,
     string: []const u8,
-    baggage: []BaggageKeyValue,
-    span_context: SpanContext,
+    baggage: []api.baggage.BaggageKeyValue,
+    span_context: api.trace.Span.Context,
     byte: u8,
+
+    pub fn initOwned(allocator: std.mem.Allocator, other: ContextValue) !ContextValue {
+        return switch (other) {
+            .none => .{ .none = {} },
+            .boolean => |boolean| .{ .boolean = boolean },
+            .integer => |integer| .{ .integer = integer },
+            .unsigned => |unsigned| .{ .unsigned = unsigned },
+            .float => |float| .{ .float = float },
+            .string => |string| .{ .string = try allocator.dupe(u8, string) },
+            .baggage => |baggage| .{ .baggage = try api.baggage.BaggageKeyValue.initOwnedSlice(allocator, baggage) },
+            .span_context => |span_context| .{ .span_context = span_context },
+            .byte => |byte| .{ .byte = byte },
+        };
+    }
+
+    pub fn deinitOwned(self: ContextValue, allocator: std.mem.Allocator) void {
+        switch (self) {
+            .string => |string| allocator.free(string),
+            .baggage => |baggage| api.baggage.BaggageKeyValue.deinitOwnedSlice(allocator, baggage),
+            .span_context => {},
+            else => {},
+        }
+    }
 
     /// Create a ContextValue from a typed value
     pub fn from(value: anytype) ContextValue {
@@ -29,13 +58,13 @@ pub const ContextValue = union(enum) {
             u64 => .{ .unsigned = value },
             f64 => .{ .float = value },
             []const u8 => .{ .string = value },
-            []BaggageKeyValue => .{ .baggage = value },
-            SpanContext => .{ .span_context = value },
+            []api.baggage.BaggageKeyValue => .{ .baggage = value },
+            api.trace.Span.Context => .{ .span_context = value },
             u8 => .{ .byte = value },
             comptime_int => .{ .integer = @as(i64, value) },
             comptime_float => .{ .float = @as(f64, value) },
             else => @compileError("Unsupported context value type: " ++ @typeName(T) ++
-                ". Supported types: bool, i64, u64, f64, []const u8, []BaggageKeyValue, SpanContext"),
+                ". Supported types: bool, i64, u64, f64, []const u8, []BaggageKeyValue, api.trace.Span.Context"),
         };
     }
 
@@ -47,8 +76,8 @@ pub const ContextValue = union(enum) {
             u64 => self == .unsigned,
             f64 => self == .float,
             []const u8 => self == .string,
-            []BaggageKeyValue => self == .baggage,
-            SpanContext => self == .span_context,
+            []api.baggage.BaggageKeyValue => self == .baggage,
+            api.trace.Span.Context => self == .span_context,
             u8 => self == .byte,
             else => false,
         };
@@ -77,11 +106,11 @@ pub const ContextValue = union(enum) {
                 .string => |v| v,
                 else => null,
             },
-            []BaggageKeyValue => switch (self) {
+            []api.baggage.BaggageKeyValue => switch (self) {
                 .baggage => |v| v,
                 else => null,
             },
-            SpanContext => switch (self) {
+            api.trace.Span.Context => switch (self) {
                 .span_context => |v| v,
                 else => null,
             },
@@ -91,6 +120,15 @@ pub const ContextValue = union(enum) {
             },
             else => null,
         };
+    }
+
+    /// Format the ContextValue for debugging/logging
+    pub fn format(
+        self: ContextValue,
+        writer: anytype,
+    ) !void {
+        _ = self;
+        _ = writer;
     }
 };
 
@@ -114,9 +152,9 @@ pub fn ContextKey(comptime T: type, comptime name: []const u8) type {
 
         // Validate supported types
         switch (T) {
-            bool, i64, u64, f64, []const u8, []BaggageKeyValue, SpanContext, u8 => {},
+            bool, i64, u64, f64, []const u8, []api.baggage.BaggageKeyValue, api.trace.Span.Context, u8 => {},
             else => @compileError("Unsupported context key type: " ++ @typeName(T) ++
-                ". Supported types: bool, i64, u64, f64, []const u8, []BaggageKeyValue, SpanContext, u8"),
+                ". Supported types: bool, i64, u64, f64, []const u8, []BaggageKeyValue, api.trace.Span.Context, u8"),
         }
     }
 
@@ -159,8 +197,8 @@ pub fn ContextKey(comptime T: type, comptime name: []const u8) type {
                 u64 => ContextValue{ .unsigned = value },
                 f64 => ContextValue{ .float = value },
                 []const u8 => ContextValue{ .string = value },
-                []BaggageKeyValue => ContextValue{ .baggage = value },
-                SpanContext => ContextValue{ .span_context = value },
+                []api.baggage.BaggageKeyValue => ContextValue{ .baggage = value },
+                api.trace.Span.Context => ContextValue{ .span_context = value },
                 u8 => ContextValue{ .byte = value },
                 else => unreachable, // Compile-time validation prevents this
             };
@@ -184,12 +222,10 @@ pub fn ContextKey(comptime T: type, comptime name: []const u8) type {
         /// Format this key for debugging output
         pub fn format(
             self: Self,
-            comptime fmt: []const u8,
-            options: std.fmt.FormatOptions,
             writer: anytype,
         ) !void {
             _ = self;
-            return formatContextKey(Self.key_name, Self.key_id, @typeName(T), fmt, options, writer);
+            return formatContextKey(Self.key_name, Self.key_id, @typeName(T), writer);
         }
     };
 }
@@ -199,12 +235,8 @@ fn formatContextKey(
     name: []const u8,
     id: u64,
     value_type: []const u8,
-    comptime fmt: []const u8,
-    options: std.fmt.FormatOptions,
     writer: anytype,
 ) !void {
-    _ = fmt;
-    _ = options;
     try writer.print("ContextKey{{ name=\"{s}\", id=0x{x}, type={s} }}", .{
         name,
         id,
@@ -333,7 +365,7 @@ test "ContextKey formatting" {
 
     var buf: [256]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
-    try std.fmt.format(fbs.writer(), "{}", .{TestKey{}});
+    try std.fmt.format(fbs.writer(), "{f}", .{TestKey{}});
 
     const result = fbs.getWritten();
     try testing.expect(std.mem.indexOf(u8, result, "debug.test") != null);

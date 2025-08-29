@@ -9,17 +9,24 @@ This directory contains example programs demonstrating the OpenTelemetry Zig imp
 - `dns_query_logging_otlp.zig` - DNS query logging with OTLP export to collector
 
 ### Metrics Examples
-- `metrics_demo.zig` - **Comprehensive metrics demonstration** with console and OTLP exporters
-- `metrics_histogram.zig` - Histogram metrics with console export
 - `metrics_histogram_otlp.zig` - Histogram metrics with OTLP export
 
-### Tracing Examples
+### Comprehensive Multi-threaded Example
+- `multithreaded_http_telemetry.zig` - **Complete observability showcase** featuring:
+  - All three telemetry signals (logs, metrics, traces) 
+  - Multi-threading with W3C trace context propagation
+  - Metric views with attribute filtering and renaming
+  - Observable gauges with async callbacks
+  - Span events and links demonstrating relationships
+  - Batch processing with different intervals
+  - Realistic HTTP client/server simulation
+  - Error handling and overflow detection
+  - Memory-safe implementation with proper cleanup
+
+### Tracing Examples  
 - `simple_trace_sdk.zig` - Basic trace SDK demonstration with console export
 - `simple_trace_otlp.zig` - Basic trace SDK with OTLP export to collector
-- `batch_spans.zig` - Batch span processor demonstration with timed exports
-- `simple_batch_test.zig` - Simple batch processor testing with short intervals
 - `comprehensive_trace_sdk.zig` - **Advanced trace SDK showcase** (detailed below)
-- `test_sampling.zig` - **Sampling strategies demonstration** (detailed below)
 
 ## Builder Pattern Usage
 
@@ -169,17 +176,15 @@ Tests trace SDK performance characteristics:
 ### Running Examples
 
 ```bash
+# Comprehensive example (recommended starting point)
+zig build example-multithreaded-http
+
 # Individual examples
 zig build example-simple-trace-sdk
 zig build example-simple-trace-otlp  
-zig build example-batch-spans
-zig build example-simple-batch-test
 zig build example-comprehensive-trace-sdk
-zig build example-sampling-test
 
 # Metrics examples
-zig build example-metrics
-zig build example-metrics-histogram
 zig build example-metrics-otlp
 
 # Log examples  

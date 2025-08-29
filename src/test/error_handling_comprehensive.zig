@@ -33,17 +33,17 @@ fn testErrorHandler(info: ErrorInfo, allocator: ?std.mem.Allocator) void {
     _ = allocator;
     test_mutex.lock();
     defer test_mutex.unlock();
-    test_errors.append(info) catch {};
+    test_errors.append(test_allocator, info) catch {};
 }
 
 fn setupTestCapture(allocator: std.mem.Allocator) void {
     test_allocator = allocator;
-    test_errors = std.ArrayList(ErrorInfo).init(allocator);
+    test_errors = std.ArrayList(ErrorInfo).empty;
     setGlobalErrorHandler(testErrorHandler);
 }
 
 fn cleanupTestCapture() void {
-    test_errors.deinit();
+    test_errors.deinit(test_allocator);
     setGlobalErrorHandler(null);
 }
 
@@ -64,9 +64,7 @@ fn clearErrors() void {
 // =============================================================================
 
 test "error handler registration and basic functionality" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = testing.allocator;
 
     const original_handler = getGlobalErrorHandler();
     defer setGlobalErrorHandler(original_handler);
@@ -82,9 +80,7 @@ test "error handler registration and basic functionality" {
 }
 
 test "error handler preserves error information" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = testing.allocator;
 
     const original_handler = getGlobalErrorHandler();
     defer setGlobalErrorHandler(original_handler);
@@ -119,9 +115,7 @@ test "error handler preserves error information" {
 // =============================================================================
 
 test "AttributeBuilder handles allocation failure gracefully" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = testing.allocator;
 
     const original_handler = getGlobalErrorHandler();
     defer setGlobalErrorHandler(original_handler);
@@ -142,7 +136,7 @@ test "AttributeBuilder handles allocation failure gracefully" {
     switch (builder) {
         .valid => |*valid_builder| {
             valid_builder.allocator = fail_allocator;
-            builder = builder.addKeyValue(.{ .key = "test", .value = .{ .string = "value" } });
+            builder = builder.add(.{ .key = "test", .value = .{ .string = "value" } });
         },
         .invalid => {},
     }
@@ -155,7 +149,7 @@ test "AttributeBuilder handles allocation failure gracefully" {
         },
         .invalid => |error_info| {
             try testing.expectEqual(ErrorType.resource_exhausted, error_info.error_type);
-            try testing.expectEqual(Component.tracer, error_info.component);
+            try testing.expectEqual(Component.general, error_info.component);
         },
     }
 }
@@ -163,9 +157,7 @@ test "AttributeBuilder handles allocation failure gracefully" {
 test "AttributeBuilder validation in debug mode" {
     if (!isValidatingMode()) return; // Only test in debug mode
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = testing.allocator;
 
     const original_handler = getGlobalErrorHandler();
     defer setGlobalErrorHandler(original_handler);
@@ -175,7 +167,7 @@ test "AttributeBuilder validation in debug mode" {
 
     // Test with invalid key (empty string)
     var builder = AttributeBuilder.init(allocator);
-    builder = builder.addKeyValue(.{ .key = "", .value = .{ .string = "test" } });
+    builder = builder.add(.{ .key = "", .value = .{ .string = "test" } });
     defer builder.deinit();
 
     // Should be in invalid state due to validation failure
@@ -183,7 +175,7 @@ test "AttributeBuilder validation in debug mode" {
         .valid => try testing.expect(false),
         .invalid => |error_info| {
             try testing.expectEqual(ErrorType.validation, error_info.error_type);
-            try testing.expectEqual(Component.tracer, error_info.component);
+            try testing.expectEqual(Component.general, error_info.component);
         },
     }
 }
@@ -195,9 +187,7 @@ test "AttributeBuilder validation in debug mode" {
 test "span validation reports errors correctly" {
     if (!isValidatingMode()) return; // Skip in release mode - no validation to test
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = testing.allocator;
 
     const original_handler = getGlobalErrorHandler();
     defer setGlobalErrorHandler(original_handler);
@@ -206,10 +196,10 @@ test "span validation reports errors correctly" {
     defer cleanupTestCapture();
 
     // Test validation functions directly to avoid global state interference
-    const validateAttributeKey = @import("otel-api").trace.validateAttributeKey;
-    const validateSpanName = @import("otel-api").trace.validateSpanName;
-    const validateAttributes = @import("otel-api").trace.validateAttributes;
-    const reportValidationError = @import("otel-api").common.reportValidationError;
+    const validateAttributeKey = otel_api.common.validateAttributeKey;
+    const validateSpanName = otel_api.trace.validateSpanName;
+    const validateAttributes = otel_api.trace.validateAttributes;
+    const reportValidationError = otel_api.common.reportValidationError;
 
     // Test validation functions directly
     if (!validateAttributeKey("")) {
@@ -237,9 +227,7 @@ test "span validation reports errors correctly" {
 // =============================================================================
 
 test "error handling does not leak memory" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = testing.allocator;
 
     const original_handler = getGlobalErrorHandler();
     defer setGlobalErrorHandler(original_handler);
@@ -251,7 +239,7 @@ test "error handling does not leak memory" {
     for (0..10) |i| {
         // Create and destroy AttributeBuilder
         var builder = AttributeBuilder.init(allocator);
-        builder = builder.addKeyValue(.{ .key = "test", .value = .{ .string = "value" } });
+        builder = builder.add(.{ .key = "test", .value = .{ .string = "value" } });
         const result = builder.finish(allocator) catch continue;
         otel_api.common.AttributeKeyValue.deinitOwnedSlice(allocator, result);
 
@@ -270,9 +258,7 @@ test "error handling does not leak memory" {
 // =============================================================================
 
 test "concurrent error reporting is thread safe" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = testing.allocator;
 
     const original_handler = getGlobalErrorHandler();
     defer setGlobalErrorHandler(original_handler);
@@ -324,9 +310,7 @@ test "concurrent error reporting is thread safe" {
 test "validation integration with real API calls" {
     if (!isValidatingMode()) return; // Skip in release mode - no validation to test
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = testing.allocator;
 
     const original_handler = getGlobalErrorHandler();
     defer setGlobalErrorHandler(original_handler);
@@ -335,7 +319,7 @@ test "validation integration with real API calls" {
     defer cleanupTestCapture();
 
     // Test validation integration by calling validation functions used by SDK
-    const validateAttributeKey = @import("otel-api").trace.validateAttributeKey;
+    const validateAttributeKey = @import("otel-api").common.validateAttributeKey;
     const validateSpanName = @import("otel-api").trace.validateSpanName;
     const validateInstrumentName = @import("otel-api").metrics.validateInstrumentName;
     const reportValidationError = @import("otel-api").common.reportValidationError;
@@ -357,9 +341,7 @@ test "validation integration with real API calls" {
 }
 
 test "error types are correctly categorized" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = testing.allocator;
 
     const original_handler = getGlobalErrorHandler();
     defer setGlobalErrorHandler(original_handler);

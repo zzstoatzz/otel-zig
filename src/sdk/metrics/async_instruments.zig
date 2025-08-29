@@ -16,7 +16,7 @@ const sdk = struct {
     const MetricValue = @import("data.zig").MetricValue;
     const Reader = @import("reader.zig").Reader;
     const Resource = @import("../resource/resource.zig").Resource;
-    const ViewApplication = @import("view.zig").ViewApplication;
+    const View = @import("view.zig");
 };
 
 /// Wrapper for the different Observable types.
@@ -63,7 +63,7 @@ pub fn Observable(comptime T: type) type {
         callback_errors_counter: api.metrics.Counter(i64),
 
         /// View support
-        views: []const sdk.ViewApplication,
+        views: []const sdk.View.Application,
 
         /// Initialize the observable counter
         pub fn init(
@@ -91,7 +91,7 @@ pub fn Observable(comptime T: type) type {
                 parent_meter.scope.name,
                 parent_meter.scope.version,
                 parent_meter.scope.schema_url,
-                parent_meter.allocator,
+                parent_meter.provider.allocator,
             );
 
             // Create internal metrics instruments if configured
@@ -102,10 +102,10 @@ pub fn Observable(comptime T: type) type {
             if (config.measure_callbacks) {
                 // Get global meter provider and create internal meter
                 const global_provider = api.getGlobalMeterProvider();
-                const internal_scope = try api.InstrumentationScope.initSimple(
-                    "otel.sdk.metrics.async",
-                    "1.0.0", // TODO: Use actual SDK version
-                );
+                const internal_scope = api.InstrumentationScope{
+                    .name = "otel.sdk.metrics.async",
+                    .version = "1.0.0", // TODO: Use actual SDK version
+                };
                 var internal_meter = try global_provider.getMeterWithScope(internal_scope);
 
                 // Create histogram for callback duration
@@ -143,7 +143,7 @@ pub fn Observable(comptime T: type) type {
                 .instrument_type = instrument_type,
                 .meter = parent_meter,
                 .metadata_hash = metadata_hash,
-                .callbacks = std.ArrayList(CallbackEntry).init(parent_meter.allocator),
+                .callbacks = .empty,
                 .next_callback_id = 1,
                 .mutex = std.Thread.Mutex{},
                 .config = config,
@@ -155,12 +155,12 @@ pub fn Observable(comptime T: type) type {
         }
 
         /// Clean up resources
-        pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+        pub fn deinit(self: *Self, _: std.mem.Allocator) void {
             self.mutex.lock();
             defer self.mutex.unlock();
 
-            self.callbacks.deinit();
-            allocator.free(self.views);
+            self.callbacks.deinit(self.meter.provider.allocator);
+            self.meter.provider.allocator.free(self.views);
         }
 
         /// Get the name of this instrument
@@ -186,7 +186,7 @@ pub fn Observable(comptime T: type) type {
                 .id = callback_id,
             };
 
-            self.callbacks.append(entry) catch {
+            self.callbacks.append(self.meter.provider.allocator, entry) catch {
                 // Return noop handle on allocation failure
                 return .noop;
             };
@@ -216,7 +216,7 @@ pub fn Observable(comptime T: type) type {
         /// `points` is the readers export queue, to avoid copies.
         /// `reader` is the specific reader that triggered this observation.
         pub fn triggerObserve(self: *Self, allocator: std.mem.Allocator, reader: sdk.Reader) void {
-            var buffer: std.ArrayListUnmanaged(api.metrics.ObservableResult(T).Measurement) = .{};
+            var buffer = std.ArrayList(api.metrics.ObservableResult(T).Measurement).empty;
             defer buffer.deinit(allocator);
 
             // lock for iteration over the callbacks.
@@ -238,7 +238,7 @@ pub fn Observable(comptime T: type) type {
                                 .{ .key = "otel.instrument.type", .value = .{ .string = @tagName(self.instrument_type) } },
                                 .{ .key = "otel.callback.id", .value = .{ .int = @intCast(entry.id) } },
                             };
-                            const ctx = api.Context.empty(allocator);
+                            const ctx = &[_]api.ContextKeyValue{};
                             self.callback_errors_counter.add(ctx, 1, attributes);
                         }
 
@@ -327,11 +327,11 @@ pub fn Observable(comptime T: type) type {
 
         /// Execute a single callback with proper error handling and timing
         fn executeCallback(self: *Self, allocator: std.mem.Allocator, entry: *CallbackEntry) ![]api.metrics.ObservableResult(T).Measurement {
-            const ctx = api.Context.empty(allocator);
+            const ctx = &[_]api.ContextKeyValue{};
             const start_time = std.time.nanoTimestamp();
 
-            var result = api.metrics.ObservableResult(T).init(allocator);
-            defer result.deinit();
+            var result = api.metrics.ObservableResult(T).empty;
+            defer result.deinit(allocator);
 
             // Execute the callback - callbacks are void functions, so we detect errors by observing behavior
             switch (entry.callback) {
@@ -375,7 +375,7 @@ pub fn Observable(comptime T: type) type {
                 api.common.reportCallbackError(.meter, "executeCallback", warn_msg, self.name);
             }
 
-            return result.measurements.toOwnedSlice();
+            return result.measurements.toOwnedSlice(allocator);
         }
 
         /// Create MetricData from collected measurements

@@ -9,7 +9,7 @@ const sdk = struct {
     const MetricType = @import("data.zig").MetricType;
     const MetricDataPoint = @import("data.zig").MetricDataPoint;
     const PeriodicReader = @import("periodic_reader.zig").PeriodicReader;
-    const ResourceBuilder = @import("../resource/resource.zig").ResourceBuilder;
+    const Resource = @import("../resource/resource.zig").Resource;
     const aggregations = @import("aggregations.zig");
 };
 
@@ -39,11 +39,7 @@ test "BasicMeterProvider lifecycle" {
     const allocator = testing.allocator;
 
     // Create resource
-    const resource = try sdk.ResourceBuilder.init(allocator)
-        .withDefaults()
-        .finish(allocator);
-
-    // Create provider (takes ownership of resource)
+    const resource = try sdk.Resource.initOwned(allocator, .default);
     var provider = sdk.MeterProvider.init(allocator, resource);
     defer provider.deinit();
 
@@ -55,16 +51,13 @@ test "BasicMeterProvider meter caching" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const resource = try sdk.ResourceBuilder.init(allocator)
-        .withDefaults()
-        .finish(allocator);
-
+    const resource = try sdk.Resource.initOwned(allocator, .default);
     var provider = sdk.MeterProvider.init(allocator, resource);
     defer provider.deinit();
 
-    const scope1 = try api.InstrumentationScope.initSimple("test.meter", "1.0.0");
-    const scope2 = try api.InstrumentationScope.initSimple("test.meter", "1.0.0"); // Same
-    const scope3 = try api.InstrumentationScope.initSimple("other.meter", "1.0.0"); // Different
+    const scope1 = api.InstrumentationScope{ .name = "test.meter", .version = "1.0.0" };
+    const scope2 = api.InstrumentationScope{ .name = "test.meter", .version = "1.0.0" }; // Same
+    const scope3 = api.InstrumentationScope{ .name = "other.meter", .version = "1.0.0" }; // Different
 
     const meter1 = try provider.getMeterWithScope(scope1);
     const meter2 = try provider.getMeterWithScope(scope2);
@@ -82,10 +75,7 @@ test "BasicMeterProvider processor registration" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const resource = try sdk.ResourceBuilder.init(allocator)
-        .withDefaults()
-        .finish(allocator);
-
+    const resource = try sdk.Resource.initOwned(allocator, .default);
     var provider = sdk.MeterProvider.init(allocator, resource);
     defer provider.deinit();
 
@@ -100,14 +90,11 @@ test "BasicMeter instrument creation and data collection" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const resource = try sdk.ResourceBuilder.init(allocator)
-        .withDefaults()
-        .finish(allocator);
-
+    const resource = try sdk.Resource.initOwned(allocator, .default);
     var provider = sdk.MeterProvider.init(allocator, resource);
     defer provider.deinit();
 
-    const scope = try api.InstrumentationScope.initSimple("test.meter", "1.0.0");
+    const scope = api.InstrumentationScope{ .name = "test.meter", .version = "1.0.0" };
     var meter = try provider.getMeterWithScope(scope);
 
     // Create various instrument types
@@ -117,7 +104,7 @@ test "BasicMeter instrument creation and data collection" {
     const gauge_i64 = try meter.createGauge(i64, "test.gauge.i64", "Test gauge", "bytes", null);
     const histogram_f64 = try meter.createHistogram(f64, "test.histogram.f64", "Test histogram", "ms", null);
 
-    const ctx = api.Context.init(allocator);
+    const ctx = &[_]api.ContextKeyValue{};
     const empty_attributes = [_]api.AttributeKeyValue{};
 
     // Record some measurements
@@ -130,43 +117,14 @@ test "BasicMeter instrument creation and data collection" {
     histogram_f64.record(ctx, 15.5, &empty_attributes);
     histogram_f64.record(ctx, 25.0, &empty_attributes);
 
-    // TODO: Phase 1 - Collection now happens at reader level, fix in Phase 1b
-    // Get the BasicMeter instance for direct collectMetrics call
-    // const basic_meter: *sdk.Meter = @ptrCast(@alignCast(meter.bridge.meter_ptr));
-
-    // // Collect metrics directly
-    // const metrics = try basic_meter.collectMetrics(allocator);
-    // defer cleanupMetrics(allocator, metrics);
-
-    // // We should have metrics for each instrument that recorded data
-    // // Note: Empty instruments might be skipped, so we check for >= expected minimums
-    // try testing.expect(metrics.len >= 5);
-
-    // Temporary: Just verify instruments were created successfully
-
-    // TODO: Phase 1b - Re-enable metric verification once collection is implemented
-    // // Verify each metric has proper structure
-    // for (metrics) |metric| {
-    //     try testing.expect(metric.name.len > 0);
-    //     try testing.expect(metric.data_points.len > 0);
-    //     try testing.expect(api.InstrumentationScope.eql(metric.scope, scope));
-
-    //     // Test attributes are empty (MVP state)
-    //     // TODO: This test should break when attributes are implemented
-    //     for (metric.data_points) |data_point| {
-    //         try testing.expectEqual(@as(usize, 0), data_point.attributes.len);
-    //     }
-    // }
+    // Note: provider has no configured readers, so this is mostly a dead-end test.
 }
 
 test "BasicMeter data collection through processor pipeline" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const resource = try sdk.ResourceBuilder.init(allocator)
-        .withDefaults()
-        .finish(allocator);
-
+    const resource = try sdk.Resource.initOwned(allocator, .default);
     var provider = sdk.MeterProvider.init(allocator, resource);
     defer provider.deinit();
 
@@ -180,17 +138,17 @@ test "BasicMeter data collection through processor pipeline" {
     reader.* = try sdk.ManualReader.init(allocator, mock_exporter.metricExporter());
 
     // Register reader (provider takes ownership)
-    try provider.registerProcessor(reader.reader());
+    try provider.registerReader(reader.reader());
 
     // Get meter
-    const scope = try api.InstrumentationScope.initSimple("test.meter", "1.0.0");
+    const scope = api.InstrumentationScope{ .name = "test.meter", .version = "1.0.0" };
     var meter = try provider.getMeterWithScope(scope);
 
     // Create instruments and record data
     const counter = try meter.createCounter(i64, "http.requests", "HTTP requests", "requests", null);
     const histogram = try meter.createHistogram(f64, "http.duration", "HTTP duration", "ms", null);
 
-    const ctx = api.Context.init(allocator);
+    const ctx = &[_]api.ContextKeyValue{};
     const empty_attributes = [_]api.AttributeKeyValue{};
 
     counter.add(ctx, 5, &empty_attributes);
@@ -230,19 +188,16 @@ test "BasicMeter shutdown behavior" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const resource = try sdk.ResourceBuilder.init(allocator)
-        .withDefaults()
-        .finish(allocator);
-
+    const resource = try sdk.Resource.initOwned(allocator, .default);
     var provider = sdk.MeterProvider.init(allocator, resource);
     defer provider.deinit();
 
-    const scope = try api.InstrumentationScope.initSimple("test.meter", "1.0.0");
+    const scope = api.InstrumentationScope{ .name = "test.meter", .version = "1.0.0" };
     var meter = try provider.getMeterWithScope(scope);
 
     // Create counter and record data before shutdown
     const counter = try meter.createCounter(i64, "test.counter", "Test counter", "requests", null);
-    const ctx = api.Context.init(allocator);
+    const ctx = &[_]api.ContextKeyValue{};
     const empty_attributes = [_]api.AttributeKeyValue{};
 
     counter.add(ctx, 10, &empty_attributes);
@@ -282,10 +237,7 @@ test "BasicMeterProvider flush behavior" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const resource = try sdk.ResourceBuilder.init(allocator)
-        .withDefaults()
-        .finish(allocator);
-
+    const resource = try sdk.Resource.initOwned(allocator, .default);
     var provider = sdk.MeterProvider.init(allocator, resource);
     defer provider.deinit();
 
@@ -295,7 +247,7 @@ test "BasicMeterProvider flush behavior" {
     const reader = try allocator.create(sdk.ManualReader);
     reader.* = try sdk.ManualReader.init(allocator, mock_exporter.metricExporter());
 
-    try provider.registerProcessor(reader.reader());
+    try provider.registerReader(reader.reader());
 
     // Test successful flush
     const result = provider.forceFlush(1000);
@@ -311,14 +263,11 @@ test "BasicMeter comprehensive instrument test with attributes" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const resource = try sdk.ResourceBuilder.init(allocator)
-        .withDefaults()
-        .finish(allocator);
-
+    const resource = try sdk.Resource.initOwned(allocator, .default);
     var provider = sdk.MeterProvider.init(allocator, resource);
     defer provider.deinit();
 
-    const scope = try api.InstrumentationScope.initSimple("test.meter", "1.0.0");
+    const scope = api.InstrumentationScope{ .name = "test.meter", .version = "1.0.0" };
     var meter = try provider.getMeterWithScope(scope);
 
     // Test custom histogram boundaries (for future use)
@@ -334,15 +283,8 @@ test "BasicMeter comprehensive instrument test with attributes" {
     const histogram_i64 = try meter.createHistogram(i64, "test.histogram.i64", "Test i64 histogram", "count", null);
     const histogram_f64 = try meter.createHistogram(f64, "test.histogram.f64", "Test f64 histogram", "latency", null);
 
-    const ctx = api.Context.init(allocator);
+    const ctx = &[_]api.ContextKeyValue{};
     const empty_attributes = [_]api.AttributeKeyValue{};
-
-    // TODO: Test with attributes when attribute support is implemented
-    // This test should break when attributes are added to remind us to update it
-    // const attributes = [_]AttributeKeyValue{
-    //     .{ .key = "method", .value = .{ .string = "GET" } },
-    //     .{ .key = "status", .value = .{ .int = 200 } },
-    // };
 
     // Record various measurements
     counter_i64.add(ctx, 15, &empty_attributes);
@@ -368,67 +310,18 @@ test "BasicMeter comprehensive instrument test with attributes" {
     histogram_f64.record(ctx, 3.2, &empty_attributes); // bucket 1 (1-5)
     histogram_f64.record(ctx, 25.0, &empty_attributes); // bucket 3 (10-50)
 
-    // TODO: Phase 1b - Re-enable once collection is implemented at reader level
-    // Get the BasicMeter instance for direct collectMetrics call
-    // const basic_meter: *sdk.Meter = @ptrCast(@alignCast(meter.bridge.meter_ptr));
-
-    // // Collect metrics
-    // const metrics = try basic_meter.collectMetrics(allocator);
-    // defer cleanupMetrics(allocator, metrics);
-
-    // Temporary: Just verify instruments were created successfully
-
-    // TODO: Phase 1b - Re-enable once collection is implemented
-    // // Should have metrics for all instruments with recorded data
-    // try testing.expect(metrics.len >= 8);
-
-    // TODO: Phase 1b - Re-enable metric verification once collection is implemented
-    // // Verify comprehensive metric properties
-    // var counters_found: u32 = 0;
-    // var gauges_found: u32 = 0;
-    // var histograms_found: u32 = 0;
-
-    // for (metrics) |metric| {
-    //     // Verify common properties
-    //     try testing.expect(metric.name.len > 0);
-    //     try testing.expect(metric.data_points.len > 0);
-    //     try testing.expect(api.InstrumentationScope.eql(metric.scope, scope));
-
-    //     // Verify timestamps exist
-    //     for (metric.data_points) |data_point| {
-    //         try testing.expect(data_point.timestamp_ns > 0);
-
-    //         // TODO: This test should break when attributes are implemented
-    //         try testing.expectEqual(@as(usize, 0), data_point.attributes.len);
-    //     }
-
-    //     // Count metric types
-    //     switch (metric.type) {
-    //         .sum => counters_found += 1,
-    //         .gauge => gauges_found += 1,
-    //         .histogram => histograms_found += 1,
-    //     }
-    // }
-
-    // // Verify we found all expected metric types
-    // // Note: Both counters and updown counters report as .sum type
-    // try testing.expect(counters_found >= 4); // 2 counters + 2 updown counters
-    // try testing.expect(gauges_found >= 2); // 2 gauges
-    // try testing.expect(histograms_found >= 2); // 2 histograms
+    // There are no readers configured on the provider, so this is a dead-end test.
 }
 
 test "BasicMeter instrument creation after shutdown returns noop instruments" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const resource = try sdk.ResourceBuilder.init(allocator)
-        .withDefaults()
-        .finish(allocator);
-
+    const resource = try sdk.Resource.initOwned(allocator, .default);
     var provider = sdk.MeterProvider.init(allocator, resource);
     defer provider.deinit();
 
-    const scope = try api.InstrumentationScope.initSimple("test.meter", "1.0.0");
+    const scope = api.InstrumentationScope{ .name = "test.meter", .version = "1.0.0" };
     var meter = try provider.getMeterWithScope(scope);
 
     // Create instrument before shutdown - should be normal SDK instrument
@@ -462,10 +355,7 @@ test "PeriodicReader with multiple instruments" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const resource = try sdk.ResourceBuilder.init(allocator)
-        .withDefaults()
-        .finish(allocator);
-
+    const resource = try sdk.Resource.initOwned(allocator, .default);
     var provider = sdk.MeterProvider.init(allocator, resource);
     defer provider.deinit();
 
@@ -479,10 +369,10 @@ test "PeriodicReader with multiple instruments" {
     reader.* = try sdk.PeriodicReader.init(allocator, mock_exporter.metricExporter(), 100);
 
     // Register reader (provider takes ownership)
-    try provider.registerProcessor(reader.reader());
+    try provider.registerReader(reader.reader());
 
     // Get meter
-    const scope = try api.InstrumentationScope.initSimple("test.meter", "1.0.0");
+    const scope = api.InstrumentationScope{ .name = "test.meter", .version = "1.0.0" };
     var meter = try provider.getMeterWithScope(scope);
 
     // Create regular instruments
@@ -496,7 +386,7 @@ test "PeriodicReader with multiple instruments" {
     const observable_updown = try meter.createObservableUpDownCounter(i64, "test.observable.updown", "Test observable updown", "items", null, &[_]api.metrics.TypeErasedCallback(i64){});
 
     // Record some data with regular instruments
-    const ctx = api.Context.init(allocator);
+    const ctx = &[_]api.ContextKeyValue{};
     const empty_attributes = [_]api.AttributeKeyValue{};
 
     counter.add(ctx, 10, &empty_attributes);
@@ -507,18 +397,18 @@ test "PeriodicReader with multiple instruments" {
 
     // Setup callbacks for observable instruments
     const counter_callback = struct {
-        fn callback(_: std.mem.Allocator, result: *api.metrics.ObservableResult(i64)) void {
-            result.observe(42, &empty_attributes);
+        fn callback(alloc: std.mem.Allocator, result: *api.metrics.ObservableResult(i64)) void {
+            result.observe(alloc, 42, &empty_attributes);
         }
     }.callback;
     const gauge_callback = struct {
-        fn callback(_: std.mem.Allocator, result: *api.metrics.ObservableResult(f64)) void {
-            result.observe(0.95, &empty_attributes);
+        fn callback(alloc: std.mem.Allocator, result: *api.metrics.ObservableResult(f64)) void {
+            result.observe(alloc, 0.95, &empty_attributes);
         }
     }.callback;
     const updown_callback = struct {
-        fn callback(_: std.mem.Allocator, result: *api.metrics.ObservableResult(i64)) void {
-            result.observe(100, &empty_attributes);
+        fn callback(alloc: std.mem.Allocator, result: *api.metrics.ObservableResult(i64)) void {
+            result.observe(alloc, 100, &empty_attributes);
         }
     }.callback;
 
@@ -534,7 +424,7 @@ test "PeriodicReader with multiple instruments" {
     }
 
     // Wait for periodic collection to happen (simulate time passing)
-    std.time.sleep(200 * std.time.ns_per_ms);
+    std.Thread.sleep(200 * std.time.ns_per_ms);
 
     // Force a final collection
     reader.collect();

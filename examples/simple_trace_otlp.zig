@@ -28,12 +28,11 @@ pub fn main() !void {
     var tp = otel_api.getGlobalTracerProvider();
 
     // Get a tracer
-    const scope = try otel_api.InstrumentationScope.initSimple("example-component", "1.0.0");
+    const scope = otel_api.InstrumentationScope{ .name = "example-component", .version = "1.0.0" };
     var tracer = try tp.getTracerWithScope(scope);
 
     // Create a root context
-    const ctx = otel_api.Context.empty(allocator);
-    defer ctx.deinit();
+    const ctx = &[_]otel_api.ContextKeyValue{};
 
     // Start a parent span
     std.debug.print("Starting parent span...\n", .{});
@@ -54,7 +53,7 @@ pub fn main() !void {
     defer parent_span.deinit();
 
     // Add an event to the parent span
-    try parent_span.addEvent(otel_api.trace.Event{
+    try parent_span.addEvent(otel_api.trace.Span.Event{
         .name = "request.started",
         .timestamp_ns = 0,
         .attributes = &[_]otel_api.common.AttributeKeyValue{
@@ -67,8 +66,8 @@ pub fn main() !void {
 
     // Start a child span
     std.debug.print("Starting child span...\n", .{});
-    const child_ctx = try otel_api.trace.trace_context.withActiveSpanContext(ctx, parent_span.getSpanContext());
-    defer child_ctx.deinit();
+    const child_ctx = try otel_api.trace.trace_context.withActiveSpanContext(allocator, ctx, parent_span.getSpanContext());
+    defer otel_api.ContextKeyValue.deinitOwnedSlice(allocator, child_ctx);
     const child_result = try tracer.startSpan("database-query", .{
         .kind = .client,
         .attributes = &[_]otel_api.common.AttributeKeyValue{
@@ -86,21 +85,21 @@ pub fn main() !void {
     defer child_span.deinit();
 
     // Simulate some work
-    std.time.sleep(10 * std.time.ns_per_ms);
+    std.Thread.sleep(10 * std.time.ns_per_ms);
 
     // Add result attribute to child span
-    try child_span.setAttribute("db.rows_affected", otel_api.common.AttributeValue{ .int = 1 });
+    child_span.setAttribute(.{ .key = "db.rows_affected", .value = otel_api.common.AttributeValue{ .int = 1 } });
 
     // End child span
     std.debug.print("Ending child span...\n", .{});
     child_span.end(null);
 
     // Add response attributes to parent span
-    try parent_span.setAttribute("http.status_code", otel_api.common.AttributeValue{ .int = 200 });
-    try parent_span.setAttribute("http.response.size", otel_api.common.AttributeValue{ .int = 1024 });
+    parent_span.setAttribute(.{ .key = "http.status_code", .value = otel_api.common.AttributeValue{ .int = 200 } });
+    parent_span.setAttribute(.{ .key = "http.response.size", .value = otel_api.common.AttributeValue{ .int = 1024 } });
 
     // Set status
-    try parent_span.setStatus(otel_api.trace.Status.ok("Request completed successfully"));
+    parent_span.setStatus(.{ .code = .ok, .description = "Request completed successfully" });
 
     // End parent span
     std.debug.print("Ending parent span...\n", .{});

@@ -9,12 +9,19 @@
 //! See: https://www.w3.org/TR/trace-context/
 
 const std = @import("std");
-const Context = @import("../context/context.zig").Context;
-const SpanContext = @import("span_context.zig").SpanContext;
+const api = struct {
+    const ContextBuilder = @import("../context/context.zig").ContextBuilder;
+    const ContextKeyValue = @import("../context/context.zig").ContextKeyValue;
+    const common = struct {
+        const TraceId = @import("../common/types.zig").TraceId;
+        const SpanId = @import("../common/types.zig").SpanId;
+    };
+    const trace = struct {
+        const Span = @import("span.zig").Span;
+    };
+};
 const TextMapCarrier = @import("../context/propagation.zig").TextMapCarrier;
 const TextMapPropagator = @import("../context/propagation.zig").TextMapPropagator;
-const TraceId = @import("../common/types.zig").TraceId;
-const SpanId = @import("../common/types.zig").SpanId;
 const context_keys = @import("context_keys.zig");
 
 /// W3C Trace Context field names
@@ -32,11 +39,12 @@ pub const W3cPropagator = struct {
     }
 
     /// Inject trace context into a carrier
-    pub fn inject(self: *const W3cPropagator, ctx: Context, carrier: *TextMapCarrier) void {
+    pub fn inject(self: *const W3cPropagator, ctx: []const api.ContextKeyValue, carrier: *TextMapCarrier) void {
         _ = self;
 
         // Get the active span context from the context
-        const span_context = ctx.getValue(context_keys.active_span_context_key) orelse return;
+        const span_context_entry = api.ContextKeyValue.scanSlice(ctx, context_keys.active_span_context_key) orelse return;
+        const span_context = context_keys.active_span_context_key.unwrapValue(span_context_entry.value) orelse return;
 
         // Only inject if the span context is valid
         if (!span_context.isValid()) return;
@@ -55,15 +63,24 @@ pub const W3cPropagator = struct {
     }
 
     /// Extract trace context from a carrier
-    pub fn extract(self: *const W3cPropagator, ctx: Context, carrier: *const TextMapCarrier) !Context {
+    pub fn extract(
+        self: *const W3cPropagator,
+        allocator: std.mem.Allocator,
+        ctx: []const api.ContextKeyValue,
+        carrier: *const TextMapCarrier,
+    ) ![]api.ContextKeyValue {
         _ = self;
 
+        const ctx_builder = api.ContextBuilder.init(allocator)
+            .addMany(ctx);
+        errdefer ctx_builder.deinit();
+
         // Try to extract traceparent header
-        const traceparent_header = carrier.get(TRACEPARENT_HEADER) orelse return ctx;
+        const traceparent_header = carrier.get(TRACEPARENT_HEADER) orelse return try ctx_builder.finish(allocator);
 
         // Parse the traceparent header
         const span_context = parseTraceparent(traceparent_header) catch |err| switch (err) {
-            error.InvalidTraceparent => return ctx, // Return original context on parse failure
+            error.InvalidTraceparent => return try ctx_builder.finish(allocator), // Return original context on parse failure
             else => return err,
         };
 
@@ -75,7 +92,9 @@ pub const W3cPropagator = struct {
             span_context.asRemote();
 
         // Store the extracted span context in the new context
-        return ctx.withValue(context_keys.remote_span_context_key, final_span_context);
+        return ctx_builder
+            .add(.{ .key = context_keys.remote_span_context_key.key_id, .value = .{ .span_context = final_span_context } })
+            .finish(allocator);
     }
 
     /// Get the fields that this propagator uses
@@ -89,7 +108,7 @@ pub const W3cPropagator = struct {
 };
 
 /// Format a SpanContext into a W3C traceparent header value
-fn formatTraceparent(span_context: SpanContext, buf: *[55]u8) []const u8 {
+fn formatTraceparent(span_context: api.trace.Span.Context, buf: *[55]u8) []const u8 {
     var trace_hex_buf: [32]u8 = undefined;
     var span_hex_buf: [16]u8 = undefined;
 
@@ -107,7 +126,7 @@ fn formatTraceparent(span_context: SpanContext, buf: *[55]u8) []const u8 {
 }
 
 /// Parse a W3C traceparent header value into a SpanContext
-fn parseTraceparent(traceparent: []const u8) !SpanContext {
+fn parseTraceparent(traceparent: []const u8) !api.trace.Span.Context {
     // Validate minimum length: "00-{32}-{16}-00" = 55 characters
     if (traceparent.len < 55) return error.InvalidTraceparent;
 
@@ -128,17 +147,17 @@ fn parseTraceparent(traceparent: []const u8) !SpanContext {
 
     // Parse trace ID (32 hex characters)
     if (trace_id_str.len != 32) return error.InvalidTraceparent;
-    const trace_id = (SpanContext.parseTraceId(trace_id_str) catch return error.InvalidTraceparent) orelse return error.InvalidTraceparent;
+    const trace_id = (api.trace.Span.Context.parseTraceId(trace_id_str) catch return error.InvalidTraceparent) orelse return error.InvalidTraceparent;
 
     // Parse span ID (16 hex characters)
     if (span_id_str.len != 16) return error.InvalidTraceparent;
-    const span_id = (SpanContext.parseSpanId(span_id_str) catch return error.InvalidTraceparent) orelse return error.InvalidTraceparent;
+    const span_id = (api.trace.Span.Context.parseSpanId(span_id_str) catch return error.InvalidTraceparent) orelse return error.InvalidTraceparent;
 
     // Parse flags (2 hex characters)
     if (flags_str.len != 2) return error.InvalidTraceparent;
     const flags = std.fmt.parseInt(u8, flags_str, 16) catch return error.InvalidTraceparent;
 
-    return SpanContext{
+    return api.trace.Span.Context{
         .trace_id = trace_id,
         .span_id = span_id,
         .trace_flags = flags,
@@ -159,9 +178,9 @@ pub fn createW3cPropagator() TextMapPropagator {
 test "W3cPropagator formatTraceparent" {
     const testing = std.testing;
 
-    const span_context = SpanContext{
-        .trace_id = TraceId.fromBytes([_]u8{ 0x4b, 0xf9, 0x2f, 0x35, 0x77, 0xb3, 0x4d, 0xa6, 0xa3, 0xce, 0x92, 0x9d, 0x0e, 0x0e, 0x47, 0x36 }),
-        .span_id = SpanId.fromBytes([_]u8{ 0x00, 0xf0, 0x67, 0xaa, 0x0b, 0xa9, 0x02, 0xb7 }),
+    const span_context = api.trace.Span.Context{
+        .trace_id = api.common.TraceId.fromBytes([_]u8{ 0x4b, 0xf9, 0x2f, 0x35, 0x77, 0xb3, 0x4d, 0xa6, 0xa3, 0xce, 0x92, 0x9d, 0x0e, 0x0e, 0x47, 0x36 }),
+        .span_id = api.common.SpanId.fromBytes([_]u8{ 0x00, 0xf0, 0x67, 0xaa, 0x0b, 0xa9, 0x02, 0xb7 }),
         .trace_flags = 0x01,
         .trace_state = null,
         .is_remote = false,
@@ -215,20 +234,23 @@ test "W3cPropagator inject and extract" {
     const allocator = testing.allocator;
 
     // Create a test span context
-    const span_context = SpanContext{
-        .trace_id = TraceId.fromBytes([_]u8{ 0x4b, 0xf9, 0x2f, 0x35, 0x77, 0xb3, 0x4d, 0xa6, 0xa3, 0xce, 0x92, 0x9d, 0x0e, 0x0e, 0x47, 0x36 }),
-        .span_id = SpanId.fromBytes([_]u8{ 0x00, 0xf0, 0x67, 0xaa, 0x0b, 0xa9, 0x02, 0xb7 }),
+    const span_context = api.trace.Span.Context{
+        .trace_id = api.common.TraceId.fromBytes([_]u8{ 0x4b, 0xf9, 0x2f, 0x35, 0x77, 0xb3, 0x4d, 0xa6, 0xa3, 0xce, 0x92, 0x9d, 0x0e, 0x0e, 0x47, 0x36 }),
+        .span_id = api.common.SpanId.fromBytes([_]u8{ 0x00, 0xf0, 0x67, 0xaa, 0x0b, 0xa9, 0x02, 0xb7 }),
         .trace_flags = 0x01,
         .trace_state = "vendor=value",
         .is_remote = false,
     };
 
     // Create context with active span
-    var ctx = Context.empty(allocator);
-    defer ctx.deinit();
+    const ctx = try api.ContextKeyValue.initOwnedSlice(allocator, &.{});
+    defer api.ContextKeyValue.deinitOwnedSlice(allocator, ctx);
 
-    const ctx_with_span = try ctx.withValue(context_keys.active_span_context_key, span_context);
-    defer ctx_with_span.deinit();
+    const ctx_with_span = try api.ContextBuilder.init(allocator)
+        .addMany(ctx)
+        .add(.{ .key = context_keys.active_span_context_key.key_id, .value = .{ .span_context = span_context } })
+        .finish(allocator);
+    defer api.ContextKeyValue.deinitOwnedSlice(allocator, ctx_with_span);
 
     // Create propagator and carrier
     const propagator = W3cPropagator.init();
@@ -249,14 +271,15 @@ test "W3cPropagator inject and extract" {
     try testing.expectEqualStrings("vendor=value", tracestate.?);
 
     // Extract context
-    var empty_ctx = Context.empty(allocator);
-    defer empty_ctx.deinit();
+    const empty_ctx = try api.ContextKeyValue.initOwnedSlice(allocator, &.{});
+    defer api.ContextKeyValue.deinitOwnedSlice(allocator, empty_ctx);
 
-    const extracted_ctx = try propagator.extract(empty_ctx, &carrier);
-    defer extracted_ctx.deinit();
+    const extracted_ctx = try propagator.extract(allocator, empty_ctx, &carrier);
+    defer api.ContextKeyValue.deinitOwnedSlice(allocator, extracted_ctx);
 
     // Verify extracted span context
-    const extracted_span = extracted_ctx.getValue(context_keys.remote_span_context_key);
+    const maybe_extracted_span = api.ContextKeyValue.scanSlice(extracted_ctx, context_keys.remote_span_context_key) orelse null;
+    const extracted_span = if (maybe_extracted_span) |kv| context_keys.remote_span_context_key.unwrapValue(kv.value) else null;
     try testing.expect(extracted_span != null);
     try testing.expect(extracted_span.?.isValid());
     try testing.expectEqualSlices(u8, &span_context.trace_id.bytes, &extracted_span.?.trace_id.bytes);
@@ -275,14 +298,14 @@ test "W3cPropagator extract without headers returns original context" {
     defer hash_carrier.deinit();
     var carrier = hash_carrier.carrier();
 
-    var ctx = Context.empty(allocator);
-    defer ctx.deinit();
+    const ctx = try api.ContextKeyValue.initOwnedSlice(allocator, &.{});
+    defer api.ContextKeyValue.deinitOwnedSlice(allocator, ctx);
 
-    const result_ctx = try propagator.extract(ctx, &carrier);
-    defer result_ctx.deinit();
+    const result_ctx = try propagator.extract(allocator, ctx, &carrier);
+    defer api.ContextKeyValue.deinitOwnedSlice(allocator, result_ctx);
 
     // Should return context without remote span context
-    try testing.expect(result_ctx.getValue(context_keys.remote_span_context_key) == null);
+    try testing.expect(api.ContextKeyValue.scanSlice(result_ctx, context_keys.remote_span_context_key) == null);
 }
 
 test "W3cPropagator fields" {
@@ -303,12 +326,15 @@ test "W3cPropagator inject with invalid span context does nothing" {
     const allocator = testing.allocator;
 
     // Create context with invalid span context
-    const invalid_span = SpanContext.invalid;
-    var ctx = Context.empty(allocator);
-    defer ctx.deinit();
+    const invalid_span = api.trace.Span.Context.invalid;
+    const ctx = try api.ContextKeyValue.initOwnedSlice(allocator, &.{});
+    defer api.ContextKeyValue.deinitOwnedSlice(allocator, ctx);
 
-    const ctx_with_span = try ctx.withValue(context_keys.active_span_context_key, invalid_span);
-    defer ctx_with_span.deinit();
+    const ctx_with_span = try api.ContextBuilder.init(allocator)
+        .addMany(ctx)
+        .add(.{ .key = context_keys.active_span_context_key.key_id, .value = .{ .span_context = invalid_span } })
+        .finish(allocator);
+    defer api.ContextKeyValue.deinitOwnedSlice(allocator, ctx_with_span);
 
     // Inject should do nothing
     const propagator = W3cPropagator.init();

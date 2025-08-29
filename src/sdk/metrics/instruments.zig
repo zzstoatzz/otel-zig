@@ -13,698 +13,279 @@ const sdk = struct {
     const MetricMetadata = @import("metadata.zig").MetricMetadata;
     const MetricValue = @import("reader.zig").MetricValue;
     const aggregations = @import("aggregations.zig");
-    const View = @import("view.zig").View;
-    const ViewApplication = @import("view.zig").ViewApplication;
+    const View = @import("view.zig");
 };
 
-/// Standard Counter implementation that forwards measurements to readers
-pub fn StandardCounter(comptime T: type) type {
-    return struct {
-        const Self = @This();
+const BaseType = enum {
+    float,
+    int,
+};
 
-        // None of these are owning fields.
-        name: []const u8,
-        description: ?[]const u8,
-        unit: ?[]const u8,
-        meter: *sdk.Meter,
-        metadata_hash: u64,
+fn Instrument(comptime inst_type: api.metrics.InstrumentType, comptime base_type: BaseType) type {
+    switch (inst_type) {
+        .ObservableCounter, .ObservableGauge, .ObservableUpDownCounter => @compileError("Attempt to create a Non-Observable Instrument of Obsevable type."),
+        else => {},
+    }
+    const ValueType = switch (base_type) {
+        .float => f64,
+        .int => i64,
+    };
 
-        // Owned slice of views that apply to this instrument.
-        views: []sdk.ViewApplication,
+    return switch (inst_type) {
+        .Counter, .UpDownCounter => blk: {
+            break :blk struct {
+                const Self = @This();
+                name: []const u8,
+                description: ?[]const u8,
+                unit: ?[]const u8,
+                meter: *sdk.Meter,
+                metadata_hash: u64,
+                views: []sdk.View.Application,
 
-        pub fn init(
-            name: []const u8,
-            description: ?[]const u8,
-            unit: ?[]const u8,
-            parent_meter: *sdk.Meter,
-        ) !Self {
-            // Precompute the hash values that don't change per datapoint.
-            const metadata_hash = sdk.MetricMetadata.computeHash(
-                name,
-                unit orelse "",
-                .Counter,
-                &parent_meter.scope,
-            );
+                pub fn init(
+                    name: []const u8,
+                    description: ?[]const u8,
+                    unit: ?[]const u8,
+                    parent_meter: *sdk.Meter,
+                ) !Self {
+                    // Precompute the hash values that don't change per datapoint.
+                    const metadata_hash = sdk.MetricMetadata.computeHash(
+                        name,
+                        unit orelse "",
+                        inst_type,
+                        &parent_meter.scope,
+                    );
 
-            // Get the views that apply to this instrument.
-            const view_applications = try parent_meter.provider.applyViews(
-                name,
-                .Counter,
-                unit orelse "",
-                description,
-                parent_meter.scope.name,
-                parent_meter.scope.version,
-                parent_meter.scope.schema_url,
-                parent_meter.allocator,
-            );
+                    // Get the views that apply to this instrument.
+                    const view_applications = try parent_meter.provider.applyViews(
+                        name,
+                        inst_type,
+                        unit orelse "",
+                        description,
+                        parent_meter.scope.name,
+                        parent_meter.scope.version,
+                        parent_meter.scope.schema_url,
+                        parent_meter.provider.allocator,
+                    );
 
-            return .{
-                .name = name,
-                .description = description,
-                .unit = unit,
-                .meter = parent_meter,
-                .metadata_hash = metadata_hash,
-                .views = view_applications,
+                    return .{
+                        .name = name,
+                        .description = description,
+                        .unit = unit,
+                        .meter = parent_meter,
+                        .metadata_hash = metadata_hash,
+                        .views = view_applications,
+                    };
+                }
+
+                pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+                    allocator.free(self.views);
+                }
+
+                pub fn getName(self: *const Self) []const u8 {
+                    return self.name;
+                }
+
+                pub inline fn add(self: *const Self, ctx: []const api.ContextKeyValue, value: ValueType, attributes: []const api.AttributeKeyValue) void {
+                    if (inst_type == .Counter) {
+                        if (!api.metrics.validateCounterValue(ValueType, value)) {
+                            api.common.reportValidationError(.meter, "Counter.add", "Negative value provided", "counter values must be non-negative");
+                            return; // Return early in validation mode
+                        }
+                    }
+                    _ = ctx;
+
+                    // Create an arena, so we don't have to keep track of which slices are
+                    // allocated here, and which are unowned.
+                    var arena = std.heap.ArenaAllocator.init(self.meter.provider.allocator);
+                    defer arena.deinit();
+                    const allocator = arena.allocator();
+
+                    // Process each view application
+                    for (self.views) |view| {
+                        // Skip drop aggregations
+                        if (view.drops()) continue;
+
+                        // Transform attributes according to view
+                        const attrs = view.transformAttributes(attributes, allocator) catch |e| blk: {
+                            api.common.reportErrorWithAllocator(.{
+                                .component = .meter,
+                                .context = null,
+                                .error_type = .internal,
+                                .message = "Unable to transform attributes with view",
+                                .operation = @tagName(inst_type) ++ ".add(" ++ @typeName(ValueType) ++ ")",
+                                .source_error = e,
+                            }, allocator);
+                            break :blk attributes; // On error, use original attributes
+                        };
+
+                        // Create transformed metadata
+                        const metadata = sdk.MetricMetadata{
+                            .name = view.getName(self.name),
+                            .description = view.getDescription(self.description) orelse "",
+                            .unit = self.unit orelse "", // Unit not transformable per spec
+                            .instrument_type = inst_type,
+                            .instrumentation_scope = self.meter.scope,
+                        };
+
+                        // Forward to all readers
+                        for (self.meter.provider.readers.items) |*reader| {
+                            reader.recordMeasurement(switch (base_type) {
+                                .int => .{ .i64 = value },
+                                .float => .{ .f64 = value },
+                            }, attrs, metadata, self.metadata_hash);
+                        }
+                    }
+                }
+
+                pub inline fn enabled(self: *const Self) bool {
+                    _ = self;
+                    return true;
+                }
             };
-        }
+        },
+        .Gauge, .Histogram => blk: {
+            break :blk struct {
+                const Self = @This();
+                name: []const u8,
+                description: ?[]const u8,
+                unit: ?[]const u8,
+                meter: *sdk.Meter,
+                metadata_hash: u64,
+                views: []sdk.View.Application,
 
-        pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
-            allocator.free(self.views);
-        }
+                pub fn init(
+                    name: []const u8,
+                    description: ?[]const u8,
+                    unit: ?[]const u8,
+                    parent_meter: *sdk.Meter,
+                ) !Self {
+                    // Precompute the hash values that don't change per datapoint.
+                    const metadata_hash = sdk.MetricMetadata.computeHash(
+                        name,
+                        unit orelse "",
+                        inst_type,
+                        &parent_meter.scope,
+                    );
 
-        pub fn getName(self: *const Self) []const u8 {
-            return self.name;
-        }
+                    // Get the views that apply to this instrument.
+                    const view_applications = try parent_meter.provider.applyViews(
+                        name,
+                        inst_type,
+                        unit orelse "",
+                        description,
+                        parent_meter.scope.name,
+                        parent_meter.scope.version,
+                        parent_meter.scope.schema_url,
+                        parent_meter.provider.allocator,
+                    );
 
-        pub fn addI64(self: *Self, ctx: api.Context, value: i64, attributes: []const api.AttributeKeyValue) void {
-            if (!api.metrics.validateCounterValue(i64, value)) {
-                api.common.reportValidationError(.meter, "Counter.add", "Negative value provided", "counter values must be non-negative");
-                return; // Return early in validation mode
-            }
-            _ = ctx;
-
-            if (T == i64) {
-                // Create an arena, so we don't have to keep track of which slices are
-                // allocated here, and which are unowned.
-                var arena = std.heap.ArenaAllocator.init(self.meter.allocator);
-                defer arena.deinit();
-                const allocator = arena.allocator();
-
-                // Process each view application
-                for (self.views) |view| {
-                    // Skip drop aggregations
-                    if (view.drops()) continue;
-
-                    // Transform attributes according to view
-                    const attrs = view.transformAttributes(attributes, allocator) catch |e| blk: {
-                        api.common.reportErrorWithAllocator(.{
-                            .component = .meter,
-                            .context = null,
-                            .error_type = .internal,
-                            .message = "Unable to transform attributes with view",
-                            .operation = "StandardCounter.addI64()",
-                            .source_error = e,
-                        }, allocator);
-                        break :blk attributes; // On error, use original attributes
+                    return .{
+                        .name = name,
+                        .description = description,
+                        .unit = unit,
+                        .meter = parent_meter,
+                        .metadata_hash = metadata_hash,
+                        .views = view_applications,
                     };
+                }
 
-                    // Create transformed metadata
-                    const metadata = sdk.MetricMetadata{
-                        .name = view.getName(self.name),
-                        .description = view.getDescription(self.description) orelse "",
-                        .unit = self.unit orelse "", // Unit not transformable per spec
-                        .instrument_type = .Counter,
-                        .instrumentation_scope = self.meter.scope,
-                    };
+                pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+                    allocator.free(self.views);
+                }
 
-                    // Forward to all readers
-                    for (self.meter.provider.readers.items) |*reader| {
-                        reader.recordMeasurement(.{ .i64 = value }, attrs, metadata, self.metadata_hash);
+                pub fn getName(self: *const Self) []const u8 {
+                    return self.name;
+                }
+
+                pub fn record(self: *const Self, ctx: []const api.ContextKeyValue, value: ValueType, attributes: []const api.AttributeKeyValue) void {
+                    _ = ctx;
+
+                    // Create an arena, so we don't have to keep track of which slices are
+                    // allocated here, and which are unowned.
+                    var arena = std.heap.ArenaAllocator.init(self.meter.provider.allocator);
+                    defer arena.deinit();
+                    const allocator = arena.allocator();
+
+                    // Process each view application
+                    for (self.views) |view| {
+                        // Skip drop aggregations
+                        if (view.drops()) continue;
+
+                        // Transform attributes according to view
+                        const attrs = view.transformAttributes(attributes, allocator) catch |e| blk: {
+                            api.common.reportErrorWithAllocator(.{
+                                .component = .meter,
+                                .context = null,
+                                .error_type = .internal,
+                                .message = "Unable to transform attributes with view",
+                                .operation = @tagName(inst_type) ++ ".record(" ++ @typeName(ValueType) ++ ")",
+                                .source_error = e,
+                            }, allocator);
+                            break :blk attributes; // On error, use original attributes
+                        };
+
+                        // Create transformed metadata
+                        const metadata = sdk.MetricMetadata{
+                            .name = view.getName(self.name),
+                            .description = view.getDescription(self.description) orelse "",
+                            .unit = self.unit orelse "", // Unit not transformable per spec
+                            .instrument_type = inst_type,
+                            .instrumentation_scope = self.meter.scope,
+                        };
+
+                        // Forward to all readers
+                        for (self.meter.provider.readers.items) |*reader| {
+                            reader.recordMeasurement(switch (base_type) {
+                                .int => .{ .i64 = value },
+                                .float => .{ .f64 = value },
+                            }, attrs, metadata, self.metadata_hash);
+                        }
                     }
                 }
-            } else {
-                unreachable;
-            }
-        }
 
-        pub fn addF64(self: *Self, ctx: api.Context, value: f64, attributes: []const api.AttributeKeyValue) void {
-            if (!api.metrics.validateCounterValue(f64, value)) {
-                api.common.reportValidationError(.meter, "Counter.add", "Negative value provided", "counter values must be non-negative");
-                return; // Return early in validation mode
-            }
-            _ = ctx;
-
-            if (T == f64) {
-                // Create an arena, so we don't have to keep track of which slices are
-                // allocated here, and which are unowned.
-                var arena = std.heap.ArenaAllocator.init(self.meter.allocator);
-                defer arena.deinit();
-                const allocator = arena.allocator();
-
-                // Process each view application
-                for (self.views) |view| {
-                    // Skip drop aggregations
-                    if (view.drops()) continue;
-
-                    // Transform attributes according to view
-                    const attrs = view.transformAttributes(attributes, allocator) catch |e| blk: {
-                        api.common.reportErrorWithAllocator(.{
-                            .component = .meter,
-                            .context = null,
-                            .error_type = .internal,
-                            .message = "Unable to transform attributes with view",
-                            .operation = "StandardCounter.addF64()",
-                            .source_error = e,
-                        }, allocator);
-                        break :blk attributes; // On error, use original attributes
-                    };
-
-                    // Create transformed metadata
-                    const metadata = sdk.MetricMetadata{
-                        .name = view.getName(self.name),
-                        .description = view.getDescription(self.description) orelse "",
-                        .unit = self.unit orelse "", // Unit not transformable per spec
-                        .instrument_type = .Counter,
-                        .instrumentation_scope = self.meter.scope,
-                    };
-
-                    // Forward to all readers
-                    for (self.meter.provider.readers.items) |*reader| {
-                        reader.recordMeasurement(.{ .f64 = value }, attrs, metadata, self.metadata_hash);
-                    }
+                pub fn enabled(self: *const Self) bool {
+                    _ = self;
+                    return true;
                 }
-            } else {
-                unreachable;
-            }
-        }
-
-        pub fn recordI64(_: *Self, _: api.Context, _: i64, _: []const api.AttributeKeyValue) void {
-            unreachable;
-        }
-
-        pub fn recordF64(_: *Self, _: api.Context, _: f64, _: []const api.AttributeKeyValue) void {
-            unreachable;
-        }
-
-        pub fn enabled(_: *Self) bool {
-            return true;
-        }
+            };
+        },
+        else => unreachable,
     };
 }
 
-/// Standard UpDownCounter implementation that forwards measurements to readers (allowing negative)
-pub fn StandardUpDownCounter(comptime T: type) type {
-    return struct {
-        const Self = @This();
-
-        // None of these are owning fields.
-        name: []const u8,
-        description: ?[]const u8,
-        unit: ?[]const u8,
-        meter: *sdk.Meter,
-        metadata_hash: u64,
-
-        // Owned slice of views that apply to this instrument.
-        views: []sdk.ViewApplication,
-
-        pub fn init(
-            name: []const u8,
-            description: ?[]const u8,
-            unit: ?[]const u8,
-            parent_meter: *sdk.Meter,
-        ) !Self {
-            // Precompute the hash values that don't change per datapoint.
-            const metadata_hash = sdk.MetricMetadata.computeHash(
-                name,
-                unit orelse "",
-                .UpDownCounter,
-                &parent_meter.scope,
-            );
-
-            // Get the views that apply to this instrument.
-            const view_applications = try parent_meter.provider.applyViews(
-                name,
-                .UpDownCounter,
-                unit orelse "",
-                description,
-                parent_meter.scope.name,
-                parent_meter.scope.version,
-                parent_meter.scope.schema_url,
-                parent_meter.allocator,
-            );
-
-            return .{
-                .name = name,
-                .description = description,
-                .unit = unit,
-                .meter = parent_meter,
-                .metadata_hash = metadata_hash,
-                .views = view_applications,
-            };
-        }
-
-        pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
-            allocator.free(self.views);
-        }
-
-        pub fn getName(self: *const Self) []const u8 {
-            return self.name;
-        }
-
-        pub fn addI64(self: *Self, ctx: api.Context, value: i64, attributes: []const api.AttributeKeyValue) void {
-            _ = ctx;
-
-            if (T == i64) {
-                // Create an arena, so we don't have to keep track of which slices are
-                // allocated here, and which are unowned.
-                var arena = std.heap.ArenaAllocator.init(self.meter.allocator);
-                defer arena.deinit();
-                const allocator = arena.allocator();
-
-                // Process each view application
-                for (self.views) |view| {
-                    // Skip drop aggregations
-                    if (view.drops()) continue;
-
-                    // Transform attributes according to view
-                    const attrs = view.transformAttributes(attributes, allocator) catch |e| blk: {
-                        api.common.reportErrorWithAllocator(.{
-                            .component = .meter,
-                            .context = null,
-                            .error_type = .internal,
-                            .message = "Unable to transform attributes with view",
-                            .operation = "StandardUpDownCounter.addI64()",
-                            .source_error = e,
-                        }, allocator);
-                        break :blk attributes; // On error, use original attributes
-                    };
-
-                    // Create transformed metadata
-                    const metadata = sdk.MetricMetadata{
-                        .name = view.getName(self.name),
-                        .description = view.getDescription(self.description) orelse "",
-                        .unit = self.unit orelse "", // Unit not transformable per spec
-                        .instrument_type = .UpDownCounter,
-                        .instrumentation_scope = self.meter.scope,
-                    };
-
-                    // Forward to all readers
-                    for (self.meter.provider.readers.items) |*reader| {
-                        reader.recordMeasurement(.{ .i64 = value }, attrs, metadata, self.metadata_hash);
-                    }
-                }
-            } else {
-                unreachable;
-            }
-        }
-
-        pub fn addF64(self: *Self, ctx: api.Context, value: f64, attributes: []const api.AttributeKeyValue) void {
-            _ = ctx;
-
-            if (T == f64) {
-                // Create an arena, so we don't have to keep track of which slices are
-                // allocated here, and which are unowned.
-                var arena = std.heap.ArenaAllocator.init(self.meter.allocator);
-                defer arena.deinit();
-                const allocator = arena.allocator();
-
-                // Process each view application
-                for (self.views) |view| {
-                    // Skip drop aggregations
-                    if (view.drops()) continue;
-
-                    // Transform attributes according to view
-                    const attrs = view.transformAttributes(attributes, allocator) catch |e| blk: {
-                        api.common.reportErrorWithAllocator(.{
-                            .component = .meter,
-                            .context = null,
-                            .error_type = .internal,
-                            .message = "Unable to transform attributes with view",
-                            .operation = "StandardUpDownCounter.addF64()",
-                            .source_error = e,
-                        }, allocator);
-                        break :blk attributes; // On error, use original attributes
-                    };
-
-                    // Create transformed metadata
-                    const metadata = sdk.MetricMetadata{
-                        .name = view.getName(self.name),
-                        .description = view.getDescription(self.description) orelse "",
-                        .unit = self.unit orelse "", // Unit not transformable per spec
-                        .instrument_type = .UpDownCounter,
-                        .instrumentation_scope = self.meter.scope,
-                    };
-
-                    // Forward to all readers
-                    for (self.meter.provider.readers.items) |*reader| {
-                        reader.recordMeasurement(.{ .f64 = value }, attrs, metadata, self.metadata_hash);
-                    }
-                }
-            } else {
-                unreachable;
-            }
-        }
-
-        pub fn recordI64(_: *Self, _: api.Context, _: i64, _: []const api.AttributeKeyValue) void {
-            unreachable;
-        }
-
-        pub fn recordF64(_: *Self, _: api.Context, _: f64, _: []const api.AttributeKeyValue) void {
-            unreachable;
-        }
-
-        pub fn enabled(self: *Self) bool {
-            _ = self;
-            return true;
-        }
+pub fn StandardCounter(comptime value_type: type) type {
+    const Base = switch (value_type) {
+        i64 => BaseType.int,
+        f64 => BaseType.float,
+        else => unreachable,
     };
+    return Instrument(.Counter, Base);
 }
 
-/// Standard Gauge implementation that forwards measurements to readers
-pub fn StandardGauge(comptime T: type) type {
-    return struct {
-        const Self = @This();
-
-        // None of these are owning fields.
-        name: []const u8,
-        description: ?[]const u8,
-        unit: ?[]const u8,
-        meter: *sdk.Meter,
-        metadata_hash: u64,
-
-        // Owned slice of views that apply to this instrument.
-        views: []sdk.ViewApplication,
-
-        pub fn init(
-            name: []const u8,
-            description: ?[]const u8,
-            unit: ?[]const u8,
-            parent_meter: *sdk.Meter,
-        ) !Self {
-            // Precompute the hash values that don't change per datapoint.
-            const metadata_hash = sdk.MetricMetadata.computeHash(
-                name,
-                unit orelse "",
-                .Gauge,
-                &parent_meter.scope,
-            );
-
-            // Get the views that apply to this instrument.
-            const view_applications = try parent_meter.provider.applyViews(
-                name,
-                .Gauge,
-                unit orelse "",
-                description,
-                parent_meter.scope.name,
-                parent_meter.scope.version,
-                parent_meter.scope.schema_url,
-                parent_meter.allocator,
-            );
-
-            return .{
-                .name = name,
-                .description = description,
-                .unit = unit,
-                .meter = parent_meter,
-                .metadata_hash = metadata_hash,
-                .views = view_applications,
-            };
-        }
-
-        pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
-            allocator.free(self.views);
-        }
-
-        pub fn getName(self: *const Self) []const u8 {
-            return self.name;
-        }
-
-        pub fn addI64(_: *Self, _: api.Context, _: i64, _: []const api.AttributeKeyValue) void {
-            unreachable;
-        }
-
-        pub fn addF64(_: *Self, _: api.Context, _: f64, _: []const api.AttributeKeyValue) void {
-            unreachable;
-        }
-
-        pub fn recordI64(self: *Self, ctx: api.Context, value: i64, attributes: []const api.AttributeKeyValue) void {
-            _ = ctx;
-
-            if (T == i64) {
-                // Create an arena, so we don't have to keep track of which slices are
-                // allocated here, and which are unowned.
-                var arena = std.heap.ArenaAllocator.init(self.meter.allocator);
-                defer arena.deinit();
-                const allocator = arena.allocator();
-
-                // Process each view application
-                for (self.views) |view| {
-                    // Skip drop aggregations
-                    if (view.drops()) continue;
-
-                    // Transform attributes according to view
-                    const attrs = view.transformAttributes(attributes, allocator) catch |e| blk: {
-                        api.common.reportErrorWithAllocator(.{
-                            .component = .meter,
-                            .context = null,
-                            .error_type = .internal,
-                            .message = "Unable to transform attributes with view",
-                            .operation = "StandardGauge.recordI64()",
-                            .source_error = e,
-                        }, allocator);
-                        break :blk attributes; // On error, use original attributes
-                    };
-
-                    // Create transformed metadata
-                    const metadata = sdk.MetricMetadata{
-                        .name = view.getName(self.name),
-                        .description = view.getDescription(self.description) orelse "",
-                        .unit = self.unit orelse "", // Unit not transformable per spec
-                        .instrument_type = .Gauge,
-                        .instrumentation_scope = self.meter.scope,
-                    };
-
-                    // Forward to all readers
-                    for (self.meter.provider.readers.items) |*reader| {
-                        reader.recordMeasurement(.{ .i64 = value }, attrs, metadata, self.metadata_hash);
-                    }
-                }
-            } else {
-                unreachable;
-            }
-        }
-
-        pub fn recordF64(self: *Self, ctx: api.Context, value: f64, attributes: []const api.AttributeKeyValue) void {
-            _ = ctx;
-
-            if (T == f64) {
-                // Create an arena, so we don't have to keep track of which slices are
-                // allocated here, and which are unowned.
-                var arena = std.heap.ArenaAllocator.init(self.meter.allocator);
-                defer arena.deinit();
-                const allocator = arena.allocator();
-
-                // Process each view application
-                for (self.views) |view| {
-                    // Skip drop aggregations
-                    if (view.drops()) continue;
-
-                    // Transform attributes according to view
-                    const attrs = view.transformAttributes(attributes, allocator) catch |e| blk: {
-                        api.common.reportErrorWithAllocator(.{
-                            .component = .meter,
-                            .context = null,
-                            .error_type = .internal,
-                            .message = "Unable to transform attributes with view",
-                            .operation = "StandardGauge.recordF64()",
-                            .source_error = e,
-                        }, allocator);
-                        break :blk attributes; // On error, use original attributes
-                    };
-
-                    // Create transformed metadata
-                    const metadata = sdk.MetricMetadata{
-                        .name = view.getName(self.name),
-                        .description = view.getDescription(self.description) orelse "",
-                        .unit = self.unit orelse "", // Unit not transformable per spec
-                        .instrument_type = .Gauge,
-                        .instrumentation_scope = self.meter.scope,
-                    };
-
-                    // Forward to all readers
-                    for (self.meter.provider.readers.items) |*reader| {
-                        reader.recordMeasurement(.{ .f64 = value }, attrs, metadata, self.metadata_hash);
-                    }
-                }
-            } else {
-                unreachable;
-            }
-        }
-
-        pub fn enabled(self: *Self) bool {
-            _ = self;
-            return true;
-        }
+pub fn StandardUpDownCounter(comptime value_type: type) type {
+    const Base = switch (value_type) {
+        i64 => BaseType.int,
+        f64 => BaseType.float,
+        else => unreachable,
     };
+    return Instrument(.UpDownCounter, Base);
 }
 
-/// Standard Histogram implementation that forwards measurements to readers
-pub fn StandardHistogram(comptime T: type) type {
-    return struct {
-        const Self = @This();
-
-        // None of these are owning fields.
-        name: []const u8,
-        description: ?[]const u8,
-        unit: ?[]const u8,
-        meter: *sdk.Meter,
-        metadata_hash: u64,
-
-        // Owned slice of views that apply to this instrument.
-        views: []sdk.ViewApplication,
-
-        pub fn init(
-            allocator: std.mem.Allocator,
-            name: []const u8,
-            description: ?[]const u8,
-            unit: ?[]const u8,
-            parent_meter: *sdk.Meter,
-            config: sdk.aggregations.HistogramAggregationConfig,
-        ) !Self {
-            _ = allocator; // Unused in Phase 1
-            _ = config;
-
-            // Precompute the hash values that don't change per datapoint.
-            const metadata_hash = sdk.MetricMetadata.computeHash(
-                name,
-                unit orelse "",
-                .Histogram,
-                &parent_meter.scope,
-            );
-
-            // Get the views that apply to this instrument.
-            const view_applications = try parent_meter.provider.applyViews(
-                name,
-                .Gauge,
-                unit orelse "",
-                description,
-                parent_meter.scope.name,
-                parent_meter.scope.version,
-                parent_meter.scope.schema_url,
-                parent_meter.allocator,
-            );
-
-            return .{
-                .name = name,
-                .description = description,
-                .unit = unit,
-                .meter = parent_meter,
-                .metadata_hash = metadata_hash,
-                .views = view_applications,
-            };
-        }
-
-        pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
-            allocator.free(self.views);
-        }
-
-        pub fn getName(self: *const Self) []const u8 {
-            return self.name;
-        }
-
-        pub fn addI64(_: *Self, _: api.Context, _: i64, _: []const api.AttributeKeyValue) void {
-            unreachable;
-        }
-
-        pub fn addF64(_: *Self, _: api.Context, _: f64, _: []const api.AttributeKeyValue) void {
-            unreachable;
-        }
-
-        pub fn recordI64(self: *Self, ctx: api.Context, value: i64, attributes: []const api.AttributeKeyValue) void {
-            if (!api.metrics.validateHistogramValue(i64, value)) {
-                api.common.reportValidationError(.meter, "Histogram.record", "Negative value provided", "histogram values must be non-negative");
-                return; // Return early in validation mode
-            }
-            _ = ctx;
-
-            if (T == i64) {
-                // Create an arena, so we don't have to keep track of which slices are
-                // allocated here, and which are unowned.
-                var arena = std.heap.ArenaAllocator.init(self.meter.allocator);
-                defer arena.deinit();
-                const allocator = arena.allocator();
-
-                // Process each view application
-                for (self.views) |view| {
-                    // Skip drop aggregations
-                    if (view.drops()) continue;
-
-                    // Transform attributes according to view
-                    const attrs = view.transformAttributes(attributes, allocator) catch |e| blk: {
-                        api.common.reportErrorWithAllocator(.{
-                            .component = .meter,
-                            .context = null,
-                            .error_type = .internal,
-                            .message = "Unable to transform attributes with view",
-                            .operation = "StandardHistogram.recordI64()",
-                            .source_error = e,
-                        }, allocator);
-                        break :blk attributes; // On error, use original attributes
-                    };
-
-                    // Create transformed metadata
-                    const metadata = sdk.MetricMetadata{
-                        .name = view.getName(self.name),
-                        .description = view.getDescription(self.description) orelse "",
-                        .unit = self.unit orelse "", // Unit not transformable per spec
-                        .instrument_type = .Histogram,
-                        .instrumentation_scope = self.meter.scope,
-                    };
-
-                    // Forward to all readers
-                    for (self.meter.provider.readers.items) |*reader| {
-                        reader.recordMeasurement(.{ .i64 = value }, attrs, metadata, self.metadata_hash);
-                    }
-                }
-            } else {
-                unreachable;
-            }
-        }
-
-        pub fn recordF64(self: *Self, ctx: api.Context, value: f64, attributes: []const api.AttributeKeyValue) void {
-            if (!api.metrics.validateHistogramValue(f64, value)) {
-                api.common.reportValidationError(.meter, "Histogram.record", "Negative value provided", "histogram values must be non-negative");
-                return; // Return early in validation mode
-            }
-            _ = ctx;
-
-            if (T == f64) {
-                // Create an arena, so we don't have to keep track of which slices are
-                // allocated here, and which are unowned.
-                var arena = std.heap.ArenaAllocator.init(self.meter.allocator);
-                defer arena.deinit();
-                const allocator = arena.allocator();
-
-                // Process each view application
-                for (self.views) |view| {
-                    // Skip drop aggregations
-                    if (view.drops()) continue;
-
-                    // Transform attributes according to view
-                    const attrs = view.transformAttributes(attributes, allocator) catch |e| blk: {
-                        api.common.reportErrorWithAllocator(.{
-                            .component = .meter,
-                            .context = null,
-                            .error_type = .internal,
-                            .message = "Unable to transform attributes with view",
-                            .operation = "StandardHistogram.recordI64()",
-                            .source_error = e,
-                        }, allocator);
-                        break :blk attributes; // On error, use original attributes
-                    };
-
-                    // Create transformed metadata
-                    const metadata = sdk.MetricMetadata{
-                        .name = view.getName(self.name),
-                        .description = view.getDescription(self.description) orelse "",
-                        .unit = self.unit orelse "", // Unit not transformable per spec
-                        .instrument_type = .Histogram,
-                        .instrumentation_scope = self.meter.scope,
-                    };
-
-                    // Forward to all readers
-                    for (self.meter.provider.readers.items) |*reader| {
-                        reader.recordMeasurement(.{ .f64 = value }, attrs, metadata, self.metadata_hash);
-                    }
-                }
-            } else {
-                unreachable;
-            }
-        }
-
-        pub fn enabled(self: *Self) bool {
-            _ = self;
-            return true;
-        }
+pub fn StandardGauge(comptime value_type: type) type {
+    const Base = switch (value_type) {
+        i64 => BaseType.int,
+        f64 => BaseType.float,
+        else => unreachable,
     };
+    return Instrument(.Gauge, Base);
+}
+
+pub fn StandardHistogram(comptime value_type: type) type {
+    const Base = switch (value_type) {
+        i64 => BaseType.int,
+        f64 => BaseType.float,
+        else => unreachable,
+    };
+    return Instrument(.Histogram, Base);
 }

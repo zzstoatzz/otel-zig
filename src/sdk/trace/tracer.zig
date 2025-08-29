@@ -5,62 +5,38 @@
 
 const std = @import("std");
 const otel_api = @import("otel-api");
-
-const Span = otel_api.trace.Span;
-const SpanContext = otel_api.trace.SpanContext;
-const SpanKind = otel_api.trace.SpanKind;
-const SpanStartOptions = otel_api.trace.SpanStartOptions;
-const Link = otel_api.trace.Link;
-const AttributeKeyValue = otel_api.common.AttributeKeyValue;
-const Context = otel_api.Context;
-const InstrumentationScope = otel_api.common.InstrumentationScope;
-const SampleParams = otel_api.trace.SampleParams;
-const SamplingDecision = otel_api.trace.SamplingDecision;
-const TraceId = otel_api.common.TraceId;
-const SpanId = otel_api.common.SpanId;
-
-const RecordingSpan = @import("data.zig").RecordingSpan;
-const IdGenerator = @import("id_generator.zig").IdGenerator;
-const getTimestamp = @import("../common/clock.zig").getTimestamp;
-const trace_context = otel_api.trace.trace_context;
-const SpanProcessor = @import("processor.zig").SpanProcessor;
-const SpanLimits = otel_api.trace.SpanLimits;
-
-// Import validation functions from API layer
-const validateAttributeKey = otel_api.trace.validateAttributeKey;
-const validateSpanName = otel_api.trace.validateSpanName;
-const validateAttributeValue = otel_api.trace.validateAttributeValue;
-const validateAttributes = otel_api.trace.validateAttributes;
-const reportValidationError = otel_api.common.reportValidationError;
-
-/// Forward declaration of BasicTracerProvider
-const BasicTracerProvider = @import("basic_provider.zig").BasicTracerProvider;
+const sdk = struct {
+    const trace = struct {
+        const RecordingSpan = @import("data.zig").RecordingSpan;
+        const SpanData = @import("data.zig").SpanData;
+        const TracerProvider = @import("tracer_provider.zig").TracerProvider;
+    };
+};
 
 /// Standard implementation of the Tracer interface
 pub const StandardTracer = struct {
-    /// Allocator for span creation
-    allocator: std.mem.Allocator,
-    scope: InstrumentationScope,
-    provider: *BasicTracerProvider, // Is this necessary?
+    provider: *sdk.trace.TracerProvider, // non-owning
+    scope: otel_api.InstrumentationScope, // non-owning
+    is_shutdown: std.atomic.Value(bool),
 
     /// Create a new standard tracer
     pub fn init(
-        allocator: std.mem.Allocator,
-        instrumentation_scope: InstrumentationScope,
-        provider: *BasicTracerProvider,
+        provider: *sdk.trace.TracerProvider,
+        scope: otel_api.InstrumentationScope,
     ) StandardTracer {
         return .{
-            .allocator = allocator,
-            .scope = instrumentation_scope,
             .provider = provider,
+            .scope = scope,
+            .is_shutdown = .init(false),
         };
     }
 
-    /// Create a Tracer interface for this standard tracer
-    pub fn tracer(self: *StandardTracer) otel_api.trace.Tracer {
-        return otel_api.trace.Tracer{
-            .bridge = otel_api.trace.TracerBridge.init(self),
-        };
+    pub fn deinit(self: *StandardTracer) void {
+        _ = self;
+    }
+
+    pub fn shutdown(self: *StandardTracer) void {
+        self.is_shutdown.store(true, .monotonic);
     }
 
     // Tracer interface implementation
@@ -68,59 +44,49 @@ pub const StandardTracer = struct {
     pub fn startSpan(
         self: *StandardTracer,
         name: []const u8,
-        options: ?SpanStartOptions,
-        ctx: Context,
+        options: ?otel_api.trace.Span.StartOptions,
+        ctx: []const otel_api.ContextKeyValue,
     ) !otel_api.trace.Span {
+        if (self.is_shutdown.load(.monotonic)) return otel_api.trace.Span{ .noop = .invalid };
+
         // Get options or use defaults
-        const opts = options orelse SpanStartOptions.default;
+        const opts = options orelse otel_api.trace.Span.StartOptions.default;
 
         // Validate span name in debug mode
-        if (!validateSpanName(name)) {
-            reportValidationError(.tracer, "startSpan", "Empty span name provided", null);
-            // Continue with empty name (spec allows it, but we report it in debug)
+        if (!otel_api.trace.validateSpanName(name)) {
+            otel_api.common.reportValidationError(.tracer, "startSpan", "Empty span name provided", null);
         }
 
-        // Validate attributes if present
-        const validated_options = if (opts.attributes != null) blk: {
-            const validated_attrs = validateAttributes(opts.attributes.?);
-            break :blk SpanStartOptions{
-                .parent_context = opts.parent_context,
-                .kind = opts.kind,
-                .attributes = validated_attrs,
-                .links = opts.links,
-                .start_time_ns = opts.start_time_ns,
-                .record = opts.record,
-            };
-        } else opts;
-
         // Get timestamp
-        const start_time = validated_options.start_time_ns orelse getTimestamp();
+        const default_ts: i64 = @intCast(std.time.nanoTimestamp());
+        const start_time = opts.start_time_ns orelse default_ts;
 
         // Extract parent context if present
-        const parent_span_context = trace_context.getSpanContext(ctx);
+        const parent_span_context = otel_api.trace.trace_context.getSpanContext(ctx);
 
         // Generate IDs
-        var trace_id: TraceId = undefined;
-        var span_id: SpanId = undefined;
+        var trace_id: otel_api.common.TraceId = undefined;
+        var span_id: otel_api.common.SpanId = undefined;
 
         if (parent_span_context) |parent| {
             // Use parent's trace ID
             trace_id = parent.trace_id;
-            span_id = SpanId.fromBytes(self.provider.id_generator.generateSpanId());
+            span_id = otel_api.common.SpanId.fromBytes(self.provider.id_generator.generateSpanId());
         } else {
             // Generate new trace ID
-            trace_id = TraceId.fromBytes(self.provider.id_generator.generateTraceId());
-            span_id = SpanId.fromBytes(self.provider.id_generator.generateSpanId());
+            trace_id = otel_api.common.TraceId.fromBytes(self.provider.id_generator.generateTraceId());
+            span_id = otel_api.common.SpanId.fromBytes(self.provider.id_generator.generateSpanId());
         }
 
         // Extract links from options
-        const links = validated_options.links orelse &.{};
+        const links = opts.links;
 
         // Extract attributes from options
-        const attributes = validated_options.attributes orelse &.{};
+        const attributes = opts.attributes;
 
         // Create sample parameters for sampling decision
-        const sample_params = SampleParams{
+        const sample_params = otel_api.trace.Sampler.Params{
+            .allocator = self.provider.allocator,
             .context = ctx,
             .trace_id = trace_id,
             .span_name = name,
@@ -136,59 +102,61 @@ pub const StandardTracer = struct {
         const trace_flags: u8 = switch (sampling_result.decision) {
             .drop => 0,
             .record_only => 0,
-            .record_and_sample => SpanContext.SAMPLED_FLAG,
+            .record_and_sample => otel_api.trace.Span.Context.SAMPLED_FLAG,
         };
 
         // Create span context
-        const span_context = SpanContext{
+        const span_context = otel_api.trace.Span.Context{
             .trace_id = trace_id,
             .span_id = span_id,
             .trace_flags = trace_flags,
-            .trace_state = sampling_result.trace_state,
+            .trace_state = if (sampling_result.trace_state) |ts| try self.provider.allocator.dupe(u8, ts) else null,
             .is_remote = false,
         };
+        errdefer span_context.deinit(self.provider.allocator);
 
         // Handle sampling decision
         switch (sampling_result.decision) {
             .drop => {
                 // Return noop span for dropped spans
-                return Span{ .noop = span_context };
+                return otel_api.trace.Span{ .noop = span_context };
             },
             .record_only, .record_and_sample => {
-                // Create recording span for sampled or record-only spans
-                const recording = try RecordingSpan.init(
-                    self.allocator,
-                    name,
+                const recording = try self.provider.allocator.create(sdk.trace.RecordingSpan);
+                recording.* = try sdk.trace.RecordingSpan.init(self, name);
+
+                // Add links from StartOptions to the recording span
+                if (links.len > 0) {
+                    try recording.addLinks(links);
+                }
+
+                // Add attributes from StartOptions to the recording span
+                if (attributes.len > 0) {
+                    recording.setAttributes(attributes);
+                }
+
+                const bridge = otel_api.trace.Span.Bridge.init(
+                    recording,
                     span_context,
                     parent_span_context,
                     opts.kind,
                     start_time,
-                    attributes,
-                    links,
-                    self.provider.span_limits,
-                    self.provider,
-                    spanProcessorOnEnd,
+                    null,
+                    true,
                 );
-
-                return recording.span();
+                var span = otel_api.trace.Span{ .bridge = bridge };
+                span.setStatus(opts.status);
+                return span;
             },
         }
     }
 
     pub fn enabled(self: *StandardTracer) bool {
-        _ = self;
-        return true;
+        return !self.is_shutdown.load(.monotonic);
     }
 
-    pub fn deinit(self: *StandardTracer) void {
-        _ = self;
-    }
-
-    /// Callback for span processor notification
-    fn spanProcessorOnEnd(processor: *anyopaque, span: *RecordingSpan) void {
-        const provider = @as(*BasicTracerProvider, @ptrCast(@alignCast(processor)));
-        for (provider.processors.items) |*proc| {
-            proc.onEnd(span);
-        }
+    /// Create a Tracer interface for this standard tracer
+    pub inline fn tracer(self: *StandardTracer) otel_api.trace.Tracer {
+        return .{ .bridge = .init(self) };
     }
 };

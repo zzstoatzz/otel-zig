@@ -9,15 +9,20 @@
 //! See: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/logs/api.md#logger
 
 const std = @import("std");
+const api = struct {
+    const AttributeKeyValue = @import("../common/root.zig").AttributeKeyValue;
+    const AttributeValue = @import("../common/root.zig").AttributeValue;
+    const ContextKeyValue = @import("../context/context.zig").ContextKeyValue;
+    const common = struct {
+        const TraceId = @import("../common/types.zig").TraceId;
+        const SpanId = @import("../common/types.zig").SpanId;
+    };
+    const logs = struct {
+        const Severity = @import("severity.zig").Severity;
+    };
+};
 const isValidatingMode = @import("../common/error_handler.zig").isValidatingMode;
-
-const AttributeValue = @import("../common/root.zig").AttributeValue;
-const AttributeKeyValue = @import("../common/root.zig").AttributeKeyValue;
 const reportValidationError = @import("../common/error_handler.zig").reportValidationError;
-const Context = @import("../context/root.zig").Context;
-const Severity = @import("severity.zig").Severity;
-const TraceId = @import("../common/types.zig").TraceId;
-const SpanId = @import("../common/types.zig").SpanId;
 
 /// Logger interface using tagged union for compile-time polymorphism.
 /// In the API layer, only the noop implementation is provided.
@@ -26,46 +31,19 @@ pub const Logger = union(enum) {
     noop: void,
     bridge: LoggerBridge, // SDK logger bridge
 
-    /// Emit a log record with individual parameters
-    ///
-    /// This method creates a log record with the specified parameters. In debug builds,
-    /// input validation is performed and any issues are reported via the global error
-    /// handler, but log emission always succeeds (potentially with corrected/filtered input).
-    ///
-    /// ## Parameters
-    /// - `severity`: Log severity level (validated if provided)
-    /// - `body`: Log message body (validated if provided)
-    /// - `attributes`: Log attributes (validated using standard attribute validation)
-    /// - `event_name`: Event name (validated if provided)
-    /// - `severity_text`: Custom severity text (validated if provided)
-    /// - Other parameters: Timestamps, trace context, flags (basic validation)
-    ///
-    /// ## Validation (Debug Mode Only)
-    /// - **Severity**: Must be valid enum value if provided
-    /// - **Body**: Must be non-empty string if provided
-    /// - **Attributes**: Invalid attributes (empty keys) are reported and filtered
-    /// - **Event name**: Must be non-empty if provided
-    /// - **Severity text**: Must be non-empty if provided
-    ///
-    /// ## Error Handling
-    /// - **Validation errors**: Reported via error handler, operation continues
-    /// - **No-op fallback**: On critical failures, log is still emitted (potentially as no-op)
-    ///
-    /// ## Performance
-    /// - **Release builds**: No validation overhead
-    /// - **Debug builds**: Minimal overhead for validation checks
+    /// Emit a log record with individual parameters. This is the abstract interface method.
     pub fn emitLogRecord(
         self: *Logger,
-        ctx: Context,
-        severity: ?Severity,
-        body: ?AttributeValue,
-        attributes: ?[]const AttributeKeyValue,
+        ctx: []const api.ContextKeyValue,
+        severity: ?api.logs.Severity,
+        body: ?api.AttributeValue,
+        attributes: ?[]const api.AttributeKeyValue,
         timestamp_ns: ?i64,
         observed_timestamp_ns: ?i64,
         event_name: ?[]const u8,
         severity_text: ?[]const u8,
-        trace_id: ?TraceId,
-        span_id: ?SpanId,
+        trace_id: ?api.common.TraceId,
+        span_id: ?api.common.SpanId,
         flags: ?u8,
     ) void {
         switch (self.*) {
@@ -88,7 +66,7 @@ pub const Logger = union(enum) {
     }
 
     /// Check if logging is enabled for a given severity
-    pub inline fn enabled(self: *const Logger, ctx: Context, severity: ?Severity) bool {
+    pub inline fn enabled(self: *const Logger, ctx: []const api.ContextKeyValue, severity: ?api.logs.Severity) bool {
         return switch (self.*) {
             .noop => |_| return false,
             .bridge => |bridge| bridge.enabledFn(bridge.logger_ptr, ctx, severity),
@@ -98,8 +76,8 @@ pub const Logger = union(enum) {
     /// Check if logging is enabled for a given severity and event name
     pub inline fn enabledWithEvent(
         self: *const Logger,
-        ctx: Context,
-        severity: ?Severity,
+        ctx: []const api.ContextKeyValue,
+        severity: ?api.logs.Severity,
         event_name: []const u8,
     ) bool {
         return switch (self.*) {
@@ -108,35 +86,61 @@ pub const Logger = union(enum) {
         };
     }
 
+    // Convenience methods for simple use-cases.
+
+    /// Emit a log record with defaults for most parameters. Calls `emitLogRecord`.
+    pub inline fn emitLog(
+        self: *Logger,
+        ctx: []const api.ContextKeyValue,
+        severity: ?api.logs.Severity,
+        body: ?[]const u8,
+        attributes: ?[]const api.AttributeKeyValue,
+        event_name: ?[]const u8,
+    ) void {
+        self.emitLogRecord(
+            ctx,
+            severity,
+            if (body) |msg| .{ .string = msg } else null,
+            attributes,
+            null,
+            null,
+            event_name,
+            null,
+            null,
+            null,
+            null,
+        );
+    }
+
     // Convenience methods for different severity levels
 
     /// Log a trace message
-    pub inline fn trace(self: *Logger, ctx: Context, comptime fmt: []const u8, args: anytype) void {
+    pub inline fn trace(self: *Logger, ctx: []const api.ContextKeyValue, comptime fmt: []const u8, args: anytype) void {
         self.log(ctx, .trace, fmt, args);
     }
 
     /// Log a debug message
-    pub inline fn debug(self: *Logger, ctx: Context, comptime fmt: []const u8, args: anytype) void {
+    pub inline fn debug(self: *Logger, ctx: []const api.ContextKeyValue, comptime fmt: []const u8, args: anytype) void {
         self.log(ctx, .debug, fmt, args);
     }
 
     /// Log an info message
-    pub inline fn info(self: *Logger, ctx: Context, comptime fmt: []const u8, args: anytype) void {
+    pub inline fn info(self: *Logger, ctx: []const api.ContextKeyValue, comptime fmt: []const u8, args: anytype) void {
         self.log(ctx, .info, fmt, args);
     }
 
     /// Log a warning message
-    pub inline fn warn(self: *Logger, ctx: Context, comptime fmt: []const u8, args: anytype) void {
+    pub inline fn warn(self: *Logger, ctx: []const api.ContextKeyValue, comptime fmt: []const u8, args: anytype) void {
         self.log(ctx, .warn, fmt, args);
     }
 
     /// Log an error message
-    pub inline fn @"error"(self: *Logger, ctx: Context, comptime fmt: []const u8, args: anytype) void {
+    pub inline fn @"error"(self: *Logger, ctx: []const api.ContextKeyValue, comptime fmt: []const u8, args: anytype) void {
         self.log(ctx, .@"error", fmt, args);
     }
 
     /// Log a fatal message
-    pub inline fn fatal(self: *Logger, ctx: Context, comptime fmt: []const u8, args: anytype) void {
+    pub inline fn fatal(self: *Logger, ctx: []const api.ContextKeyValue, comptime fmt: []const u8, args: anytype) void {
         self.log(ctx, .fatal, fmt, args);
     }
 
@@ -155,8 +159,8 @@ pub const Logger = union(enum) {
     /// - **Debug builds**: Minimal overhead for validation checks
     pub fn log(
         self: *Logger,
-        ctx: Context,
-        severity: Severity,
+        ctx: []const api.ContextKeyValue,
+        severity: api.logs.Severity,
         comptime fmt: []const u8,
         args: anytype,
     ) void {
@@ -173,7 +177,7 @@ pub const Logger = union(enum) {
         self.emitLogRecord(
             ctx,
             severity,
-            AttributeValue{ .string = message },
+            .{ .string = message },
             null, // attributes
             @as(i64, @intCast(std.time.nanoTimestamp())), // timestamp_ns
             null, // observed_timestamp_ns
@@ -191,20 +195,20 @@ pub const LoggerBridge = struct {
     logger_ptr: *anyopaque,
     emitLogRecordFn: *const fn (
         logger_ptr: *anyopaque,
-        ctx: Context,
-        severity: ?Severity,
-        body: ?AttributeValue,
-        attributes: ?[]const AttributeKeyValue,
+        ctx: []const api.ContextKeyValue,
+        severity: ?api.logs.Severity,
+        body: ?api.AttributeValue,
+        attributes: ?[]const api.AttributeKeyValue,
         timestamp_ns: ?i64,
         observed_timestamp_ns: ?i64,
         event_name: ?[]const u8,
         severity_text: ?[]const u8,
-        trace_id: ?TraceId,
-        span_id: ?SpanId,
+        trace_id: ?api.common.TraceId,
+        span_id: ?api.common.SpanId,
         flags: ?u8,
     ) void,
-    enabledFn: *const fn (logger_ptr: *anyopaque, ctx: Context, severity: ?Severity) bool,
-    enabledWithEventFn: *const fn (logger_ptr: *anyopaque, ctx: Context, severity: ?Severity, event_name: []const u8) bool,
+    enabledFn: *const fn (logger_ptr: *anyopaque, ctx: []const api.ContextKeyValue, severity: ?api.logs.Severity) bool,
+    enabledWithEventFn: *const fn (logger_ptr: *anyopaque, ctx: []const api.ContextKeyValue, severity: ?api.logs.Severity, event_name: []const u8) bool,
 
     pub fn init(ptr: anytype) LoggerBridge {
         const T = @TypeOf(ptr);
@@ -213,16 +217,16 @@ pub const LoggerBridge = struct {
         const VTable = struct {
             pub fn emitLogRecord(
                 pointer: *anyopaque,
-                ctx: Context,
-                severity: ?Severity,
-                body: ?AttributeValue,
-                attributes: ?[]const AttributeKeyValue,
+                ctx: []const api.ContextKeyValue,
+                severity: ?api.logs.Severity,
+                body: ?api.AttributeValue,
+                attributes: ?[]const api.AttributeKeyValue,
                 timestamp_ns: ?i64,
                 observed_timestamp_ns: ?i64,
                 event_name: ?[]const u8,
                 severity_text: ?[]const u8,
-                trace_id: ?TraceId,
-                span_id: ?SpanId,
+                trace_id: ?api.common.TraceId,
+                span_id: ?api.common.SpanId,
                 flags: ?u8,
             ) void {
                 const self: T = @ptrCast(@alignCast(pointer));
@@ -241,11 +245,11 @@ pub const LoggerBridge = struct {
                     flags,
                 );
             }
-            pub fn enabled(pointer: *anyopaque, ctx: Context, severity: ?Severity) bool {
+            pub fn enabled(pointer: *anyopaque, ctx: []const api.ContextKeyValue, severity: ?api.logs.Severity) bool {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.enabled(self, ctx, severity);
             }
-            pub fn enabledWithEvent(pointer: *anyopaque, ctx: Context, severity: ?Severity, event_name: []const u8) bool {
+            pub fn enabledWithEvent(pointer: *anyopaque, ctx: []const api.ContextKeyValue, severity: ?api.logs.Severity, event_name: []const u8) bool {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.enabledWithEvent(self, ctx, severity, event_name);
             }
@@ -261,14 +265,14 @@ pub const LoggerBridge = struct {
 };
 
 /// Validate severity level in debug mode
-pub fn validateSeverity(severity: ?Severity) ?Severity {
+pub fn validateSeverity(severity: ?api.logs.Severity) ?api.logs.Severity {
     if (!isValidatingMode()) return severity;
     // All Severity enum values are valid by Zig type system
     return severity;
 }
 
 /// Validate log message body in debug mode
-pub fn validateLogBody(body: ?AttributeValue) ?AttributeValue {
+pub fn validateLogBody(body: ?api.AttributeValue) ?api.AttributeValue {
     if (!isValidatingMode()) return body;
 
     if (body) |b| {
@@ -285,7 +289,7 @@ pub fn validateLogBody(body: ?AttributeValue) ?AttributeValue {
 }
 
 /// Validate log attributes using existing attribute validation
-pub fn validateLogAttributes(attributes: ?[]const AttributeKeyValue) ?[]const AttributeKeyValue {
+pub fn validateLogAttributes(attributes: ?[]const api.AttributeKeyValue) ?[]const api.AttributeKeyValue {
     if (!isValidatingMode()) return attributes;
 
     if (attributes) |attrs| {
@@ -325,7 +329,7 @@ pub fn validateFormatString(comptime fmt: []const u8) bool {
 }
 
 /// Validate attributes and report errors in debug mode (reuse from tracer)
-pub fn validateAttributes(attributes: []const AttributeKeyValue) []const AttributeKeyValue {
+pub fn validateAttributes(attributes: []const api.AttributeKeyValue) []const api.AttributeKeyValue {
     if (!isValidatingMode()) return attributes;
 
     // Count invalid attributes

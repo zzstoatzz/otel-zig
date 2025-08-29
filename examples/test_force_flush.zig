@@ -54,7 +54,7 @@ const TrackingExporter = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn exportSpans(self: *TrackingExporter, spans: []const *otel_sdk.trace.RecordingSpan, resource: otel_sdk.resource.Resource) otel_api.common.ExportResult {
+    pub fn exportSpans(self: *TrackingExporter, spans: []const otel_sdk.trace.SpanData, resource: otel_sdk.resource.Resource) otel_api.common.ExportResult {
         _ = resource;
         _ = self.export_count.fetchAdd(1, .monotonic);
         _ = global_export_count.fetchAdd(1, .monotonic);
@@ -65,7 +65,7 @@ const TrackingExporter = struct {
         std.debug.print("[EXPORTER] Exporting {} spans at time {}\n", .{ spans.len, current_time });
 
         // Simulate some export work
-        std.time.sleep(50 * std.time.ns_per_ms);
+        std.Thread.sleep(50 * std.time.ns_per_ms);
         return .success;
     }
 
@@ -114,7 +114,7 @@ pub fn main() !void {
     }
 
     // Get a tracer
-    const scope = try otel_api.InstrumentationScope.initSimple("force_flush_test", "1.0.0");
+    const scope = otel_api.InstrumentationScope{ .name = "force_flush_test", .version = "1.0.0" };
     var tracer = try otel_api.getGlobalTracerProvider().getTracerWithScope(scope);
 
     const start_time = std.time.milliTimestamp();
@@ -126,11 +126,11 @@ pub fn main() !void {
             .attributes = &[_]otel_api.common.AttributeKeyValue{
                 .{ .key = "index", .value = .{ .int = @intCast(i) } },
             },
-        }, otel_api.Context.empty(allocator));
+        }, &.{});
         span.end(null);
         span.deinit();
         std.debug.print("  Created span {}\n", .{i});
-        std.time.sleep(100 * std.time.ns_per_ms);
+        std.Thread.sleep(100 * std.time.ns_per_ms);
     }
 
     const after_spans_time = std.time.milliTimestamp();
@@ -157,7 +157,7 @@ pub fn main() !void {
             .attributes = &[_]otel_api.common.AttributeKeyValue{
                 .{ .key = "index", .value = .{ .int = @intCast(i) } },
             },
-        }, otel_api.Context.empty(allocator));
+        }, &.{});
         span.end(null);
         span.deinit();
     }
@@ -175,7 +175,7 @@ pub fn main() !void {
 
     // Create a thread that will call flush
     const FlushThread = struct {
-        fn run(provider: *otel_sdk.trace.BasicTracerProvider) void {
+        fn run(provider: *otel_sdk.trace.TracerProvider) void {
             std.debug.print("  [Thread] Starting flush...\n", .{});
             const result = provider.forceFlush(3000);
             std.debug.print("  [Thread] Flush complete: {}\n", .{result});
@@ -185,7 +185,7 @@ pub fn main() !void {
     const thread = try std.Thread.spawn(.{}, FlushThread.run, .{concrete_provider});
 
     // Give thread time to start
-    std.time.sleep(10 * std.time.ns_per_ms);
+    std.Thread.sleep(10 * std.time.ns_per_ms);
 
     // Try to flush from main thread too
     std.debug.print("  [Main] Starting flush...\n", .{});
@@ -203,7 +203,7 @@ pub fn main() !void {
             .attributes = &[_]otel_api.common.AttributeKeyValue{
                 .{ .key = "bulk_index", .value = .{ .int = @intCast(i) } },
             },
-        }, otel_api.Context.empty(allocator));
+        }, &.{});
         span.end(null);
         span.deinit();
     }
@@ -213,7 +213,7 @@ pub fn main() !void {
     std.debug.print("Flush with 1ms timeout result: {}\n", .{timeout_result});
 
     // Give time for background export to complete
-    std.time.sleep(200 * std.time.ns_per_ms);
+    std.Thread.sleep(200 * std.time.ns_per_ms);
 
     // Final stats
     std.debug.print("\n=== Final Statistics ===\n", .{});

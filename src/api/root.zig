@@ -12,10 +12,11 @@ pub const common = @import("common/root.zig");
 pub const provider_registry = @import("provider_registry.zig");
 
 // Re-export commonly used types at the root level for convenience
-pub const Context = context.Context;
+pub const ContextBuilder = context.ContextBuilder;
+pub const ContextKey = context.ContextKey;
+pub const ContextKeyValue = context.ContextKeyValue;
 pub const AttributeBuilder = common.AttributeBuilder;
 pub const AttributeKeyValue = common.AttributeKeyValue;
-pub const AttributeValue = common.AttributeValue;
 pub const InstrumentationScope = common.InstrumentationScope;
 
 pub const getGlobalLoggerProvider = provider_registry.getGlobalLoggerProvider;

@@ -26,6 +26,13 @@
 //! See: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/api.md#tracer
 
 const std = @import("std");
+const api = struct {
+    const ContextBuilder = @import("../context/context.zig").ContextBuilder;
+    const ContextKeyValue = @import("../context/context.zig").ContextKeyValue;
+    const trace = struct {
+        const Span = @import("span.zig").Span;
+    };
+};
 const isValidatingMode = @import("../common/error_handler.zig").isValidatingMode;
 
 const InstrumentationScope = @import("../common/root.zig").InstrumentationScope;
@@ -33,10 +40,6 @@ const AttributeValue = @import("../common/root.zig").AttributeValue;
 const AttributeKeyValue = @import("../common/root.zig").AttributeKeyValue;
 const reportValidationError = @import("../common/error_handler.zig").reportValidationError;
 const reportError = @import("../common/error_handler.zig").reportError;
-const Context = @import("../context/root.zig").Context;
-const Span = @import("span.zig").Span;
-const SpanContext = @import("span_context.zig").SpanContext;
-const SpanStartOptions = @import("span.zig").SpanStartOptions;
 
 /// Tracer interface using tagged union for compile-time polymorphism.
 /// In the API layer, only the noop implementation is provided.
@@ -73,13 +76,13 @@ pub const Tracer = union(enum) {
     /// ## Returns
     /// Always returns a valid `Span` (may be no-op on critical failures)
     pub fn startSpan(
-        self: *Tracer,
+        self: *const Tracer,
         name: []const u8,
-        options: SpanStartOptions,
-        ctx: Context,
-    ) !Span {
+        options: ?api.trace.Span.StartOptions,
+        ctx: []const api.ContextKeyValue,
+    ) !api.trace.Span {
         return switch (self.*) {
-            .noop => Span{ .noop = SpanContext.invalid },
+            .noop => .{ .noop = api.trace.Span.Context.invalid },
             .bridge => |*bridge| try bridge.startSpanFn(bridge.tracer_ptr, name, options, ctx),
         };
     }
@@ -93,7 +96,7 @@ pub const Tracer = union(enum) {
     /// ## Returns
     /// - `true` if the tracer is enabled for span creation
     /// - `false` if the tracer is disabled (no-op tracer always returns false)
-    pub fn enabled(self: *Tracer) bool {
+    pub fn enabled(self: *const Tracer) bool {
         return switch (self.*) {
             .noop => false,
             .bridge => |bridge| bridge.enabledFn(bridge.tracer_ptr),
@@ -107,9 +110,9 @@ pub const TracerBridge = struct {
     startSpanFn: *const fn (
         tracer_ptr: *anyopaque,
         name: []const u8,
-        options: SpanStartOptions,
-        ctx: Context,
-    ) anyerror!Span,
+        options: ?api.trace.Span.StartOptions,
+        ctx: []const api.ContextKeyValue,
+    ) anyerror!api.trace.Span,
     enabledFn: *const fn (tracer_ptr: *anyopaque) bool,
 
     pub fn init(ptr: anytype) TracerBridge {
@@ -120,9 +123,9 @@ pub const TracerBridge = struct {
             pub fn startSpan(
                 pointer: *anyopaque,
                 name: []const u8,
-                options: SpanStartOptions,
-                ctx: Context,
-            ) anyerror!Span {
+                options: ?api.trace.Span.StartOptions,
+                ctx: []const api.ContextKeyValue,
+            ) anyerror!api.trace.Span {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.startSpan(self, name, options, ctx);
             }

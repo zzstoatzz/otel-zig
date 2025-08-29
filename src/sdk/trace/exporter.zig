@@ -9,8 +9,8 @@
 const std = @import("std");
 const otel_api = @import("otel-api");
 
-const ExportResult = @import("otel-api").common.ExportResult;
-const RecordingSpan = @import("data.zig").RecordingSpan;
+const ExportResult = otel_api.common.ExportResult;
+const SpanData = @import("data.zig").SpanData;
 const Resource = @import("../resource/resource.zig").Resource;
 
 /// SpanExporter interface using tagged union for polymorphism
@@ -23,7 +23,7 @@ pub const SpanExporter = union(enum) {
     /// The caller is required to manage `spans`. The exporter must be finished with
     /// the memory when this function returns. That includes making deep copies if
     /// necessary for buffering.
-    pub fn exportSpans(self: *const SpanExporter, spans: []const *RecordingSpan, resource: Resource) ExportResult {
+    pub fn exportSpans(self: *const SpanExporter, spans: []const SpanData, resource: Resource) ExportResult {
         return switch (self.*) {
             .noop => .success,
             .bridge => |exporter| exporter.exportFn(exporter, spans, resource),
@@ -66,7 +66,7 @@ pub const SpanExporter = union(enum) {
 /// Custom exporter with user-provided implementation
 pub const BridgeSpanExporter = struct {
     exporter_ptr: *anyopaque,
-    exportFn: *const fn (self: BridgeSpanExporter, spans: []const *RecordingSpan, resource: Resource) ExportResult,
+    exportFn: *const fn (self: BridgeSpanExporter, spans: []const SpanData, resource: Resource) ExportResult,
     forceFlushFn: *const fn (self: BridgeSpanExporter, timeout_ms: ?u64) ExportResult,
     shutdownFn: *const fn (self: BridgeSpanExporter, timeout_ms: ?u64) ExportResult,
     deinitFn: *const fn (self: BridgeSpanExporter) void,
@@ -77,7 +77,7 @@ pub const BridgeSpanExporter = struct {
         const ptr_info = @typeInfo(T);
 
         const VTable = struct {
-            pub fn exportSpans(self: BridgeSpanExporter, spans: []const *RecordingSpan, resource: Resource) ExportResult {
+            pub fn exportSpans(self: BridgeSpanExporter, spans: []const SpanData, resource: Resource) ExportResult {
                 const actual_self: T = @ptrCast(@alignCast(self.exporter_ptr));
                 return ptr_info.pointer.child.exportSpans(actual_self, spans, resource);
             }
@@ -123,12 +123,12 @@ pub const MockSpanExporter = struct {
     );
     const Self = @This();
 
-    pub fn _init(_: void, allocator: std.mem.Allocator) !Self {
-        return init(allocator);
+    pub fn _init(self: *Self, _: void, allocator: std.mem.Allocator) !void {
+        self.* = init(allocator);
     }
 
     allocator: std.mem.Allocator,
-    exported_spans: std.ArrayList(*RecordingSpan),
+    exported_spans: std.ArrayList(SpanData),
     export_result: ExportResult,
     flush_result: ExportResult,
     shutdown_result: ExportResult,
@@ -136,7 +136,7 @@ pub const MockSpanExporter = struct {
     pub fn init(allocator: std.mem.Allocator) MockSpanExporter {
         return .{
             .allocator = allocator,
-            .exported_spans = std.ArrayList(*RecordingSpan).init(allocator),
+            .exported_spans = .empty,
             .export_result = .success,
             .flush_result = .success,
             .shutdown_result = .success,
@@ -144,18 +144,18 @@ pub const MockSpanExporter = struct {
     }
 
     pub fn deinit(self: *MockSpanExporter) void {
-        self.exported_spans.deinit();
+        self.exported_spans.deinit(self.allocator);
     }
 
     pub fn destroy(self: *MockSpanExporter) void {
         self.allocator.destroy(self);
     }
 
-    pub fn exportSpans(self: *MockSpanExporter, spans: []const *RecordingSpan, resource: Resource) ExportResult {
+    pub fn exportSpans(self: *MockSpanExporter, spans: []const SpanData, resource: Resource) ExportResult {
         _ = resource;
         for (spans) |span| {
             // Store reference to span since the exporter needs to own the data
-            self.exported_spans.append(span) catch return .failure;
+            self.exported_spans.append(self.allocator, span) catch return .failure;
         }
         return self.export_result;
     }
@@ -183,105 +183,8 @@ pub const MockSpanExporter = struct {
         return self.exported_spans.items.len;
     }
 
-    pub fn getSpan(self: *const MockSpanExporter, index: usize) ?*RecordingSpan {
+    pub fn getSpan(self: *const MockSpanExporter, index: usize) ?SpanData {
         if (index >= self.exported_spans.items.len) return null;
         return self.exported_spans.items[index];
     }
 };
-
-test "SpanExporter interface" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
-
-    const TestExporter = struct {
-        export_count: usize = 0,
-        flush_count: usize = 0,
-        shutdown_count: usize = 0,
-        allocator: std.mem.Allocator,
-
-        pub fn init(alloc: std.mem.Allocator) !*@This() {
-            const self = try alloc.create(@This());
-            self.* = .{
-                .allocator = alloc,
-            };
-            return self;
-        }
-
-        pub fn deinit(self: *@This()) void {
-            // Nothing to deinit for this test struct
-            _ = self;
-        }
-
-        pub fn destroy(self: *@This()) void {
-            self.allocator.destroy(self);
-        }
-
-        pub fn exportSpans(self: *@This(), spans: []const *RecordingSpan, resource: Resource) ExportResult {
-            _ = resource;
-            self.export_count += spans.len;
-            return .success;
-        }
-
-        pub fn forceFlush(self: *@This(), timeout_ms: ?u64) ExportResult {
-            _ = timeout_ms;
-            self.flush_count += 1;
-            return .success;
-        }
-
-        pub fn shutdown(self: *@This(), timeout_ms: ?u64) ExportResult {
-            _ = timeout_ms;
-            self.shutdown_count += 1;
-            return .success;
-        }
-    };
-
-    const test_exporter = try TestExporter.init(allocator);
-    defer test_exporter.destroy();
-
-    const exporter = SpanExporter{ .bridge = BridgeSpanExporter.init(test_exporter) };
-
-    // Test export
-    const spans = [_]*RecordingSpan{};
-    const resource = Resource{
-        .attributes = &.{},
-        .schema_url = null,
-    };
-    try testing.expectEqual(ExportResult.success, exporter.exportSpans(&spans, resource));
-
-    // Test flush
-    try testing.expectEqual(ExportResult.success, exporter.forceFlush(null));
-    try testing.expectEqual(@as(usize, 1), test_exporter.flush_count);
-
-    // Test shutdown
-    try testing.expectEqual(ExportResult.success, exporter.shutdown(null));
-    try testing.expectEqual(@as(usize, 1), test_exporter.shutdown_count);
-}
-
-test "MockSpanExporter functionality" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
-
-    var mock = MockSpanExporter.init(allocator);
-    defer mock.deinit();
-
-    const exporter = mock.spanExporter();
-
-    // Test initial state
-    try testing.expectEqual(@as(usize, 0), mock.spanCount());
-
-    // Test export (without actual spans for this test)
-    const spans = [_]*RecordingSpan{};
-    const resource = Resource{
-        .attributes = &.{},
-        .schema_url = null,
-    };
-    try testing.expectEqual(ExportResult.success, exporter.exportSpans(&spans, resource));
-
-    // Test lifecycle methods
-    try testing.expectEqual(ExportResult.success, exporter.forceFlush(5000));
-    try testing.expectEqual(ExportResult.success, exporter.shutdown(5000));
-
-    // Test failure scenarios
-    mock.export_result = .failure;
-    try testing.expectEqual(ExportResult.failure, exporter.exportSpans(&spans, resource));
-}

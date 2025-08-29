@@ -32,10 +32,17 @@ pub fn main() !void {
     // Set up trace provider using the new setupGlobalProvider pattern
     // Note: setupGlobalProvider uses automatic resource detection
     // The custom resource above demonstrates resource building but won't be used
+    var stderr_buffer = [_]u8{0} ** 1024;
+    const stderr_fh = std.fs.File.stderr();
+    var stderr = stderr_fh.writer(&stderr_buffer);
     const concrete_provider = try otel_sdk.trace.setupGlobalProvider(
         allocator,
         .{otel_sdk.trace.BasicSpanProcessor.PipelineStep.init({})
-            .flowTo(otel_exporters.console.ConsoleTraceExporter.PipelineStep.init(.{}))},
+            .flowTo(otel_exporters.stream.SpanDataSink.PipelineStep.init(.{
+            .writer = &stderr.interface,
+            .flush_after_each = true,
+            .include_attributes = true,
+        }))},
     );
     defer {
         concrete_provider.deinit();
@@ -73,7 +80,7 @@ fn getTracer(setup: *TraceSetup, component: ServiceComponent) !otel_api.trace.Tr
         .payment_service => "payment-service",
     };
 
-    const scope = try otel_api.InstrumentationScope.initSimple(component_name, "1.0.0");
+    const scope = otel_api.InstrumentationScope{ .name = component_name, .version = "1.0.0" };
     return try setup.tracer_provider.getTracerWithScope(scope);
 }
 
@@ -81,8 +88,7 @@ fn runHttpRequestScenario(setup: *TraceSetup) !void {
     print("\n📡 HTTP Request Scenario\n", .{});
     print("-" ** 30 ++ "\n", .{});
 
-    const ctx = otel_api.Context.empty(setup.allocator);
-    defer ctx.deinit();
+    const ctx = &[_]otel_api.ContextKeyValue{};
 
     // API Gateway receives request
     var api_tracer = try getTracer(setup, .api_gateway);
@@ -100,7 +106,7 @@ fn runHttpRequestScenario(setup: *TraceSetup) !void {
     var gateway_span = gateway_result;
     defer gateway_span.deinit();
 
-    try gateway_span.addEvent(otel_api.trace.Event{
+    try gateway_span.addEvent(otel_api.trace.Span.Event{
         .name = "request.validation.started",
         .timestamp_ns = 0,
         .attributes = &[_]otel_api.common.AttributeKeyValue{
@@ -110,8 +116,8 @@ fn runHttpRequestScenario(setup: *TraceSetup) !void {
 
     // User service validates user
     var user_tracer = try getTracer(setup, .user_service);
-    const user_ctx = try otel_api.trace.trace_context.withActiveSpanContext(ctx, gateway_span.getSpanContext());
-    defer user_ctx.deinit();
+    const user_ctx = try otel_api.trace.trace_context.withActiveSpanContext(setup.allocator, ctx, gateway_span.getSpanContext());
+    defer otel_api.ContextKeyValue.deinitOwnedSlice(setup.allocator, user_ctx);
     const user_result = try user_tracer.startSpan("validate_user", .{
         .kind = .internal,
         .attributes = &[_]otel_api.common.AttributeKeyValue{
@@ -124,8 +130,8 @@ fn runHttpRequestScenario(setup: *TraceSetup) !void {
 
     // Database query in user service
     var db_tracer = try getTracer(setup, .database);
-    const db_ctx = try otel_api.trace.trace_context.withActiveSpanContext(ctx, user_span.getSpanContext());
-    defer db_ctx.deinit();
+    const db_ctx = try otel_api.trace.trace_context.withActiveSpanContext(setup.allocator, ctx, user_span.getSpanContext());
+    defer otel_api.ContextKeyValue.deinitOwnedSlice(setup.allocator, db_ctx);
     const db_result = try db_tracer.startSpan("SELECT users", .{
         .kind = .client,
         .attributes = &[_]otel_api.common.AttributeKeyValue{
@@ -141,17 +147,17 @@ fn runHttpRequestScenario(setup: *TraceSetup) !void {
     defer db_span.deinit();
 
     // Simulate database work
-    std.time.sleep(5 * std.time.ns_per_ms);
-    try db_span.setAttribute("db.rows_affected", .{ .int = 1 });
+    std.Thread.sleep(5 * std.time.ns_per_ms);
+    db_span.setAttribute(.{ .key = "db.rows_affected", .value = .{ .int = 1 } });
     db_span.end(null);
 
-    try user_span.setAttribute("user.status", .{ .string = "active" });
+    user_span.setAttribute(.{ .key = "user.status", .value = .{ .string = "active" } });
     user_span.end(null);
 
     // Order service processes the order
     var order_tracer = try getTracer(setup, .order_service);
-    const order_ctx = try otel_api.trace.trace_context.withActiveSpanContext(ctx, gateway_span.getSpanContext());
-    defer order_ctx.deinit();
+    const order_ctx = try otel_api.trace.trace_context.withActiveSpanContext(setup.allocator, ctx, gateway_span.getSpanContext());
+    defer otel_api.ContextKeyValue.deinitOwnedSlice(setup.allocator, order_ctx);
     const order_result = try order_tracer.startSpan("create_order", .{
         .kind = .internal,
         .attributes = &[_]otel_api.common.AttributeKeyValue{
@@ -163,7 +169,7 @@ fn runHttpRequestScenario(setup: *TraceSetup) !void {
     var order_span = order_result;
     defer order_span.deinit();
 
-    try order_span.addEvent(otel_api.trace.Event{
+    try order_span.addEvent(otel_api.trace.Span.Event{
         .name = "inventory.check",
         .timestamp_ns = 0,
         .attributes = &[_]otel_api.common.AttributeKeyValue{
@@ -171,13 +177,13 @@ fn runHttpRequestScenario(setup: *TraceSetup) !void {
         },
     });
 
-    try order_span.setAttribute("order.id", .{ .string = "order_789" });
+    order_span.setAttribute(.{ .key = "order.id", .value = .{ .string = "order_789" } });
     order_span.end(null);
 
     // Complete gateway span
-    try gateway_span.setAttribute("http.status_code", .{ .int = 201 });
-    try gateway_span.setAttribute("http.response.size", .{ .int = 156 });
-    try gateway_span.setStatus(otel_api.trace.Status.ok("Order created successfully"));
+    gateway_span.setAttribute(.{ .key = "http.status_code", .value = .{ .int = 201 } });
+    gateway_span.setAttribute(.{ .key = "http.response.size", .value = .{ .int = 156 } });
+    gateway_span.setStatus(.{ .code = .ok, .description = "Order created successfully" });
     gateway_span.end(null);
 
     print("✅ HTTP request scenario completed\n", .{});
@@ -187,8 +193,7 @@ fn runErrorHandlingScenario(setup: *TraceSetup) !void {
     print("\n❌ Error Handling Scenario\n", .{});
     print("-" ** 30 ++ "\n", .{});
 
-    const ctx = otel_api.Context.empty(setup.allocator);
-    defer ctx.deinit();
+    const ctx = &[_]otel_api.ContextKeyValue{};
 
     // Start a payment processing operation that will fail
     var payment_tracer = try getTracer(setup, .payment_service);
@@ -205,8 +210,8 @@ fn runErrorHandlingScenario(setup: *TraceSetup) !void {
     defer payment_span.deinit();
 
     // Card validation sub-operation
-    const validation_ctx = try otel_api.trace.trace_context.withActiveSpanContext(ctx, payment_span.getSpanContext());
-    defer validation_ctx.deinit();
+    const validation_ctx = try otel_api.trace.trace_context.withActiveSpanContext(setup.allocator, ctx, payment_span.getSpanContext());
+    defer otel_api.ContextKeyValue.deinitOwnedSlice(setup.allocator, validation_ctx);
     const validation_result = try payment_tracer.startSpan("validate_card", .{
         .kind = .internal,
         .attributes = &[_]otel_api.common.AttributeKeyValue{
@@ -218,7 +223,7 @@ fn runErrorHandlingScenario(setup: *TraceSetup) !void {
     defer validation_span.deinit();
 
     // Simulate validation failure
-    try validation_span.addEvent(otel_api.trace.Event{
+    try validation_span.addEvent(.{
         .name = "validation.failed",
         .timestamp_ns = 0,
         .attributes = &[_]otel_api.common.AttributeKeyValue{
@@ -227,22 +232,22 @@ fn runErrorHandlingScenario(setup: *TraceSetup) !void {
         },
     });
 
-    try validation_span.setStatus(otel_api.trace.Status.err("Card validation failed: expired"));
-    try validation_span.setAttribute("validation.result", .{ .string = "failed" });
+    validation_span.setStatus(.{ .code = .@"error", .description = "Card validation failed: expired" });
+    validation_span.setAttribute(.{ .key = "validation.result", .value = .{ .string = "failed" } });
     validation_span.end(null);
 
     // Parent span also fails
-    try payment_span.addEvent(otel_api.trace.Event{
+    try payment_span.addEvent(.{
         .name = "payment.declined",
         .timestamp_ns = 0,
-        .attributes = &[_]otel_api.common.AttributeKeyValue{
+        .attributes = &.{
             .{ .key = "decline.reason", .value = .{ .string = "expired_card" } },
             .{ .key = "retry.allowed", .value = .{ .bool = true } },
         },
     });
 
-    try payment_span.setAttribute("payment.status", .{ .string = "declined" });
-    try payment_span.setStatus(otel_api.trace.Status.err("Payment declined due to expired card"));
+    payment_span.setAttribute(.{ .key = "payment.status", .value = .{ .string = "declined" } });
+    payment_span.setStatus(.{ .code = .@"error", .description = "Payment declined due to expired card" });
     payment_span.end(null);
 
     print("✅ Error handling scenario completed\n", .{});
@@ -252,8 +257,7 @@ fn runMessageQueueScenario(setup: *TraceSetup) !void {
     print("\n📨 Message Queue Scenario\n", .{});
     print("-" ** 30 ++ "\n", .{});
 
-    const ctx = otel_api.Context.empty(setup.allocator);
-    defer ctx.deinit();
+    const ctx = &[_]otel_api.ContextKeyValue{};
 
     var mq_tracer = try getTracer(setup, .message_queue);
 
@@ -272,19 +276,19 @@ fn runMessageQueueScenario(setup: *TraceSetup) !void {
     var producer_span = producer_result;
     defer producer_span.deinit();
 
-    try producer_span.addEvent(otel_api.trace.Event{
+    try producer_span.addEvent(.{
         .name = "message.queued",
         .timestamp_ns = 0,
-        .attributes = &[_]otel_api.common.AttributeKeyValue{
+        .attributes = &.{
             .{ .key = "serialization.format", .value = .{ .string = "json" } },
         },
     });
 
-    try producer_span.setAttribute("messaging.message.envelope.size", .{ .int = 587 });
+    producer_span.setAttribute(.{ .key = "messaging.message.envelope.size", .value = .{ .int = 587 } });
     producer_span.end(null);
 
     // Simulate message transmission delay
-    std.time.sleep(2 * std.time.ns_per_ms);
+    std.Thread.sleep(2 * std.time.ns_per_ms);
 
     // Consumer: Process message from queue
     const consumer_result = try mq_tracer.startSpan("order.created", .{
@@ -301,8 +305,8 @@ fn runMessageQueueScenario(setup: *TraceSetup) !void {
     defer consumer_span.deinit();
 
     // Message processing
-    const processing_ctx = try otel_api.trace.trace_context.withActiveSpanContext(ctx, consumer_span.getSpanContext());
-    defer processing_ctx.deinit();
+    const processing_ctx = try otel_api.trace.trace_context.withActiveSpanContext(setup.allocator, ctx, consumer_span.getSpanContext());
+    defer otel_api.ContextKeyValue.deinitOwnedSlice(setup.allocator, processing_ctx);
     const processing_result = try mq_tracer.startSpan("process_order_event", .{
         .kind = .internal,
         .attributes = &[_]otel_api.common.AttributeKeyValue{
@@ -313,16 +317,16 @@ fn runMessageQueueScenario(setup: *TraceSetup) !void {
     var processing_span = processing_result;
     defer processing_span.deinit();
 
-    try processing_span.addEvent(otel_api.trace.Event{
+    try processing_span.addEvent(.{
         .name = "order.processing.started",
         .timestamp_ns = 0,
-        .attributes = &[_]otel_api.common.AttributeKeyValue{
+        .attributes = &.{
             .{ .key = "inventory.change", .value = .{ .int = -3 } },
         },
     });
 
     processing_span.end(null);
-    try consumer_span.setAttribute("processing.result", .{ .string = "success" });
+    consumer_span.setAttribute(.{ .key = "processing.result", .value = .{ .string = "success" } });
     consumer_span.end(null);
 
     print("✅ Message queue scenario completed\n", .{});
@@ -332,14 +336,13 @@ fn runConcurrentOperationsScenario(allocator: std.mem.Allocator, setup: *TraceSe
     print("\n🔄 Concurrent Operations Scenario\n", .{});
     print("-" ** 30 ++ "\n", .{});
 
-    const ctx = otel_api.Context.empty(setup.allocator);
-    defer ctx.deinit();
+    const ctx = &[_]otel_api.ContextKeyValue{};
 
     // Simulate concurrent database operations
     var api_tracer = try getTracer(setup, .api_gateway);
     const batch_result = try api_tracer.startSpan("batch_user_lookup", .{
         .kind = .server,
-        .attributes = &[_]otel_api.common.AttributeKeyValue{
+        .attributes = &.{
             .{ .key = "batch.size", .value = .{ .int = 3 } },
             .{ .key = "batch.type", .value = .{ .string = "user_lookup" } },
         },
@@ -355,11 +358,11 @@ fn runConcurrentOperationsScenario(allocator: std.mem.Allocator, setup: *TraceSe
         const query_name = try std.fmt.allocPrint(allocator, "SELECT user {s}", .{user_id});
         defer allocator.free(query_name);
 
-        const query_ctx = try otel_api.trace.trace_context.withActiveSpanContext(ctx, batch_span.getSpanContext());
-        defer query_ctx.deinit();
+        const query_ctx = try otel_api.trace.trace_context.withActiveSpanContext(setup.allocator, ctx, batch_span.getSpanContext());
+        defer otel_api.ContextKeyValue.deinitOwnedSlice(setup.allocator, query_ctx);
         const db_result = try db_tracer.startSpan(query_name, .{
             .kind = .client,
-            .attributes = &[_]otel_api.common.AttributeKeyValue{
+            .attributes = &.{
                 .{ .key = "db.system", .value = .{ .string = "postgresql" } },
                 .{ .key = "db.statement", .value = .{ .string = "SELECT * FROM users WHERE id = $1" } },
                 .{ .key = "user.id", .value = .{ .string = user_id } },
@@ -371,15 +374,15 @@ fn runConcurrentOperationsScenario(allocator: std.mem.Allocator, setup: *TraceSe
 
         // Simulate varying query times
         const sleep_time = (i + 1) * 2 * std.time.ns_per_ms;
-        std.time.sleep(sleep_time);
+        std.Thread.sleep(sleep_time);
 
-        try db_span.setAttribute("db.rows_affected", .{ .int = 1 });
-        try db_span.setAttribute("query.duration_ms", .{ .int = @intCast((i + 1) * 2) });
+        db_span.setAttribute(.{ .key = "db.rows_affected", .value = .{ .int = 1 } });
+        db_span.setAttribute(.{ .key = "query.duration_ms", .value = .{ .int = @intCast((i + 1) * 2) } });
         db_span.end(null);
     }
 
-    try batch_span.setAttribute("batch.processed", .{ .int = user_ids.len });
-    try batch_span.setAttribute("batch.status", .{ .string = "completed" });
+    batch_span.setAttribute(.{ .key = "batch.processed", .value = .{ .int = user_ids.len } });
+    batch_span.setAttribute(.{ .key = "batch.status", .value = .{ .string = "completed" } });
     batch_span.end(null);
 
     print("✅ Concurrent operations scenario completed\n", .{});
@@ -389,8 +392,7 @@ fn runPerformanceTestScenario(setup: *TraceSetup) !void {
     print("\n⚡ Performance Test Scenario\n", .{});
     print("-" ** 30 ++ "\n", .{});
 
-    const ctx = otel_api.Context.empty(setup.allocator);
-    defer ctx.deinit();
+    const ctx = &[_]otel_api.ContextKeyValue{};
 
     var api_tracer = try getTracer(setup, .api_gateway);
     const perf_result = try api_tracer.startSpan("performance_test", .{
@@ -409,8 +411,8 @@ fn runPerformanceTestScenario(setup: *TraceSetup) !void {
     var i: i32 = 0;
     while (i < 10) : (i += 1) {
         const span_name = "fast_operation";
-        const fast_ctx = try otel_api.trace.trace_context.withActiveSpanContext(ctx, perf_span.getSpanContext());
-        defer fast_ctx.deinit();
+        const fast_ctx = try otel_api.trace.trace_context.withActiveSpanContext(setup.allocator, ctx, perf_span.getSpanContext());
+        defer otel_api.ContextKeyValue.deinitOwnedSlice(setup.allocator, fast_ctx);
         const fast_result = try api_tracer.startSpan(span_name, .{
             .kind = .internal,
             .attributes = &[_]otel_api.common.AttributeKeyValue{
@@ -422,7 +424,7 @@ fn runPerformanceTestScenario(setup: *TraceSetup) !void {
         defer fast_span.deinit();
 
         // Minimal work
-        try fast_span.setAttribute("work.completed", .{ .bool = true });
+        fast_span.setAttribute(.{ .key = "work.completed", .value = .{ .bool = true } });
         fast_span.end(null);
     }
 
@@ -430,12 +432,12 @@ fn runPerformanceTestScenario(setup: *TraceSetup) !void {
     const duration_ns = end_time - start_time;
     const duration_ms = @as(f64, @floatFromInt(duration_ns)) / 1_000_000.0;
 
-    try perf_span.setAttribute("test.duration_ms", .{ .float = duration_ms });
-    try perf_span.setAttribute("test.avg_span_creation_ns", .{ .int = @intCast(@divTrunc(duration_ns, 10)) });
-    try perf_span.addEvent(otel_api.trace.Event{
+    perf_span.setAttribute(.{ .key = "test.duration_ms", .value = .{ .float = duration_ms } });
+    perf_span.setAttribute(.{ .key = "test.avg_span_creation_ns", .value = .{ .int = @intCast(@divTrunc(duration_ns, 10)) } });
+    try perf_span.addEvent(.{
         .name = "performance.measurement.completed",
         .timestamp_ns = 0,
-        .attributes = &[_]otel_api.common.AttributeKeyValue{
+        .attributes = &.{
             .{ .key = "measurement.accuracy", .value = .{ .string = "nanosecond" } },
         },
     });

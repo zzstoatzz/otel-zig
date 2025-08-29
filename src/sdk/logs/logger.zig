@@ -1,32 +1,31 @@
 const std = @import("std");
 const api = @import("otel-api");
 const sdk = struct {
-    const LogRecord = @import("log_record.zig").LogRecord;
-    const LoggerProvider = @import("logger_provider.zig").LoggerProvider;
+    const logs = struct {
+        const LogRecord = @import("log_record.zig").LogRecord;
+        const LoggerProvider = @import("logger_provider.zig").LoggerProvider;
+    };
 };
 
 const default_severity_when_unknown: api.logs.Severity = .debug;
 
 /// Basic logger implementation with configurable severity and handler
 pub const Logger = struct {
-    allocator: std.mem.Allocator,
-    min_severity: std.atomic.Value(api.logs.Severity), // TODO: replace with an atomic.
+    provider: *sdk.logs.LoggerProvider, // non-owning
+    scope: api.common.InstrumentationScope, // non-owning
     is_shutdown: std.atomic.Value(bool),
-    scope: api.common.InstrumentationScope, // Unowned instance.
-    provider: *sdk.LoggerProvider,
+    min_severity: std.atomic.Value(api.logs.Severity),
 
     pub fn init(
-        allocator: std.mem.Allocator,
-        min_severity: api.logs.Severity,
+        provider_ptr: *sdk.logs.LoggerProvider,
         instrument_scope: api.common.InstrumentationScope,
-        provider_ptr: *sdk.LoggerProvider,
+        min_severity: api.logs.Severity,
     ) Logger {
         return .{
-            .allocator = allocator,
-            .min_severity = .init(min_severity),
-            .is_shutdown = .init(false),
-            .scope = instrument_scope,
             .provider = provider_ptr,
+            .scope = instrument_scope,
+            .is_shutdown = .init(false),
+            .min_severity = .init(min_severity),
         };
     }
 
@@ -40,9 +39,9 @@ pub const Logger = struct {
 
     pub inline fn emitLogRecord(
         self: *Logger,
-        ctx: api.Context,
+        ctx: []const api.ContextKeyValue,
         severity: ?api.logs.Severity,
-        body: ?api.AttributeValue,
+        body: ?api.common.AttributeValue,
         attributes: ?[]const api.AttributeKeyValue,
         timestamp_ns: ?i64,
         observed_timestamp_ns: ?i64,
@@ -78,8 +77,13 @@ pub const Logger = struct {
         if (self.enabled(ctx, record_severity)) {
             @branchHint(branch_hint);
 
+            const span_context = api.trace.trace_context.getActiveSpanContext(ctx);
+            const tid = validated_trace_id orelse if (span_context) |span_ctx| span_ctx.trace_id else null;
+            const sid = validated_span_id orelse if (span_context) |span_ctx| span_ctx.span_id else null;
+            const tf = validated_flags orelse if (span_context) |span_ctx| span_ctx.trace_flags else null;
+
             // Construct LogRecord from individual parameters
-            const record = sdk.LogRecord{
+            const record = sdk.logs.LogRecord{
                 .timestamp_ns = timestamp_ns,
                 .observed_timestamp_ns = observed_timestamp_ns,
                 .severity_number = record_severity,
@@ -87,9 +91,9 @@ pub const Logger = struct {
                 .body = validated_body,
                 .event_name = validated_event_name,
                 .attributes = validated_attributes orelse &[_]api.AttributeKeyValue{},
-                .trace_id = validated_trace_id,
-                .span_id = validated_span_id,
-                .flags = validated_flags,
+                .trace_id = tid,
+                .span_id = sid,
+                .flags = tf,
                 .instrumentation_scope = self.scope,
             };
 
@@ -103,7 +107,7 @@ pub const Logger = struct {
         }
     }
 
-    pub inline fn enabled(self: *const Logger, ctx: api.Context, severity: ?api.logs.Severity) bool {
+    pub inline fn enabled(self: *const Logger, ctx: []const api.ContextKeyValue, severity: ?api.logs.Severity) bool {
         if (self.is_shutdown.load(.unordered)) {
             return false;
         }
@@ -135,7 +139,7 @@ pub const Logger = struct {
 
     pub inline fn enabledWithEvent(
         self: *const Logger,
-        ctx: api.Context,
+        ctx: []const api.ContextKeyValue,
         severity: ?api.logs.Severity,
         event_name: []const u8,
     ) bool {

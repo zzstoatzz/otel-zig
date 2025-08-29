@@ -1,25 +1,3 @@
-/// Result of an export operation
-pub const ExportResult = enum {
-    success,
-    failure,
-
-    pub fn isSuccess(self: ExportResult) bool {
-        return self == .success;
-    }
-
-    pub fn isFailure(self: ExportResult) bool {
-        return self == .failure;
-    }
-
-    /// Convert ExportResult to ProcessResult
-    pub fn asProcessResult(self: ExportResult) ProcessResult {
-        return switch (self) {
-            .success => .success,
-            .failure => .failure,
-        };
-    }
-};
-
 pub const ProcessResult = enum {
     success,
     failure,
@@ -49,5 +27,38 @@ pub const FlushResult = enum {
 
     pub fn isTimeout(self: FlushResult) bool {
         return self == .timeout;
+    }
+
+    /// Convert ExportResult to ProcessResult
+    pub inline fn asProcessResult(self: FlushResult) ProcessResult {
+        return switch (self) {
+            .success => .success,
+            .failure => .failure,
+            .timeout => .timeout,
+        };
+    }
+};
+
+/// Result of an export operation
+pub const ExportResult = enum {
+    success,
+    failure,
+    timeout,
+
+    pub fn isSuccess(self: ExportResult) bool {
+        return self == .success;
+    }
+
+    pub fn isFailure(self: ExportResult) bool {
+        return self == .failure;
+    }
+
+    /// Convert ExportResult to ProcessResult
+    pub fn asFlushResult(self: ExportResult) FlushResult {
+        return switch (self) {
+            .success => .success,
+            .failure => .failure,
+            .timeout => .timeout,
+        };
     }
 };

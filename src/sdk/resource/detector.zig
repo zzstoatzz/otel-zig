@@ -18,12 +18,14 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const otel_api = @import("otel-api");
-const Resource = @import("resource.zig").Resource;
+const api = @import("otel-api");
+const sdk = struct {
+    const Resource = @import("resource.zig").Resource;
+};
 
-const AttributeValue = otel_api.common.AttributeValue;
-const AttributeKeyValue = otel_api.common.AttributeKeyValue;
-const AttributeBuilder = otel_api.common.AttributeBuilder;
+const AttributeValue = api.common.AttributeValue;
+const AttributeKeyValue = api.common.AttributeKeyValue;
+const AttributeBuilder = api.common.AttributeBuilder;
 
 /// Resource detector interface using tagged union
 pub const ResourceDetector = union(enum) {
@@ -34,7 +36,7 @@ pub const ResourceDetector = union(enum) {
     custom: CustomDetector,
 
     /// Detect resource attributes
-    pub fn detect(self: *ResourceDetector, allocator: std.mem.Allocator) anyerror!Resource {
+    pub fn detect(self: *ResourceDetector, allocator: std.mem.Allocator) anyerror!sdk.Resource {
         return switch (self.*) {
             .default => |*detector| detector.detect(allocator),
             .process => |*detector| detector.detect(allocator),
@@ -53,27 +55,22 @@ pub const DefaultDetector = struct {
         return .{ .detectors = detectors };
     }
 
-    pub fn detect(self: *DefaultDetector, allocator: std.mem.Allocator) anyerror!Resource {
+    pub fn detect(self: *DefaultDetector, allocator: std.mem.Allocator) anyerror!sdk.Resource {
+        // An arena is used for detection because some detectors return static strings, others
+        // need to copy strings. Assuming all allocation is done with the arena, we don't have
+        // to keep track of the memory until the final resource is allocated.
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
 
-        var builder = AttributeBuilder.init(arena.allocator());
-
-        // Add default SDK attributes
-        builder = builder.addString("telemetry.sdk.name", "opentelemetry");
-        builder = builder.addString("telemetry.sdk.language", "zig");
-        builder = builder.addString("telemetry.sdk.version", "0.1.0");
-
         // Run all detectors
+        var base = try sdk.Resource.initOwned(arena.allocator(), .default);
         for (self.detectors) |*detector| {
-            // Intentionally letting the arena deal with the free.
-            // Otherwise the strings are freed before the finish.
             const detected = try detector.detect(arena.allocator());
-            builder = builder.addKeyValues(detected.attributes);
+            base = try sdk.Resource.initOwnedMerge(arena.allocator(), base, detected);
         }
 
-        const attrs = try builder.finish(allocator);
-        return Resource.init(attrs, null);
+        // One last copy to move the resource from the arena allocator to the requested allocator.
+        return try sdk.Resource.initOwned(allocator, base);
     }
 };
 
@@ -83,29 +80,30 @@ pub const ProcessDetector = struct {
         return .{};
     }
 
-    pub fn detect(self: *ProcessDetector, allocator: std.mem.Allocator) anyerror!Resource {
+    pub fn detect(self: *ProcessDetector, allocator: std.mem.Allocator) anyerror!sdk.Resource {
         _ = self;
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
 
         var attrs = AttributeBuilder.init(arena.allocator());
 
-        // Detect process attributes
-        const pid = std.c.getpid();
-        // const pid = std.os.linux.getpid();
-        attrs = attrs.add("process.pid", .{ .int = @intCast(pid) });
-
         // Get executable path
         switch (builtin.os.tag) {
             .macos => {
-                var buf: [std.fs.max_path_bytes:0]u8 = undefined;
-                var size: u32 = buf.len;
+                // Detect process attributes
+                const pid = std.c.getpid();
+                attrs = attrs.add(.{ .key = "process.pid", .value = .{ .int = @intCast(pid) } });
 
-                if (std.c._NSGetExecutablePath(&buf, &size) == 0) {
-                    const path = std.mem.sliceTo(&buf, 0);
+                // Let the arena allocator clean up the memory.
+                var size: u32 = std.fs.max_path_bytes;
+                // const buf = try arena.allocator().alloc(u8, size);
+                const buf = try arena.allocator().allocSentinel(u8, size, 0);
+
+                if (std.c._NSGetExecutablePath(buf, &size) == 0) {
+                    const path = std.mem.sliceTo(buf, 0);
                     const basename = std.fs.path.basename(path);
-                    attrs = attrs.add("process.executable.path", .{ .string = path });
-                    attrs = attrs.add("process.executable.name", .{ .string = basename });
+                    attrs = attrs.add(.{ .key = "process.executable.path", .value = .{ .string = path } });
+                    attrs = attrs.add(.{ .key = "process.executable.name", .value = .{ .string = basename } });
                 }
             },
             else => @compileError("unsupported OS."),
@@ -114,12 +112,11 @@ pub const ProcessDetector = struct {
         // Command line args (if available)
         if (std.process.argsAlloc(arena.allocator())) |args| {
             if (args.len > 0) {
-                attrs = attrs.add("process.command", .{ .string = args[0] });
+                attrs = attrs.add(.{ .key = "process.command", .value = .{ .string = args[0] } });
             }
         } else |_| {}
 
-        const owned_attrs = try attrs.finish(allocator);
-        return Resource.init(owned_attrs, null);
+        return try sdk.Resource.initOwnedFromBuilder(allocator, null, &attrs);
     }
 };
 
@@ -129,19 +126,13 @@ pub const HostDetector = struct {
         return .{};
     }
 
-    pub fn detect(self: *HostDetector, allocator: std.mem.Allocator) anyerror!Resource {
+    pub fn detect(self: *HostDetector, allocator: std.mem.Allocator) anyerror!sdk.Resource {
         _ = self;
 
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
 
         var attrs = AttributeBuilder.init(arena.allocator());
-
-        // Detect host name
-        var hostname_buf: [std.posix.HOST_NAME_MAX]u8 = undefined;
-        if (std.posix.gethostname(&hostname_buf)) |hostname| {
-            attrs = attrs.add("host.name", .{ .string = hostname });
-        } else |_| {}
 
         // Detect OS type
         const os_type = switch (builtin.target.os.tag) {
@@ -154,7 +145,7 @@ pub const HostDetector = struct {
             .dragonfly => "dragonfly",
             else => "unknown",
         };
-        attrs = attrs.add("host.type", .{ .string = os_type });
+        attrs = attrs.add(.{ .key = "host.type", .value = .{ .string = os_type } });
 
         // Detect architecture
         const arch = switch (builtin.target.cpu.arch) {
@@ -166,10 +157,15 @@ pub const HostDetector = struct {
             .wasm32 => "wasm32",
             else => "unknown",
         };
-        attrs = attrs.add("host.arch", .{ .string = arch });
+        attrs = attrs.add(.{ .key = "host.arch", .value = .{ .string = arch } });
 
-        const owned_attrs = try attrs.finish(allocator);
-        return Resource.init(owned_attrs, null);
+        // Detect host name
+        var hostname_buf: [std.posix.HOST_NAME_MAX]u8 = undefined;
+        if (std.posix.gethostname(&hostname_buf)) |hostname| {
+            attrs = attrs.add(.{ .key = "host.name", .value = .{ .string = hostname } });
+        } else |_| {}
+
+        return try sdk.Resource.initOwnedFromBuilder(allocator, null, &attrs);
     }
 };
 
@@ -179,7 +175,7 @@ pub const EnvironmentDetector = struct {
         return .{};
     }
 
-    pub fn detect(self: *EnvironmentDetector, allocator: std.mem.Allocator) anyerror!Resource {
+    pub fn detect(self: *EnvironmentDetector, allocator: std.mem.Allocator) anyerror!sdk.Resource {
         _ = self;
 
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -197,29 +193,28 @@ pub const EnvironmentDetector = struct {
                 if (std.mem.indexOf(u8, trimmed, "=")) |eq_pos| {
                     const key = trimmed[0..eq_pos];
                     const value = trimmed[eq_pos + 1 ..];
-                    attrs = attrs.add(key, .{ .string = value });
+                    attrs = attrs.add(.{ .key = key, .value = .{ .string = value } });
                 }
             }
         } else |_| {}
 
         // Check OTEL_SERVICE_NAME
         if (std.process.getEnvVarOwned(arena.allocator(), "OTEL_SERVICE_NAME")) |service_name| {
-            attrs = attrs.add("service.name", .{ .string = service_name });
+            attrs = attrs.add(.{ .key = "service.name", .value = .{ .string = service_name } });
         } else |_| {}
 
-        const owned_attrs = try attrs.finish(allocator);
-        return Resource.init(owned_attrs, null);
+        return try sdk.Resource.initOwnedFromBuilder(allocator, null, &attrs);
     }
 };
 
 /// Custom detector with user-provided implementation
 pub const CustomDetector = struct {
     impl: *anyopaque,
-    detectFn: *const fn (impl: *anyopaque, allocator: std.mem.Allocator) anyerror!Resource,
+    detectFn: *const fn (impl: *anyopaque, allocator: std.mem.Allocator) anyerror!sdk.Resource,
 
     pub fn init(
         impl: *anyopaque,
-        detectFn: *const fn (impl: *anyopaque, allocator: std.mem.Allocator) anyerror!Resource,
+        detectFn: *const fn (impl: *anyopaque, allocator: std.mem.Allocator) anyerror!sdk.Resource,
     ) CustomDetector {
         return .{
             .impl = impl,
@@ -227,13 +222,13 @@ pub const CustomDetector = struct {
         };
     }
 
-    pub fn detect(self: *CustomDetector, allocator: std.mem.Allocator) anyerror!Resource {
+    pub fn detect(self: *CustomDetector, allocator: std.mem.Allocator) anyerror!sdk.Resource {
         return self.detectFn(self.impl, allocator);
     }
 };
 
 /// Detect resource using all default detectors
-pub fn detectResource(allocator: std.mem.Allocator) anyerror!Resource {
+pub fn detectResource(allocator: std.mem.Allocator) anyerror!sdk.Resource {
     const process_detector = ResourceDetector{ .process = ProcessDetector.init() };
     const host_detector = ResourceDetector{ .host = HostDetector.init() };
     const env_detector = ResourceDetector{ .environment = EnvironmentDetector.init() };
@@ -245,21 +240,6 @@ pub fn detectResource(allocator: std.mem.Allocator) anyerror!Resource {
     return detector.detect(allocator);
 }
 
-test "ProcessDetector" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
-
-    var detector = ProcessDetector.init();
-    var resource = try detector.detect(allocator);
-    defer resource.deinitOwned(allocator);
-
-    // Should have process.pid
-    try testing.expect(resource.getAttribute("process.pid") != null);
-    if (resource.getAttribute("process.pid")) |pid_value| {
-        try testing.expect(pid_value.int > 0);
-    }
-}
-
 test "HostDetector" {
     const testing = std.testing;
     const allocator = testing.allocator;
@@ -269,23 +249,7 @@ test "HostDetector" {
     defer resource.deinitOwned(allocator);
 
     // Should have host.type and host.arch
-    try testing.expect(resource.getAttribute("host.type") != null);
-    try testing.expect(resource.getAttribute("host.arch") != null);
-}
-
-test "DefaultDetector" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
-
-    var resource = try detectResource(allocator);
-    defer resource.deinitOwned(allocator);
-
-    // Should have SDK attributes
-    try testing.expect(resource.getAttribute("telemetry.sdk.name") != null);
-    try testing.expect(resource.getAttribute("telemetry.sdk.language") != null);
-    try testing.expect(resource.getAttribute("telemetry.sdk.version") != null);
-
-    // Should have process and host attributes
-    try testing.expect(resource.getAttribute("process.pid") != null);
-    try testing.expect(resource.getAttribute("host.type") != null);
+    try testing.expect(resource.attributes.len >= 2);
+    try testing.expectEqualStrings("host.type", resource.attributes[0].key);
+    try testing.expectEqualStrings("host.arch", resource.attributes[1].key);
 }

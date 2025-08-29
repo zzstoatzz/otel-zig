@@ -27,11 +27,10 @@ pub const I64HistogramData = data_zig.I64HistogramData;
 pub const F64HistogramData = data_zig.F64HistogramData;
 
 // View system exports
-const view_zig = @import("view.zig");
-pub const View = view_zig.View;
-pub const ViewApplication = view_zig.ViewApplication;
-pub const InstrumentSelector = view_zig.InstrumentSelector;
-pub const AggregationType = view_zig.AggregationType;
+pub const View = @import("view.zig");
+
+// aggregation types.
+pub const AggregationType = @import("aggregations.zig").AggregationType;
 
 // Exporter types.
 const exporter_zig = @import("exporter.zig");

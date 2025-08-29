@@ -6,7 +6,7 @@
 //! ## Components
 //! - `RecordingSpan` - Concrete span implementation with full functionality
 //! - `StandardTracer` - Concrete tracer that creates spans
-//! - `BasicTracerProvider` - Provider with configuration and span processors
+//! - `TracerProvider` - Provider with configuration and span processors
 //! - `SpanProcessor` - Interface for processing spans
 //! - `SimpleSpanProcessor` - Immediately exports each span
 //! - `SpanExporter` - Interface for exporting spans
@@ -32,8 +32,9 @@ const otel_api = @import("otel-api");
 
 // Core types
 pub const RecordingSpan = @import("data.zig").RecordingSpan;
+pub const SpanData = @import("data.zig").SpanData;
 pub const StandardTracer = @import("tracer.zig").StandardTracer;
-pub const BasicTracerProvider = @import("basic_provider.zig").BasicTracerProvider;
+pub const TracerProvider = @import("tracer_provider.zig").TracerProvider;
 
 // Processor types
 pub const SpanProcessor = @import("processor.zig").SpanProcessor;

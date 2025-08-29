@@ -2,7 +2,16 @@
 
 const std = @import("std");
 
+pub fn buildPipeline(provider: anytype) PipelineBuilder(@TypeOf(provider)) {
+    return .init(provider);
+}
+
 pub fn PipelineBuilder(comptime ProviderT: type) type {
+    const ProviderContainer = switch (@typeInfo(ProviderT)) {
+        .pointer => |ptr_info| ptr_info.child,
+        else => ProviderT,
+    };
+    const registerProcessor = if (@hasDecl(ProviderContainer, "registerReader")) ProviderContainer.registerReader else ProviderContainer.registerProcessor;
     return union(enum) {
         const Self = @This();
         const ProviderType = ProviderT;
@@ -16,7 +25,15 @@ pub fn PipelineBuilder(comptime ProviderT: type) type {
             };
         }
 
+        /// Connect a processor / reader to the provider.
         pub fn with(self: Self, link: anytype) Self {
+            return self.withCaptured(link, null);
+        }
+
+        /// Connect a processor / reader and capture a pointer to the concrete type.
+        ///
+        /// This is meant for testing, to allow interacting with the processor to create specific scenarios.
+        pub fn withCaptured(self: Self, link: anytype, ptr: ?**@TypeOf(link).ConcreteType) Self {
             switch (self) {
                 .provider => |provider| {
                     const LinkType = @TypeOf(link);
@@ -24,11 +41,15 @@ pub fn PipelineBuilder(comptime ProviderT: type) type {
                     const processor_raw = link.make(provider.allocator) catch |e| return .{ .invalid = e };
                     const processor_interface = LinkType.convertFn(processor_raw);
 
-                    provider.registerProcessor(processor_interface) catch |e| {
+                    registerProcessor(provider, processor_interface) catch |e| {
                         if (@hasDecl(LinkType.ConcreteType, "deinit")) processor_raw.deinit();
                         provider.allocator.destroy(processor_raw);
                         return .{ .invalid = e };
                     };
+
+                    if (ptr) |captured| {
+                        captured.* = processor_raw;
+                    }
 
                     return .{ .provider = provider };
                 },
@@ -36,6 +57,7 @@ pub fn PipelineBuilder(comptime ProviderT: type) type {
             }
         }
 
+        /// executed all the `with*` links and capture and pointers needed.
         pub fn done(self: Self) !void {
             return switch (self) {
                 .provider => {},

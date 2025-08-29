@@ -8,6 +8,10 @@
 const std = @import("std");
 const api = @import("otel-api");
 
+const sdk = struct {
+    const Resource = @import("../resource/resource.zig").Resource;
+};
+
 /// LogRecord represents a log entry according to the OpenTelemetry specification.
 /// This is a non-owning structure - all slices reference external memory.
 ///
@@ -38,7 +42,7 @@ pub const LogRecord = struct {
     severity_text: ?[]const u8 = null,
 
     /// The log message body
-    body: ?api.AttributeValue = null,
+    body: ?api.common.AttributeValue = null,
 
     /// Name that identifies the class/type of the event
     /// A log record with a non-empty event name is an Event according to OpenTelemetry spec
@@ -60,43 +64,13 @@ pub const LogRecord = struct {
     instrumentation_scope: ?api.InstrumentationScope = null,
 
     /// Check if this log record is associated with a trace
-    pub fn hasTraceContext(self: *const LogRecord) bool {
+    pub inline fn hasTraceContext(self: *const LogRecord) bool {
         return self.trace_id != null and self.span_id != null;
     }
 
     /// Get the severity number as an integer
-    pub fn severityNumber(self: *const LogRecord) i32 {
+    pub inline fn severityNumber(self: *const LogRecord) i32 {
         return @intFromEnum(self.severity_number);
-    }
-
-    /// Format trace ID as hex string (requires a buffer of at least 32 bytes)
-    pub fn formatTraceId(self: *const LogRecord, buf: []u8) ![]const u8 {
-        if (self.trace_id) |tid| {
-            if (buf.len < 32) return error.BufferTooSmall;
-            return std.fmt.bufPrint(buf, "{}", .{tid});
-        }
-        return "";
-    }
-
-    /// Format span ID as hex string (requires a buffer of at least 16 bytes)
-    pub fn formatSpanId(self: *const LogRecord, buf: []u8) ![]const u8 {
-        if (self.span_id) |sid| {
-            if (buf.len < 16) return error.BufferTooSmall;
-            return std.fmt.bufPrint(buf, "{}", .{sid});
-        }
-        return "";
-    }
-
-    /// Get the value of an attribute, or null if one doesn't exist.
-    ///
-    /// This interface isn't meant for frequent random access.
-    pub fn getAttribute(self: *const LogRecord, key: []const u8) ?api.AttributeValue {
-        for (self.attributes) |attr| {
-            if (std.mem.eql(u8, attr.key, key)) {
-                return attr.value;
-            }
-        }
-        return null;
     }
 
     /// Deep copy a LogRecord. Must call `deinitOwned` on the return instance.
@@ -107,10 +81,6 @@ pub const LogRecord = struct {
             .timestamp_ns = record.timestamp_ns,
             .observed_timestamp_ns = record.observed_timestamp_ns,
             .severity_number = record.severity_number,
-            .severity_text = null,
-            .body = null,
-            .event_name = null,
-            .attributes = &[_]api.AttributeKeyValue{},
             .trace_id = record.trace_id,
             .span_id = record.span_id,
             .flags = record.flags,
@@ -133,9 +103,7 @@ pub const LogRecord = struct {
         }
 
         // Clone attributes
-        if (record.attributes.len > 0) {
-            owned.attributes = try api.AttributeKeyValue.initOwnedSlice(allocator, record.attributes);
-        }
+        owned.attributes = try api.AttributeKeyValue.initOwnedSlice(allocator, record.attributes);
 
         return owned;
     }
@@ -151,9 +119,7 @@ pub const LogRecord = struct {
         if (self.body) |body| {
             body.deinitOwned(allocator);
         }
-        if (self.attributes.len > 0) {
-            api.AttributeKeyValue.deinitOwnedSlice(allocator, self.attributes);
-        }
+        api.AttributeKeyValue.deinitOwnedSlice(allocator, self.attributes);
     }
 };
 
@@ -163,8 +129,8 @@ test "LogRecord initOwned and deinitOwned" {
 
     // Create attributes for testing
     const attributes = try api.common.AttributeBuilder.init(allocator)
-        .addString("test.key", "test.value")
-        .addInt("count", 42)
+        .add(.{ .key = "test.key", .value = .{ .string = "test.value" } })
+        .add(.{ .key = "count", .value = .{ .int = 42 } })
         .finish(allocator);
     defer api.AttributeKeyValue.deinitOwnedSlice(allocator, attributes);
 
@@ -200,6 +166,7 @@ test "LogRecord initOwned and deinitOwned" {
     try testing.expectEqualStrings("Test message", owned.body.?.string);
 
     // Verify attributes are deep copied
+    try testing.expect(original.attributes.ptr != owned.attributes.ptr);
     try testing.expectEqual(@as(usize, 2), owned.attributes.len);
     try testing.expectEqualStrings("test.key", owned.attributes[0].key);
     try testing.expectEqualStrings("test.value", owned.attributes[0].value.string);

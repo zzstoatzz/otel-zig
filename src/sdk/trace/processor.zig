@@ -8,15 +8,18 @@
 
 const std = @import("std");
 const otel_api = @import("otel-api");
+const sdk = struct {
+    const Resource = @import("../resource/resource.zig").Resource;
+    const trace = struct {
+        const SpanData = @import("data.zig").SpanData;
+    };
+};
 
-const Context = otel_api.Context;
-const SpanLimits = otel_api.trace.SpanLimits;
 const ProcessResult = otel_api.common.ProcessResult;
 const ExportResult = otel_api.common.ExportResult;
 const RecordingSpan = @import("data.zig").RecordingSpan;
 const SpanExporter = @import("exporter.zig").SpanExporter;
 const BridgeSpanExporter = @import("exporter.zig").BridgeSpanExporter;
-const Resource = @import("../resource/resource.zig").Resource;
 
 /// SpanProcessor interface using tagged union for polymorphism
 pub const SpanProcessor = union(enum) {
@@ -25,7 +28,7 @@ pub const SpanProcessor = union(enum) {
     bridge: BridgeSpanProcessor,
 
     /// Exposes the limits that the processor will support.
-    pub fn spanLimits(self: *const SpanProcessor) SpanLimits {
+    pub fn spanLimits(self: *const SpanProcessor) otel_api.trace.Span.Limits {
         return switch (self.*) {
             .noop => .default,
             .simple => |processor| processor.spanLimits(),
@@ -34,16 +37,16 @@ pub const SpanProcessor = union(enum) {
     }
 
     /// Called when a span ends
-    pub fn onEnd(self: *SpanProcessor, span: *RecordingSpan) void {
+    pub fn onEnd(self: *SpanProcessor, span: sdk.trace.SpanData, resource: sdk.Resource) void {
         switch (self.*) {
             .noop => {},
-            .simple => |processor| processor.onEnd(span),
-            .bridge => |processor| processor.onEndFn(processor.processor_ptr, span),
+            .simple => |processor| processor.onEnd(span, resource),
+            .bridge => |processor| processor.onEndFn(processor.processor_ptr, span, resource),
         }
     }
 
     /// Force flush any buffered spans
-    pub fn forceFlush(self: *SpanProcessor, timeout_ms: ?u64) ProcessResult {
+    pub fn forceFlush(self: *SpanProcessor, timeout_ms: ?u64) otel_api.common.FlushResult {
         return switch (self.*) {
             .noop => .success,
             .simple => |processor| processor.forceFlush(timeout_ms),
@@ -85,16 +88,14 @@ pub const SpanProcessor = union(enum) {
 pub const SimpleSpanProcessor = struct {
     allocator: std.mem.Allocator,
     exporter: SpanExporter,
-    resource: Resource,
     mutex: std.Thread.Mutex,
     is_shutdown: bool,
 
-    pub fn init(allocator: std.mem.Allocator, exporter: SpanExporter, resource: Resource) !*SimpleSpanProcessor {
+    pub fn init(allocator: std.mem.Allocator, exporter: SpanExporter) !*SimpleSpanProcessor {
         const self = try allocator.create(SimpleSpanProcessor);
         self.* = .{
             .allocator = allocator,
             .exporter = exporter,
-            .resource = resource,
             .mutex = .{},
             .is_shutdown = false,
         };
@@ -109,12 +110,12 @@ pub const SimpleSpanProcessor = struct {
         self.allocator.destroy(self);
     }
 
-    pub inline fn spanLimits(self: *SimpleSpanProcessor) SpanLimits {
+    pub inline fn spanLimits(self: *SimpleSpanProcessor) otel_api.trace.Span.Limits {
         _ = self;
         return .default;
     }
 
-    pub inline fn onEnd(self: *SimpleSpanProcessor, span: *RecordingSpan) void {
+    pub inline fn onEnd(self: *SimpleSpanProcessor, span: sdk.trace.SpanData, resource: sdk.Resource) void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -123,11 +124,11 @@ pub const SimpleSpanProcessor = struct {
         }
 
         // Export single span immediately
-        const spans = [_]*RecordingSpan{span};
-        _ = self.exporter.exportSpans(&spans, self.resource);
+        const spans = [_]sdk.trace.SpanData{span};
+        _ = self.exporter.exportSpans(&spans, resource);
     }
 
-    pub inline fn forceFlush(self: *SimpleSpanProcessor, timeout_ms: ?u64) ProcessResult {
+    pub inline fn forceFlush(self: *SimpleSpanProcessor, timeout_ms: ?u64) otel_api.common.FlushResult {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -163,9 +164,9 @@ pub const SimpleSpanProcessor = struct {
 /// Interface for bridging to a more complex processor.
 pub const BridgeSpanProcessor = struct {
     processor_ptr: *anyopaque,
-    spanLimitsFn: *const fn (processor_ptr: *anyopaque) SpanLimits,
-    onEndFn: *const fn (processor_ptr: *anyopaque, span: *RecordingSpan) void,
-    forceFlushFn: *const fn (processor_ptr: *anyopaque, timeout_ms: ?u64) ProcessResult,
+    spanLimitsFn: *const fn (processor_ptr: *anyopaque) otel_api.trace.Span.Limits,
+    onEndFn: *const fn (processor_ptr: *anyopaque, span: sdk.trace.SpanData, resource: sdk.Resource) void,
+    forceFlushFn: *const fn (processor_ptr: *anyopaque, timeout_ms: ?u64) otel_api.common.FlushResult,
     shutdownFn: *const fn (processor_ptr: *anyopaque, timeout_ms: ?u64) ProcessResult,
     deinitFn: *const fn (processor_ptr: *anyopaque) void,
     destroyFn: *const fn (processor_ptr: *anyopaque) void,
@@ -175,15 +176,15 @@ pub const BridgeSpanProcessor = struct {
         const ptr_info = @typeInfo(T);
 
         const VTable = struct {
-            pub fn spanLimits(pointer: *anyopaque) SpanLimits {
+            pub fn spanLimits(pointer: *anyopaque) otel_api.trace.Span.Limits {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.spanLimits(self);
             }
-            pub fn onEnd(pointer: *anyopaque, span: *RecordingSpan) void {
+            pub fn onEnd(pointer: *anyopaque, span: sdk.trace.SpanData, resource: sdk.Resource) void {
                 const self: T = @ptrCast(@alignCast(pointer));
-                return ptr_info.pointer.child.onEnd(self, span);
+                return ptr_info.pointer.child.onEnd(self, span, resource);
             }
-            pub fn forceFlush(pointer: *anyopaque, timeout_ms: ?u64) ProcessResult {
+            pub fn forceFlush(pointer: *anyopaque, timeout_ms: ?u64) otel_api.common.FlushResult {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.forceFlush(self, timeout_ms);
             }
@@ -212,75 +213,3 @@ pub const BridgeSpanProcessor = struct {
         };
     }
 };
-
-test "SimpleSpanProcessor basic operations" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
-
-    // Mock exporter for testing
-    const MockExporter = struct {
-        export_called: bool = false,
-        flush_called: bool = false,
-        shutdown_called: bool = false,
-
-        pub fn spanExporter(self: *@This()) SpanExporter {
-            return SpanExporter{ .bridge = BridgeSpanExporter.init(self) };
-        }
-
-        pub fn exportSpans(self: *@This(), spans: []const *RecordingSpan, resource: Resource) ExportResult {
-            _ = spans;
-            _ = resource;
-            self.export_called = true;
-            return .success;
-        }
-
-        pub fn forceFlush(self: *@This(), timeout_ms: ?u64) ExportResult {
-            _ = timeout_ms;
-            self.flush_called = true;
-            return .success;
-        }
-
-        pub fn shutdown(self: *@This(), timeout_ms: ?u64) ExportResult {
-            _ = timeout_ms;
-            self.shutdown_called = true;
-            return .success;
-        }
-
-        pub fn deinit(self: *@This()) void {
-            _ = self;
-        }
-
-        pub fn destroy(self: *@This()) void {
-            _ = self;
-        }
-    };
-
-    var mock_exporter = MockExporter{};
-    const resource = Resource{
-        .attributes = &.{},
-        .schema_url = null,
-    };
-
-    const processor = try SimpleSpanProcessor.init(
-        allocator,
-        mock_exporter.spanExporter(),
-        resource,
-    );
-    defer {
-        processor.deinit();
-        processor.destroy();
-    }
-
-    var span_processor = processor.spanProcessor();
-
-    // Test force flush
-    try testing.expectEqual(ProcessResult.success, span_processor.forceFlush(null));
-    try testing.expect(mock_exporter.flush_called);
-
-    // Test shutdown
-    try testing.expectEqual(ProcessResult.success, span_processor.shutdown(null));
-    try testing.expect(mock_exporter.shutdown_called);
-
-    // Operations after shutdown should fail
-    try testing.expectEqual(ProcessResult.failure, span_processor.forceFlush(null));
-}

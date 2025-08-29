@@ -30,6 +30,12 @@ const std = @import("std");
 const AttributeValue = @import("attributes.zig").AttributeValue;
 const AttributeKeyValue = @import("attributes.zig").AttributeKeyValue;
 
+const api = struct {
+    const ErrorInfo = @import("error_handler.zig").ErrorInfo;
+    const ErrorComponent = @import("error_handler.zig").Component;
+    const ErrorType = @import("error_handler.zig").ErrorType;
+};
+
 /// InstrumentationScope identifies the instrumentation library that generated telemetry data
 /// Non-owning and immutable after creation following OpenTelemetry specification
 pub const InstrumentationScope = struct {
@@ -39,35 +45,15 @@ pub const InstrumentationScope = struct {
 
     /// Version of the instrumentation library (OPTIONAL, non-owning)
     /// Should follow semantic versioning when specified
-    version: ?[]const u8,
+    version: ?[]const u8 = null,
 
     /// Schema URL for the telemetry emitted by the library (OPTIONAL, non-owning)
     /// Points to the schema definition for the data
-    schema_url: ?[]const u8,
+    schema_url: ?[]const u8 = null,
 
     /// Additional attributes about the instrumentation scope (OPTIONAL, non-owning)
     /// Provides extra metadata about the scope
-    attributes: []const AttributeKeyValue,
-
-    /// Create a new InstrumentationScope with all parameters
-    pub fn init(
-        name: []const u8,
-        version: ?[]const u8,
-        schema_url: ?[]const u8,
-        attributes: []const AttributeKeyValue,
-    ) !InstrumentationScope {
-        // Name is required and must be non-empty
-        if (name.len == 0) {
-            return error.EmptyInstrumentationScopeName;
-        }
-
-        return InstrumentationScope{
-            .name = name,
-            .version = version,
-            .schema_url = schema_url,
-            .attributes = attributes,
-        };
-    }
+    attributes: []const AttributeKeyValue = &.{},
 
     /// Creates an owning deep copy of an InstrumentationScope.
     ///
@@ -86,22 +72,12 @@ pub const InstrumentationScope = struct {
         errdefer if (owned_schema_url) |url| allocator.free(url);
         const owned_attributes = try AttributeKeyValue.initOwnedSlice(allocator, unowned.attributes);
         errdefer AttributeKeyValue.deinitOwnedSlice(allocator, owned_attributes);
-        return init(
-            owned_name,
-            owned_version,
-            owned_schema_url,
-            owned_attributes,
-        );
-    }
-
-    /// Create a simple InstrumentationScope with just name and optional version
-    pub fn initSimple(name: []const u8, version: ?[]const u8) !InstrumentationScope {
-        return init(name, version, null, &[_]AttributeKeyValue{});
-    }
-
-    /// Create an InstrumentationScope with just a name
-    pub fn initWithName(name: []const u8) !InstrumentationScope {
-        return init(name, null, null, &[_]AttributeKeyValue{});
+        return .{
+            .name = owned_name,
+            .version = owned_version,
+            .schema_url = owned_schema_url,
+            .attributes = owned_attributes,
+        };
     }
 
     /// Deinitializes an owning `InstrumentationScope` created by `initOwned`.
@@ -123,11 +99,21 @@ pub const InstrumentationScope = struct {
     /// Create an empty/default InstrumentationScope
     /// Uses "unknown" as the default name per OpenTelemetry conventions
     pub const empty: InstrumentationScope = .{
-        .attributes = &[_]AttributeKeyValue{},
         .name = "unknown",
-        .schema_url = null,
-        .version = null,
     };
+
+    pub fn validationErrorInfo(self: InstrumentationScope) ?api.ErrorInfo {
+        if (self.name.len == 0) {
+            return .{
+                .component = .general,
+                .operation = "InstrumentationScope.name validation",
+                .error_type = .validation,
+                .message = "Invalid instrumentation scope name provided",
+                .context = "name must be non-empty",
+            };
+        }
+        return null;
+    }
 
     /// Get an attribute by key
     pub fn getAttribute(self: InstrumentationScope, key: []const u8) ?AttributeValue {
@@ -185,7 +171,7 @@ pub const InstrumentationScope = struct {
     }
 
     /// Create a hash code for the instrumentation scopeh
-    pub fn hashCode(self: InstrumentationScope) u64 {
+    pub fn hash(self: InstrumentationScope) u64 {
         var hasher = std.hash.Wyhash.init(0);
 
         // Hash the name (always present)
@@ -216,13 +202,8 @@ pub const InstrumentationScope = struct {
     /// Format the InstrumentationScope for debugging/logging
     pub fn format(
         self: InstrumentationScope,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
         writer: anytype,
     ) !void {
-        _ = fmt;
-        _ = options;
-
         try writer.print("InstrumentationScope{{name=\"{s}\"", .{self.name});
 
         if (self.version) |version| {
@@ -237,7 +218,7 @@ pub const InstrumentationScope = struct {
             try writer.print(", attributes=[", .{});
             for (self.attributes, 0..) |attr, i| {
                 if (i > 0) try writer.writeAll(", ");
-                try writer.print("{}", .{attr});
+                try writer.print("{f}", .{attr});
             }
             try writer.writeAll("]");
         }
@@ -258,14 +239,14 @@ test "InstrumentationScope creation and basic operations" {
     const testing = std.testing;
 
     // Test simple scope with just name
-    const scope1 = try InstrumentationScope.initWithName("test-library");
+    const scope1 = InstrumentationScope{ .name = "test-library" };
     try testing.expectEqualStrings("test-library", scope1.name);
     try testing.expect(scope1.version == null);
     try testing.expect(scope1.schema_url == null);
     try testing.expect(scope1.attributes.len == 0);
 
     // Test scope with name and version
-    const scope2 = try InstrumentationScope.initSimple("test-library", "1.0.0");
+    const scope2 = InstrumentationScope{ .name = "test-library", .version = "1.0.0" };
     try testing.expectEqualStrings("test-library", scope2.name);
     try testing.expectEqualStrings("1.0.0", scope2.version.?);
     try testing.expect(scope2.schema_url == null);
@@ -277,12 +258,12 @@ test "InstrumentationScope creation and basic operations" {
         .{ .key = "library.version", .value = .{ .string = "0.12.0" } },
     };
 
-    const scope3 = try InstrumentationScope.init(
-        "test-library",
-        "1.0.0",
-        "https://example.com/schema",
-        &attrs,
-    );
+    const scope3 = InstrumentationScope{
+        .name = "test-library",
+        .version = "1.0.0",
+        .schema_url = "https://example.com/schema",
+        .attributes = &attrs,
+    };
 
     try testing.expectEqualStrings("test-library", scope3.name);
     try testing.expectEqualStrings("1.0.0", scope3.version.?);
@@ -313,19 +294,20 @@ test "InstrumentationScope empty constant and error cases" {
     try testing.expect(empty_scope.attributes.len == 0);
 
     // Test error case - empty name
-    try testing.expectError(
-        error.EmptyInstrumentationScopeName,
-        InstrumentationScope.init("", null, null, &[_]AttributeKeyValue{}),
-    );
+    const error_scope = InstrumentationScope{ .name = "" };
+    const error_info = InstrumentationScope.validationErrorInfo(error_scope);
+    try testing.expect(error_info != null);
+    try testing.expectEqual(api.ErrorComponent.general, error_info.?.component);
+    try testing.expectEqual(api.ErrorType.validation, error_info.?.error_type);
 }
 
 test "InstrumentationScope equality" {
     const testing = std.testing;
 
-    const scope1 = try InstrumentationScope.initSimple("test-library", "1.0.0");
-    const scope2 = try InstrumentationScope.initSimple("test-library", "1.0.0");
-    const scope3 = try InstrumentationScope.initSimple("test-library", "1.1.0");
-    const scope4 = try InstrumentationScope.initSimple("other-library", "1.0.0");
+    const scope1 = InstrumentationScope{ .name = "test-library", .version = "1.0.0" };
+    const scope2 = InstrumentationScope{ .name = "test-library", .version = "1.0.0" };
+    const scope3 = InstrumentationScope{ .name = "test-library", .version = "1.1.0" };
+    const scope4 = InstrumentationScope{ .name = "other-library", .version = "1.0.0" };
 
     // Same scopes should be equal
     try testing.expect(scope1.eql(scope2));
@@ -355,9 +337,9 @@ test "InstrumentationScope with attributes equality" {
         .{ .key = "version", .value = .{ .string = "0.12.0" } },
     };
 
-    const scope1 = try InstrumentationScope.init("test", "1.0.0", null, &attrs1);
-    const scope2 = try InstrumentationScope.init("test", "1.0.0", null, &attrs2);
-    const scope3 = try InstrumentationScope.init("test", "1.0.0", null, &attrs3);
+    const scope1 = InstrumentationScope{ .name = "test", .version = "1.0.0", .attributes = &attrs1 };
+    const scope2 = InstrumentationScope{ .name = "test", .version = "1.0.0", .attributes = &attrs2 };
+    const scope3 = InstrumentationScope{ .name = "test", .version = "1.0.0", .attributes = &attrs3 };
 
     // Same attributes in different order should be equal
     try testing.expect(scope1.eql(scope2));
@@ -370,10 +352,10 @@ test "InstrumentationScope optional field handling" {
     const testing = std.testing;
 
     // Test various combinations of optional fields
-    const scope_none = try InstrumentationScope.init("test", null, null, &[_]AttributeKeyValue{});
-    const scope_version = try InstrumentationScope.init("test", "1.0.0", null, &[_]AttributeKeyValue{});
-    const scope_schema = try InstrumentationScope.init("test", null, "https://schema.url", &[_]AttributeKeyValue{});
-    const scope_both = try InstrumentationScope.init("test", "1.0.0", "https://schema.url", &[_]AttributeKeyValue{});
+    const scope_none = InstrumentationScope{ .name = "test", .version = null, .schema_url = null };
+    const scope_version = InstrumentationScope{ .name = "test", .version = "1.0.0", .schema_url = null };
+    const scope_schema = InstrumentationScope{ .name = "test", .version = null, .schema_url = "https://schema.url" };
+    const scope_both = InstrumentationScope{ .name = "test", .version = "1.0.0", .schema_url = "https://schema.url" };
 
     // Test equality with different optional field combinations
     try testing.expect(!scope_none.eql(scope_version));
@@ -387,15 +369,15 @@ test "InstrumentationScope optional field handling" {
 test "InstrumentationScope hash code" {
     const testing = std.testing;
 
-    const scope1 = try InstrumentationScope.initSimple("test-library", "1.0.0");
-    const scope2 = try InstrumentationScope.initSimple("test-library", "1.0.0");
-    const scope3 = try InstrumentationScope.initSimple("test-library", "1.1.0");
-    const scope4 = try InstrumentationScope.initSimple("other-library", "1.0.0");
+    const scope1 = InstrumentationScope{ .name = "test-library", .version = "1.0.0" };
+    const scope2 = InstrumentationScope{ .name = "test-library", .version = "1.0.0" };
+    const scope3 = InstrumentationScope{ .name = "test-library", .version = "1.1.0" };
+    const scope4 = InstrumentationScope{ .name = "other-library", .version = "1.0.0" };
 
-    const hash1 = scope1.hashCode();
-    const hash2 = scope2.hashCode();
-    const hash3 = scope3.hashCode();
-    const hash4 = scope4.hashCode();
+    const hash1 = scope1.hash();
+    const hash2 = scope2.hash();
+    const hash3 = scope3.hash();
+    const hash4 = scope4.hash();
 
     // Same scopes should have same hash
     try testing.expect(hash1 == hash2);
@@ -412,26 +394,26 @@ test "InstrumentationScope formatting" {
     var buf: [512]u8 = undefined;
 
     // Simple scope
-    const scope1 = try InstrumentationScope.initWithName("test-library");
-    const str1 = try std.fmt.bufPrint(&buf, "{}", .{scope1});
+    const scope1 = InstrumentationScope{ .name = "test-library" };
+    const str1 = try std.fmt.bufPrint(&buf, "{f}", .{scope1});
     try testing.expectEqualStrings("InstrumentationScope{name=\"test-library\"}", str1);
 
     // Scope with version
-    const scope2 = try InstrumentationScope.initSimple("test-library", "1.0.0");
-    const str2 = try std.fmt.bufPrint(&buf, "{}", .{scope2});
+    const scope2 = InstrumentationScope{ .name = "test-library", .version = "1.0.0" };
+    const str2 = try std.fmt.bufPrint(&buf, "{f}", .{scope2});
     try testing.expectEqualStrings("InstrumentationScope{name=\"test-library\", version=\"1.0.0\"}", str2);
 
     // Full scope with attributes
     const attrs = [_]AttributeKeyValue{
         .{ .key = "lang", .value = .{ .string = "zig" } },
     };
-    const scope3 = try InstrumentationScope.init("test", "1.0.0", "https://schema.url", &attrs);
-    const str3 = try std.fmt.bufPrint(&buf, "{}", .{scope3});
+    const scope3 = InstrumentationScope{ .name = "test", .version = "1.0.0", .schema_url = "https://schema.url", .attributes = &attrs };
+    const str3 = try std.fmt.bufPrint(&buf, "{f}", .{scope3});
     const expected = "InstrumentationScope{name=\"test\", version=\"1.0.0\", schema_url=\"https://schema.url\", attributes=[lang=\"zig\"]}";
     try testing.expectEqualStrings(expected, str3);
 
     // Empty scope constant
-    const str4 = try std.fmt.bufPrint(&buf, "{}", .{InstrumentationScope.empty});
+    const str4 = try std.fmt.bufPrint(&buf, "{f}", .{InstrumentationScope.empty});
     try testing.expectEqualStrings("InstrumentationScope{name=\"unknown\"}", str4);
 }
 
@@ -440,18 +422,18 @@ test "InstrumentationScope edge cases" {
 
     // Test with empty attributes array (but not null)
     const empty_attrs = [_]AttributeKeyValue{};
-    const scope1 = try InstrumentationScope.init("test", "1.0.0", null, &empty_attrs);
+    const scope1 = InstrumentationScope{ .name = "test", .version = "1.0.0", .attributes = &empty_attrs };
     try testing.expect(scope1.attributes.len == 0);
     try testing.expect(!scope1.hasAttribute("any-key"));
 
     // Test empty vs null attributes equality
-    const scope2 = try InstrumentationScope.init("test", "1.0.0", null, &[_]AttributeKeyValue{});
+    const scope2 = InstrumentationScope{ .name = "test", .version = "1.0.0" };
     try testing.expect(scope1.eql(scope2));
 
     // Test with very long strings (should still work)
     const long_name = "very_long_instrumentation_library_name_that_exceeds_normal_expectations";
     const long_version = "1.2.3-alpha.beta.gamma.delta.epsilon.zeta.eta.theta.iota.kappa";
-    const scope3 = try InstrumentationScope.initSimple(long_name, long_version);
+    const scope3 = InstrumentationScope{ .name = long_name, .version = long_version };
     try testing.expectEqualStrings(long_name, scope3.name);
     try testing.expectEqualStrings(long_version, scope3.version.?);
 }
@@ -467,7 +449,7 @@ test "InstrumentationScope attribute operations" {
         .{ .key = "float_attr", .value = .{ .float = 3.14159 } },
     };
 
-    const scope = try InstrumentationScope.init("test-lib", "1.0.0", null, &attrs);
+    const scope = InstrumentationScope{ .name = "test-lib", .version = "1.0.0", .attributes = &attrs };
 
     // Test getting different attribute types
     const string_val = scope.getAttribute("string_attr");
@@ -501,17 +483,17 @@ test "InstrumentationScope hash/equality contract" {
     const testing = std.testing;
 
     // Test basic hash/equality contract
-    const scope1 = try InstrumentationScope.init("test.scope", "1.0.0", "http://schema.example.com", &.{});
-    const scope2 = try InstrumentationScope.init("test.scope", "1.0.0", "http://schema.example.com", &.{});
-    const scope3 = try InstrumentationScope.init("other.scope", "1.0.0", "http://schema.example.com", &.{});
+    const scope1 = InstrumentationScope{ .name = "test.scope", .version = "1.0.0", .schema_url = "http://schema.example.com" };
+    const scope2 = InstrumentationScope{ .name = "test.scope", .version = "1.0.0", .schema_url = "http://schema.example.com" };
+    const scope3 = InstrumentationScope{ .name = "other.scope", .version = "1.0.0", .schema_url = "http://schema.example.com" };
 
     // Equal scopes should have equal hashes
     try testing.expect(scope1.eql(scope2));
-    try testing.expectEqual(scope1.hashCode(), scope2.hashCode());
+    try testing.expectEqual(scope1.hash(), scope2.hash());
 
     // Different scopes should not be equal and should have different hashes
     try testing.expect(!scope1.eql(scope3));
-    try testing.expect(scope1.hashCode() != scope3.hashCode());
+    try testing.expect(scope1.hash() != scope3.hash());
 }
 
 test "InstrumentationScope hash with attributes" {
@@ -530,17 +512,17 @@ test "InstrumentationScope hash with attributes" {
         .{ .key = "version", .value = .{ .int = 1 } },
     };
 
-    const scope1 = try InstrumentationScope.init("test.scope", "1.0.0", null, &attrs1);
-    const scope2 = try InstrumentationScope.init("test.scope", "1.0.0", null, &attrs2);
-    const scope3 = try InstrumentationScope.init("test.scope", "1.0.0", null, &attrs3);
+    const scope1 = InstrumentationScope{ .name = "test.scope", .version = "1.0.0", .attributes = &attrs1 };
+    const scope2 = InstrumentationScope{ .name = "test.scope", .version = "1.0.0", .attributes = &attrs2 };
+    const scope3 = InstrumentationScope{ .name = "test.scope", .version = "1.0.0", .attributes = &attrs3 };
 
     // Same attributes should produce equal scopes and hashes
     try testing.expect(scope1.eql(scope2));
-    try testing.expectEqual(scope1.hashCode(), scope2.hashCode());
+    try testing.expectEqual(scope1.hash(), scope2.hash());
 
     // Different attributes should produce different scopes and hashes
     try testing.expect(!scope1.eql(scope3));
-    try testing.expect(scope1.hashCode() != scope3.hashCode());
+    try testing.expect(scope1.hash() != scope3.hash());
 }
 
 test "InstrumentationScope hash attribute order independence" {
@@ -557,30 +539,30 @@ test "InstrumentationScope hash attribute order independence" {
         .{ .key = "env", .value = .{ .string = "prod" } },
     };
 
-    const scope1 = try InstrumentationScope.init("test.scope", "1.0.0", null, &attrs1);
-    const scope2 = try InstrumentationScope.init("test.scope", "1.0.0", null, &attrs2);
+    const scope1 = InstrumentationScope{ .name = "test.scope", .version = "1.0.0", .attributes = &attrs1 };
+    const scope2 = InstrumentationScope{ .name = "test.scope", .version = "1.0.0", .attributes = &attrs2 };
 
     // Different order, same attributes should be equal
     try testing.expect(scope1.eql(scope2));
-    try testing.expectEqual(scope1.hashCode(), scope2.hashCode());
+    try testing.expectEqual(scope1.hash(), scope2.hash());
 }
 
 test "InstrumentationScope hash with optional fields" {
     const testing = std.testing;
 
     // Test with all combinations of optional fields
-    const scope1 = try InstrumentationScope.init("test.scope", null, null, &.{});
-    const scope2 = try InstrumentationScope.init("test.scope", "1.0.0", null, &.{});
-    const scope3 = try InstrumentationScope.init("test.scope", null, "http://schema.example.com", &.{});
-    const scope4 = try InstrumentationScope.init("test.scope", "1.0.0", "http://schema.example.com", &.{});
+    const scope1 = InstrumentationScope{ .name = "test.scope" };
+    const scope2 = InstrumentationScope{ .name = "test.scope", .version = "1.0.0" };
+    const scope3 = InstrumentationScope{ .name = "test.scope", .schema_url = "http://schema.example.com" };
+    const scope4 = InstrumentationScope{ .name = "test.scope", .version = "1.0.0", .schema_url = "http://schema.example.com" };
 
     // All should have different hashes due to different optional fields
-    try testing.expect(scope1.hashCode() != scope2.hashCode());
-    try testing.expect(scope1.hashCode() != scope3.hashCode());
-    try testing.expect(scope1.hashCode() != scope4.hashCode());
-    try testing.expect(scope2.hashCode() != scope3.hashCode());
-    try testing.expect(scope2.hashCode() != scope4.hashCode());
-    try testing.expect(scope3.hashCode() != scope4.hashCode());
+    try testing.expect(scope1.hash() != scope2.hash());
+    try testing.expect(scope1.hash() != scope3.hash());
+    try testing.expect(scope1.hash() != scope4.hash());
+    try testing.expect(scope2.hash() != scope3.hash());
+    try testing.expect(scope2.hash() != scope4.hash());
+    try testing.expect(scope3.hash() != scope4.hash());
 
     // Test equality consistency
     try testing.expect(!scope1.eql(scope2));
@@ -597,12 +579,12 @@ test "InstrumentationScope hash consistency" {
         .{ .key = "deployment.environment", .value = .{ .string = "production" } },
     };
 
-    const scope = try InstrumentationScope.init("consistency.test", "2.0.0", "http://schema.test.com", &attrs);
+    const scope = InstrumentationScope{ .name = "consistency.test", .version = "2.0.0", .schema_url = "http://schema.test.com", .attributes = &attrs };
 
     // Hash should be consistent across multiple calls
-    const hash1 = scope.hashCode();
-    const hash2 = scope.hashCode();
-    const hash3 = scope.hashCode();
+    const hash1 = scope.hash();
+    const hash2 = scope.hash();
+    const hash3 = scope.hash();
 
     try testing.expectEqual(hash1, hash2);
     try testing.expectEqual(hash2, hash3);
@@ -612,15 +594,15 @@ test "InstrumentationScope hash collision resistance" {
     const testing = std.testing;
 
     // Test that similar scopes have different hashes
-    const scope1 = try InstrumentationScope.init("service.a", "1.0", null, &.{});
-    const scope2 = try InstrumentationScope.init("service.b", "1.0", null, &.{});
-    const scope3 = try InstrumentationScope.init("service.a", "1.1", null, &.{});
-    const scope4 = try InstrumentationScope.init("service.a", "1.0", "http://schema.com", &.{});
+    const scope1 = InstrumentationScope{ .name = "service.a", .version = "1.0" };
+    const scope2 = InstrumentationScope{ .name = "service.b", .version = "1.0" };
+    const scope3 = InstrumentationScope{ .name = "service.a", .version = "1.1" };
+    const scope4 = InstrumentationScope{ .name = "service.a", .version = "1.0", .schema_url = "http://schema.com" };
 
-    const hash1 = scope1.hashCode();
-    const hash2 = scope2.hashCode();
-    const hash3 = scope3.hashCode();
-    const hash4 = scope4.hashCode();
+    const hash1 = scope1.hash();
+    const hash2 = scope2.hash();
+    const hash3 = scope3.hash();
+    const hash4 = scope4.hash();
 
     // All should be different
     try testing.expect(hash1 != hash2);
@@ -637,17 +619,12 @@ test "InstrumentationScope comprehensive hash/equality contract validation" {
     // Create a variety of test scopes to validate the fundamental hash contract:
     // If a.eql(b) then a.hashCode() == b.hashCode()
 
-    const test_cases = [_]struct {
-        name: []const u8,
-        version: ?[]const u8,
-        schema_url: ?[]const u8,
-        attributes: []const AttributeKeyValue,
-    }{
+    const test_cases = [_]InstrumentationScope{
         // Basic cases
-        .{ .name = "test", .version = null, .schema_url = null, .attributes = &.{} },
-        .{ .name = "test", .version = "1.0", .schema_url = null, .attributes = &.{} },
-        .{ .name = "test", .version = null, .schema_url = "http://schema.com", .attributes = &.{} },
-        .{ .name = "test", .version = "1.0", .schema_url = "http://schema.com", .attributes = &.{} },
+        .{ .name = "test", .version = null, .schema_url = null },
+        .{ .name = "test", .version = "1.0", .schema_url = null },
+        .{ .name = "test", .version = null, .schema_url = "http://schema.com" },
+        .{ .name = "test", .version = "1.0", .schema_url = "http://schema.com" },
 
         // With single attribute
         .{ .name = "test", .version = null, .schema_url = null, .attributes = &[_]AttributeKeyValue{
@@ -665,19 +642,19 @@ test "InstrumentationScope comprehensive hash/equality contract validation" {
         } },
 
         // Edge cases with empty strings (name cannot be empty per validation)
-        .{ .name = "test", .version = "", .schema_url = null, .attributes = &.{} },
-        .{ .name = "test", .version = null, .schema_url = "", .attributes = &.{} },
+        .{ .name = "test", .version = "", .schema_url = null },
+        .{ .name = "test", .version = null, .schema_url = "" },
     };
 
     // Test all pairs to validate hash/equality contract
     for (test_cases, 0..) |case1, i| {
         for (test_cases, 0..) |case2, j| {
-            const scope1 = try InstrumentationScope.init(case1.name, case1.version, case1.schema_url, case1.attributes);
-            const scope2 = try InstrumentationScope.init(case2.name, case2.version, case2.schema_url, case2.attributes);
+            const scope1 = case1;
+            const scope2 = case2;
 
             const are_equal = scope1.eql(scope2);
-            const hash1 = scope1.hashCode();
-            const hash2 = scope2.hashCode();
+            const hash1 = scope1.hash();
+            const hash2 = scope2.hash();
 
             if (are_equal) {
                 // If equal, hashes MUST be equal
@@ -704,10 +681,10 @@ test "InstrumentationScope comprehensive hash/equality contract validation" {
         .{ .key = "version", .value = .{ .int = 1 } },
     };
 
-    const scope_order1 = try InstrumentationScope.init("order.test", "1.0", null, &attrs_order1);
-    const scope_order2 = try InstrumentationScope.init("order.test", "1.0", null, &attrs_order2);
+    const scope_order1 = InstrumentationScope{ .name = "order.test", .version = "1.0", .attributes = &attrs_order1 };
+    const scope_order2 = InstrumentationScope{ .name = "order.test", .version = "1.0", .attributes = &attrs_order2 };
 
     // These should be equal despite different attribute order
     try testing.expect(scope_order1.eql(scope_order2));
-    try testing.expectEqual(scope_order1.hashCode(), scope_order2.hashCode());
+    try testing.expectEqual(scope_order1.hash(), scope_order2.hash());
 }

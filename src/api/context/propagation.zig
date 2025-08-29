@@ -9,7 +9,9 @@
 //! See: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/context/api-propagators.md
 
 const std = @import("std");
-const Context = @import("context.zig").Context;
+const api = struct {
+    const ContextKeyValue = @import("context.zig").ContextKeyValue;
+};
 const W3cPropagator = @import("../trace/w3c_propagator.zig").W3cPropagator;
 
 /// TextMapCarrier is the interface for carriers used in text map propagation.
@@ -42,63 +44,38 @@ pub const TextMapCarrier = struct {
 
 /// TextMapPropagator interface using tagged union for polymorphism
 pub const TextMapPropagator = union(enum) {
-    noop: NoopPropagator,
+    noop: void,
     w3c: W3cPropagator,
 
     /// Inject context into a carrier
-    pub fn inject(self: *const TextMapPropagator, ctx: Context, carrier: *TextMapCarrier) void {
+    pub fn inject(self: *const TextMapPropagator, ctx: []api.ContextKeyValue, carrier: *TextMapCarrier) void {
         switch (self.*) {
-            .noop => |*propagator| propagator.inject(ctx, carrier),
+            .noop => {},
             .w3c => |*propagator| propagator.inject(ctx, carrier),
         }
     }
 
     /// Extract context from a carrier
-    pub fn extract(self: *const TextMapPropagator, ctx: Context, carrier: *const TextMapCarrier) !Context {
+    pub fn extract(
+        self: *const TextMapPropagator,
+        allocator: std.mem.Allocator,
+        ctx: []const api.ContextKeyValue,
+        carrier: *const TextMapCarrier,
+    ) ![]api.ContextKeyValue {
         return switch (self.*) {
-            .noop => |*propagator| propagator.extract(ctx, carrier),
-            .w3c => |*propagator| propagator.extract(ctx, carrier),
+            .noop => try api.ContextKeyValue.initOwnedSlice(allocator, ctx),
+            .w3c => |*propagator| propagator.extract(allocator, ctx, carrier),
         };
     }
 
     /// Get the fields that this propagator uses
     pub fn fields(self: *const TextMapPropagator, allocator: std.mem.Allocator) ![]const []const u8 {
         return switch (self.*) {
-            .noop => |*propagator| propagator.fields(allocator),
+            .noop => &[_][]const u8{},
             .w3c => |*propagator| propagator.fields(allocator),
         };
     }
 };
-
-/// No-operation propagator implementation
-pub const NoopPropagator = struct {
-    pub fn init() NoopPropagator {
-        return .{};
-    }
-
-    pub fn inject(self: *const NoopPropagator, ctx: Context, carrier: *TextMapCarrier) void {
-        _ = self;
-        _ = ctx;
-        _ = carrier;
-    }
-
-    pub fn extract(self: *const NoopPropagator, ctx: Context, carrier: *const TextMapCarrier) !Context {
-        _ = self;
-        _ = carrier;
-        return ctx;
-    }
-
-    pub fn fields(self: *const NoopPropagator, allocator: std.mem.Allocator) ![]const []const u8 {
-        _ = self;
-        _ = allocator;
-        return &[_][]const u8{};
-    }
-};
-
-/// Create a no-operation propagator
-pub fn createNoopPropagator() TextMapPropagator {
-    return .{ .noop = NoopPropagator.init() };
-}
 
 /// Simple HashMap-based carrier for testing
 pub const HashMapCarrier = struct {
@@ -151,12 +128,12 @@ pub const HashMapCarrier = struct {
 
     fn keysImpl(carrier_arg: *const TextMapCarrier, allocator: std.mem.Allocator) ![][]const u8 {
         const self = @as(*const HashMapCarrier, @ptrCast(@alignCast(carrier_arg.impl)));
-        var keys_list = std.ArrayList([]const u8).init(allocator);
+        var keys_list = std.ArrayList([]const u8).empty;
         var iter = self.map.iterator();
         while (iter.next()) |entry| {
-            try keys_list.append(entry.key_ptr.*);
+            try keys_list.append(allocator, entry.key_ptr.*);
         }
-        return keys_list.toOwnedSlice();
+        return keys_list.toOwnedSlice(allocator);
     }
 
     pub fn carrier(self: *HashMapCarrier) TextMapCarrier {
@@ -173,11 +150,11 @@ test "NoopPropagator operations" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const propagator = createNoopPropagator();
+    const propagator = TextMapPropagator{ .noop = {} };
 
     // Create a test context
-    var ctx = Context.empty(allocator);
-    defer ctx.deinit();
+    const ctx = try api.ContextKeyValue.initOwnedSlice(allocator, &.{});
+    defer api.ContextKeyValue.deinitOwnedSlice(allocator, ctx);
 
     // Create a test carrier
     var hash_carrier = HashMapCarrier.init(allocator);
@@ -188,8 +165,8 @@ test "NoopPropagator operations" {
     propagator.inject(ctx, &carrier);
 
     // Extract should return the same context
-    const extracted = try propagator.extract(ctx, &carrier);
-    defer extracted.deinit();
+    const extracted = try propagator.extract(allocator, ctx, &carrier);
+    defer api.ContextKeyValue.deinitOwnedSlice(allocator, extracted);
 
     // Fields should be empty
     const fields_list = try propagator.fields(allocator);

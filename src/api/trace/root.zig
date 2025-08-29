@@ -18,10 +18,9 @@
 //! See: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/api.md
 
 const std = @import("std");
-
-pub const SpanContext = @import("span_context.zig").SpanContext;
-pub const TraceState = @import("trace_state.zig").TraceState;
-pub const Event = @import("event.zig").Event;
+pub const StateKeyValue = @import("trace_state.zig").StateKeyValue;
+pub const StateBuilder = @import("trace_state.zig").StateBuilder;
+pub const OtState = @import("trace_state.zig").OtState;
 
 // Context integration (Phase 2 - Implemented)
 pub const context_keys = @import("context_keys.zig");
@@ -29,42 +28,27 @@ pub const W3cPropagator = @import("w3c_propagator.zig").W3cPropagator;
 pub const createW3cPropagator = @import("w3c_propagator.zig").createW3cPropagator;
 
 // Spans
-const span = @import("span.zig");
-pub const Span = span.Span;
-pub const SpanBridge = span.SpanBridge;
-pub const SpanKind = span.SpanKind;
-pub const SpanStartOptions = span.SpanStartOptions;
-pub const SpanEndOptions = span.SpanEndOptions;
-pub const Status = span.Status;
-pub const StatusCode = span.StatusCode;
-pub const Link = span.Link;
+const span_zig = @import("span.zig");
+pub const Span = span_zig.Span;
 
-pub const SpanLimits = @import("span_limits.zig").SpanLimits;
 pub const sampling_config = @import("sampling_config.zig");
-pub const SamplingDecision = sampling_config.SamplingDecision;
-pub const SamplingResult = sampling_config.SamplingResult;
-pub const SampleParams = sampling_config.SampleParams;
 pub const Sampler = sampling_config.Sampler;
-pub const SamplerBridge = sampling_config.SamplerBridge;
 
 // Re-export commonly used context utilities for convenience
 pub const trace_context = @import("context_utils.zig");
 
 // Core interfaces (Phase 4 - Implemented)
-pub const Tracer = @import("tracer.zig").Tracer;
+pub const tracer_zig = @import("tracer.zig");
+pub const Tracer = tracer_zig.Tracer;
 
-pub const TracerBridge = @import("tracer.zig").TracerBridge;
+pub const TracerBridge = tracer_zig.TracerBridge;
 pub const TracerProvider = @import("tracer_provider.zig").TracerProvider;
 pub const TracerProviderBridge = @import("tracer_provider.zig").TracerProviderBridge;
 
 // Validation functions for SDK use
-pub const validateAttributeKey = span.validateAttributeKey;
-pub const validateSpanName = span.validateSpanName;
-pub const validateAttributeValue = @import("tracer.zig").validateAttributeValue;
-pub const validateAttributes = @import("tracer.zig").validateAttributes;
-
-// Span utilities
-pub const wrapSpanContext = span.wrapSpanContext;
+pub const validateSpanName = span_zig.validateSpanName;
+pub const validateAttributeValue = tracer_zig.validateAttributeValue;
+pub const validateAttributes = tracer_zig.validateAttributes;
 
 // Tests
 test "trace api module compilation" {

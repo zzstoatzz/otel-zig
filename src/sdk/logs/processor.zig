@@ -20,7 +20,7 @@ pub const LogRecordProcessor = union(enum) {
     bridge: BridgeLogRecordProcessor,
 
     /// Called when a log record is emitted
-    pub fn onEmit(self: *const LogRecordProcessor, record: sdk.LogRecord, ctx: api.Context, resource: sdk.Resource) void {
+    pub fn onEmit(self: *const LogRecordProcessor, record: sdk.LogRecord, ctx: []const api.ContextKeyValue, resource: sdk.Resource) void {
         switch (self.*) {
             .noop => {},
             .bridge => |processor| processor.onEmitFn(processor.processor_ptr, record, ctx, resource),
@@ -28,7 +28,7 @@ pub const LogRecordProcessor = union(enum) {
     }
 
     /// Force flush any buffered log records
-    pub fn forceFlush(self: *LogRecordProcessor, timeout_ms: ?u64) api.common.ProcessResult {
+    pub fn forceFlush(self: *LogRecordProcessor, timeout_ms: ?u64) api.common.FlushResult {
         return switch (self.*) {
             .noop => .success,
             .bridge => |processor| processor.forceFlushFn(processor.processor_ptr, timeout_ms),
@@ -62,7 +62,7 @@ pub const LogRecordProcessor = union(enum) {
     /// Check if this processor would process a log record with given parameters
     pub fn enabled(
         self: *const LogRecordProcessor,
-        ctx: api.Context,
+        ctx: []const api.ContextKeyValue,
         scope: api.InstrumentationScope,
         severity: ?api.logs.Severity,
         event_name: ?[]const u8,
@@ -83,14 +83,14 @@ pub const LogRecordProcessor = union(enum) {
 /// Interface for bridging to a more complex processor.
 pub const BridgeLogRecordProcessor = struct {
     processor_ptr: *anyopaque,
-    onEmitFn: *const fn (processor_ptr: *anyopaque, record: sdk.LogRecord, ctx: api.Context, resource: sdk.Resource) void,
-    forceFlushFn: *const fn (processor_ptr: *anyopaque, timeout_ms: ?u64) api.common.ProcessResult,
+    onEmitFn: *const fn (processor_ptr: *anyopaque, record: sdk.LogRecord, ctx: []const api.ContextKeyValue, resource: sdk.Resource) void,
+    forceFlushFn: *const fn (processor_ptr: *anyopaque, timeout_ms: ?u64) api.common.FlushResult,
     shutdownFn: *const fn (processor_ptr: *anyopaque, timeout_ms: ?u64) api.common.ProcessResult,
     deinitFn: *const fn (processor_ptr: *anyopaque) void,
     destroyFn: *const fn (processor_ptr: *anyopaque) void,
     enabledFn: *const fn (
         processor_ptr: *anyopaque,
-        ctx: api.Context,
+        ctx: []const api.ContextKeyValue,
         scope: api.InstrumentationScope,
         severity: ?api.logs.Severity,
         event_name: ?[]const u8,
@@ -101,11 +101,11 @@ pub const BridgeLogRecordProcessor = struct {
         const ptr_info = @typeInfo(T);
 
         const VTable = struct {
-            pub fn onEmit(pointer: *anyopaque, record: sdk.LogRecord, ctx: api.Context, resource: sdk.Resource) void {
+            pub fn onEmit(pointer: *anyopaque, record: sdk.LogRecord, ctx: []const api.ContextKeyValue, resource: sdk.Resource) void {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.onEmit(self, record, ctx, resource);
             }
-            pub fn forceFlush(pointer: *anyopaque, timeout_ms: ?u64) api.common.ProcessResult {
+            pub fn forceFlush(pointer: *anyopaque, timeout_ms: ?u64) api.common.FlushResult {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.forceFlush(self, timeout_ms);
             }
@@ -123,7 +123,7 @@ pub const BridgeLogRecordProcessor = struct {
             }
             pub fn enabled(
                 pointer: *anyopaque,
-                ctx: api.Context,
+                ctx: []const api.ContextKeyValue,
                 scope: api.InstrumentationScope,
                 severity: ?api.logs.Severity,
                 event_name: ?[]const u8,

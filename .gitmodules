@@ -1,9 +1,6 @@
 [submodule "spec"]
 	path = spec
 	url = https://github.com/open-telemetry/opentelemetry-specification.git
-[submodule "reference/cpp-sdk"]
-	path = reference/cpp-sdk
-	url = https://github.com/open-telemetry/opentelemetry-cpp.git
 [submodule "opentelemetry-proto"]
 	path = opentelemetry-proto
 	url = https://github.com/open-telemetry/opentelemetry-proto.git

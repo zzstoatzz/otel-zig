@@ -13,48 +13,48 @@ const std = @import("std");
 pub const Severity = enum(u8) {
     /// Invalid or unspecified severity
     invalid = 0,
-    
+
     /// Trace level logging - finest granularity
     trace = 1,
     trace2 = 2,
     trace3 = 3,
     trace4 = 4,
-    
+
     /// Debug level logging - debugging information
     debug = 5,
     debug2 = 6,
     debug3 = 7,
     debug4 = 8,
-    
+
     /// Info level logging - informational messages
     info = 9,
     info2 = 10,
     info3 = 11,
     info4 = 12,
-    
+
     /// Warning level logging - warning conditions
     warn = 13,
     warn2 = 14,
     warn3 = 15,
     warn4 = 16,
-    
+
     /// Error level logging - error conditions
     @"error" = 17,
     error2 = 18,
     error3 = 19,
     error4 = 20,
-    
+
     /// Fatal level logging - fatal conditions
     fatal = 21,
     fatal2 = 22,
     fatal3 = 23,
     fatal4 = 24,
-    
+
     /// Convert severity to its numeric value
     pub fn toNumber(self: Severity) u8 {
         return @intFromEnum(self);
     }
-    
+
     /// Convert severity to standard text representation (uppercase)
     pub fn toText(self: Severity) []const u8 {
         return switch (self) {
@@ -85,7 +85,7 @@ pub const Severity = enum(u8) {
             .fatal4 => "FATAL4",
         };
     }
-    
+
     /// Convert severity to short text representation (base level only)
     pub fn toShortText(self: Severity) []const u8 {
         return switch (self) {
@@ -98,22 +98,22 @@ pub const Severity = enum(u8) {
             .fatal, .fatal2, .fatal3, .fatal4 => "FATAL",
         };
     }
-    
+
     /// Check if this severity is valid (not Invalid)
     pub fn isValid(self: Severity) bool {
         return self != .invalid;
     }
-    
+
     /// Check if this severity is at least as severe as another
     pub fn isAtLeast(self: Severity, other: Severity) bool {
         return self.toNumber() >= other.toNumber();
     }
-    
+
     /// Check if this severity is more severe than another
     pub fn isMoreSevereThan(self: Severity, other: Severity) bool {
         return self.toNumber() > other.toNumber();
     }
-    
+
     /// Get the base severity level (e.g., Error2 -> Error)
     pub fn getBaseLevel(self: Severity) Severity {
         return switch (self) {
@@ -126,16 +126,12 @@ pub const Severity = enum(u8) {
             .fatal, .fatal2, .fatal3, .fatal4 => .fatal,
         };
     }
-    
+
     /// Format severity for display
     pub fn format(
         self: Severity,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
         writer: anytype,
     ) !void {
-        _ = fmt;
-        _ = options;
         try writer.writeAll(self.toText());
     }
 };
@@ -161,9 +157,9 @@ pub fn fromText(text: []const u8) SeverityError!Severity {
     if (text.len > buf.len) {
         return error.InvalidSeverityText;
     }
-    
+
     const upper = std.ascii.upperString(&buf, text);
-    
+
     // Check all severity values
     inline for (@typeInfo(Severity).@"enum".fields) |field| {
         const severity: Severity = @enumFromInt(field.value);
@@ -171,7 +167,7 @@ pub fn fromText(text: []const u8) SeverityError!Severity {
             return severity;
         }
     }
-    
+
     // Also accept short forms (e.g., "ERROR" for any ERROR level)
     if (std.mem.eql(u8, upper, "TRACE")) return .trace;
     if (std.mem.eql(u8, upper, "DEBUG")) return .debug;
@@ -179,7 +175,7 @@ pub fn fromText(text: []const u8) SeverityError!Severity {
     if (std.mem.eql(u8, upper, "WARN")) return .warn;
     if (std.mem.eql(u8, upper, "ERROR")) return .@"error";
     if (std.mem.eql(u8, upper, "FATAL")) return .fatal;
-    
+
     return error.InvalidSeverityText;
 }
 
@@ -187,7 +183,7 @@ pub fn fromText(text: []const u8) SeverityError!Severity {
 
 test "Severity numeric values" {
     const testing = std.testing;
-    
+
     try testing.expectEqual(@as(u8, 0), Severity.invalid.toNumber());
     try testing.expectEqual(@as(u8, 1), Severity.trace.toNumber());
     try testing.expectEqual(@as(u8, 5), Severity.debug.toNumber());
@@ -200,7 +196,7 @@ test "Severity numeric values" {
 
 test "Severity text representation" {
     const testing = std.testing;
-    
+
     try testing.expectEqualStrings("INVALID", Severity.invalid.toText());
     try testing.expectEqualStrings("TRACE", Severity.trace.toText());
     try testing.expectEqualStrings("DEBUG3", Severity.debug3.toText());
@@ -212,7 +208,7 @@ test "Severity text representation" {
 
 test "Severity short text representation" {
     const testing = std.testing;
-    
+
     try testing.expectEqualStrings("TRACE", Severity.trace2.toShortText());
     try testing.expectEqualStrings("DEBUG", Severity.debug3.toShortText());
     try testing.expectEqualStrings("INFO", Severity.info4.toShortText());
@@ -223,7 +219,7 @@ test "Severity short text representation" {
 
 test "Severity validation" {
     const testing = std.testing;
-    
+
     try testing.expect(!Severity.invalid.isValid());
     try testing.expect(Severity.trace.isValid());
     try testing.expect(Severity.debug.isValid());
@@ -235,11 +231,11 @@ test "Severity validation" {
 
 test "Severity comparison" {
     const testing = std.testing;
-    
+
     try testing.expect(Severity.@"error".isAtLeast(.warn));
     try testing.expect(Severity.fatal.isAtLeast(.fatal));
     try testing.expect(!Severity.info.isAtLeast(.warn));
-    
+
     try testing.expect(Severity.@"error".isMoreSevereThan(.warn));
     try testing.expect(!Severity.@"error".isMoreSevereThan(.@"error"));
     try testing.expect(!Severity.info.isMoreSevereThan(.warn));
@@ -247,7 +243,7 @@ test "Severity comparison" {
 
 test "Severity base level" {
     const testing = std.testing;
-    
+
     try testing.expectEqual(Severity.trace, Severity.trace3.getBaseLevel());
     try testing.expectEqual(Severity.debug, Severity.debug2.getBaseLevel());
     try testing.expectEqual(Severity.info, Severity.info.getBaseLevel());
@@ -259,7 +255,7 @@ test "Severity base level" {
 
 test "Severity from number" {
     const testing = std.testing;
-    
+
     try testing.expectEqual(Severity.invalid, try fromNumber(0));
     try testing.expectEqual(Severity.trace, try fromNumber(1));
     try testing.expectEqual(Severity.debug, try fromNumber(5));
@@ -268,7 +264,7 @@ test "Severity from number" {
     try testing.expectEqual(Severity.@"error", try fromNumber(17));
     try testing.expectEqual(Severity.fatal, try fromNumber(21));
     try testing.expectEqual(Severity.fatal4, try fromNumber(24));
-    
+
     try testing.expectError(error.InvalidSeverityNumber, fromNumber(25));
     try testing.expectError(error.InvalidSeverityNumber, fromNumber(100));
     try testing.expectError(error.InvalidSeverityNumber, fromNumber(255));
@@ -276,7 +272,7 @@ test "Severity from number" {
 
 test "Severity from text" {
     const testing = std.testing;
-    
+
     // Exact matches
     try testing.expectEqual(Severity.invalid, try fromText("INVALID"));
     try testing.expectEqual(Severity.trace, try fromText("TRACE"));
@@ -285,17 +281,17 @@ test "Severity from text" {
     try testing.expectEqual(Severity.warn4, try fromText("WARN4"));
     try testing.expectEqual(Severity.@"error", try fromText("ERROR"));
     try testing.expectEqual(Severity.fatal2, try fromText("FATAL2"));
-    
+
     // Case insensitive
     try testing.expectEqual(Severity.trace, try fromText("trace"));
     try testing.expectEqual(Severity.debug, try fromText("Debug"));
     try testing.expectEqual(Severity.info, try fromText("iNfO"));
     try testing.expectEqual(Severity.fatal4, try fromText("fatal4"));
-    
+
     // Short forms
     try testing.expectEqual(Severity.warn, try fromText("warn"));
     try testing.expectEqual(Severity.@"error", try fromText("error"));
-    
+
     // Invalid text
     try testing.expectError(error.InvalidSeverityText, fromText("INVALID_SEVERITY"));
     try testing.expectError(error.InvalidSeverityText, fromText("TRACE5"));
@@ -306,13 +302,13 @@ test "Severity from text" {
 test "Severity formatting" {
     const testing = std.testing;
     var buf: [32]u8 = undefined;
-    
-    const result1 = try std.fmt.bufPrint(&buf, "{}", .{Severity.@"error"});
+
+    const result1 = try std.fmt.bufPrint(&buf, "{f}", .{Severity.@"error"});
     try testing.expectEqualStrings("ERROR", result1);
-    
-    const result2 = try std.fmt.bufPrint(&buf, "{}", .{Severity.debug3});
+
+    const result2 = try std.fmt.bufPrint(&buf, "{f}", .{Severity.debug3});
     try testing.expectEqualStrings("DEBUG3", result2);
-    
-    const result3 = try std.fmt.bufPrint(&buf, "Severity: {}", .{Severity.info});
+
+    const result3 = try std.fmt.bufPrint(&buf, "Severity: {f}", .{Severity.info});
     try testing.expectEqualStrings("Severity: INFO", result3);
 }

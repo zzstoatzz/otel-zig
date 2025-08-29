@@ -106,14 +106,14 @@ pub const ReaderAggregationState = struct {
     /// Collect metrics from all aggregations (lock-free aggregation access)
     pub fn collect(self: *@This(), allocator: std.mem.Allocator) ![]sdk.MetricData {
         // Lock only for map iteration, aggregation data access is lock-free
-        var entry_list = std.ArrayList(sdk.AttributeAggregationEntry).init(allocator);
-        defer entry_list.deinit();
+        var entry_list = std.ArrayList(sdk.AttributeAggregationEntry).empty;
+        defer entry_list.deinit(allocator);
 
         // Copy aggregation entry pointers under lock
         try self.aggregations.snapshot(allocator, &entry_list);
 
-        var metrics_list = std.ArrayList(sdk.MetricData).init(allocator);
-        errdefer metrics_list.deinit();
+        var metrics_list = std.ArrayList(sdk.MetricData).empty;
+        errdefer metrics_list.deinit(allocator);
 
         const current_timestamp = @as(u64, @intCast(std.time.nanoTimestamp()));
 
@@ -127,11 +127,11 @@ pub const ReaderAggregationState = struct {
             );
 
             if (metric_data) |data| {
-                try metrics_list.append(data);
+                try metrics_list.append(allocator, data);
             }
         }
 
-        return metrics_list.toOwnedSlice();
+        return metrics_list.toOwnedSlice(allocator);
     }
 
     /// Convert a single aggregation entry to MetricData

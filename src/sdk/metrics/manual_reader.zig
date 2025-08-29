@@ -117,7 +117,7 @@ pub const ManualReader = struct {
         // Arena cleans up all the memory.
     }
 
-    pub fn forceFlush(self: *ManualReader, timeout_ms: ?u64) api.common.ProcessResult {
+    pub fn forceFlush(self: *ManualReader, timeout_ms: ?u64) api.common.FlushResult {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -127,7 +127,7 @@ pub const ManualReader = struct {
 
         // Flush the exporter
         const result = if (self.exporter) |*exporter| exporter.forceFlush(timeout_ms) else .success;
-        return result.asProcessResult();
+        return result.asFlushResult();
     }
 
     pub fn shutdown(self: *ManualReader, timeout_ms: ?u64) api.common.ProcessResult {
@@ -142,7 +142,7 @@ pub const ManualReader = struct {
 
         // Shutdown the exporter
         const result = if (self.exporter) |*exporter| exporter.shutdown(timeout_ms) else .success;
-        return result.asProcessResult();
+        return result.asFlushResult().asProcessResult();
     }
 
     pub fn registerMeter(self: *ManualReader, meter: *sdk.Meter) void {
@@ -171,6 +171,13 @@ pub const ManualReader = struct {
         }
     }
 
+    pub fn unregisterAllMeters(self: *ManualReader) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        self.registered_meters.clearAndFree(self.allocator);
+    }
+
     pub fn reader(self: *ManualReader) sdk.Reader {
         return .{ .bridge = sdk.BridgeMetricReader.init(self) };
     }
@@ -196,19 +203,19 @@ test "ManualReader and Observable instrument test." {
         processor.* = try ManualReader.init(allocator, mock_exporter.metricExporter());
         {
             errdefer processor.deinit();
-            try provider.registerProcessor(processor.reader());
+            try provider.registerReader(processor.reader());
         }
     }
 
-    const scope = try api.InstrumentationScope.initSimple("cardinality", "1.0.0");
+    const scope = api.InstrumentationScope{ .name = "cardinality", .version = "1.0.0" };
     var meter = try provider.getMeterWithScope(scope);
-    const ctx = api.Context.empty(allocator);
+    const ctx = &[_]api.ContextKeyValue{};
 
     const CbStruct = struct {
-        fn callback(_: std.mem.Allocator, result: *api.metrics.ObservableResult(i64), context: *anyopaque) void {
+        fn callback(alloc: std.mem.Allocator, result: *api.metrics.ObservableResult(i64), context: *anyopaque) void {
             const self: *ManualReader = @ptrCast(@alignCast(context));
             const cardinality = self.reader_state.aggregations.getCardinality();
-            result.observeValue(@intCast(cardinality));
+            result.observeValue(alloc, @intCast(cardinality));
         }
     };
 
@@ -226,8 +233,8 @@ test "ManualReader and Observable instrument test." {
     const up_down = try meter.createCounter(i64, "foo", null, "1", null);
     for (0..15) |i| {
         const attributes = try api.AttributeBuilder.init(allocator)
-            .addString("bar", "baz")
-            .addInt("basic", @intCast(i % 4))
+            .add(.{ .key = "bar", .value = .{ .string = "baz" } })
+            .add(.{ .key = "basic", .value = .{ .int = @intCast(i % 4) } })
             .finish(allocator);
         defer api.AttributeKeyValue.deinitOwnedSlice(allocator, attributes);
         up_down.add(ctx, 1, attributes);

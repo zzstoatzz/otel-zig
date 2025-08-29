@@ -36,7 +36,7 @@ pub fn main() !void {
     }
 
     // Get a meter
-    const scope = try otel_api.InstrumentationScope.initSimple("example.comprehensive.otlp", "1.0.0");
+    const scope = otel_api.InstrumentationScope{ .name = "example.comprehensive.otlp", .version = "1.0.0" };
     var meter = try otel_api.getGlobalMeterProvider().getMeterWithScope(scope);
 
     std.debug.print("=== Comprehensive OpenTelemetry Metrics OTLP Export Demo ===\n\n", .{});
@@ -145,7 +145,7 @@ pub fn main() !void {
         null,
     );
 
-    const ctx = otel_api.Context.empty(allocator);
+    const ctx = &[_]otel_api.ContextKeyValue{};
 
     // ========================================================================
     // Simulate HTTP server activity with all instrument types
@@ -161,9 +161,9 @@ pub fn main() !void {
     std.debug.print("\nProcessing API requests...\n", .{});
 
     const api_attrs = try otel_api.common.AttributeBuilder.init(allocator)
-        .add("http.method", .{ .string = "GET" })
-        .add("http.route", .{ .string = "/api/users" })
-        .add("http.status_code", .{ .int = 200 })
+        .add(.{ .key = "http.method", .value = .{ .string = "GET" } })
+        .add(.{ .key = "http.route", .value = .{ .string = "/api/users" } })
+        .add(.{ .key = "http.status_code", .value = .{ .int = 200 } })
         .finish(allocator);
     defer otel_api.common.AttributeKeyValue.deinitOwnedSlice(allocator, api_attrs);
 
@@ -197,9 +197,9 @@ pub fn main() !void {
     std.debug.print("\nProcessing static file requests...\n", .{});
 
     const static_attrs = try otel_api.common.AttributeBuilder.init(allocator)
-        .add("http.method", .{ .string = "GET" })
-        .add("http.route", .{ .string = "/static/*" })
-        .add("http.status_code", .{ .int = 200 })
+        .add(.{ .key = "http.method", .value = .{ .string = "GET" } })
+        .add(.{ .key = "http.route", .value = .{ .string = "/static/*" } })
+        .add(.{ .key = "http.status_code", .value = .{ .int = 200 } })
         .finish(allocator);
     defer otel_api.common.AttributeKeyValue.deinitOwnedSlice(allocator, static_attrs);
 
@@ -228,10 +228,10 @@ pub fn main() !void {
     std.debug.print("\nProcessing database queries...\n", .{});
 
     const db_attrs = try otel_api.common.AttributeBuilder.init(allocator)
-        .add("http.method", .{ .string = "POST" })
-        .add("http.route", .{ .string = "/api/query" })
-        .add("http.status_code", .{ .int = 200 })
-        .add("db.system", .{ .string = "postgresql" })
+        .add(.{ .key = "http.method", .value = .{ .string = "POST" } })
+        .add(.{ .key = "http.route", .value = .{ .string = "/api/query" } })
+        .add(.{ .key = "http.status_code", .value = .{ .int = 200 } })
+        .add(.{ .key = "db.system", .value = .{ .string = "postgresql" } })
         .finish(allocator);
     defer otel_api.common.AttributeKeyValue.deinitOwnedSlice(allocator, db_attrs);
 
@@ -254,8 +254,8 @@ pub fn main() !void {
         latency_histogram.record(ctx, http_duration, db_attrs);
 
         const db_query_attrs = try otel_api.common.AttributeBuilder.init(allocator)
-            .add("db.system", .{ .string = "postgresql" })
-            .add("db.operation", .{ .string = "SELECT" })
+            .add(.{ .key = "db.system", .value = .{ .string = "postgresql" } })
+            .add(.{ .key = "db.operation", .value = .{ .string = "SELECT" } })
             .finish(allocator);
         defer otel_api.common.AttributeKeyValue.deinitOwnedSlice(allocator, db_query_attrs);
 
@@ -277,9 +277,9 @@ pub fn main() !void {
     std.debug.print("\nProcessing error responses...\n", .{});
 
     const error_attrs = try otel_api.common.AttributeBuilder.init(allocator)
-        .add("http.method", .{ .string = "GET" })
-        .add("http.route", .{ .string = "/api/invalid" })
-        .add("http.status_code", .{ .int = 404 })
+        .add(.{ .key = "http.method", .value = .{ .string = "GET" } })
+        .add(.{ .key = "http.route", .value = .{ .string = "/api/invalid" } })
+        .add(.{ .key = "http.status_code", .value = .{ .int = 404 } })
         .finish(allocator);
     defer otel_api.common.AttributeKeyValue.deinitOwnedSlice(allocator, error_attrs);
 
@@ -312,7 +312,7 @@ pub fn main() !void {
     // Simulate memory usage.
     const simulated_memory: f64 = 2048.5;
     const memory_attrs = try otel_api.common.AttributeBuilder.init(allocator)
-        .add("memory.type", .{ .string = "heap" })
+        .add(.{ .key = "memory.type", .value = .{ .string = "heap" } })
         .finish(allocator);
     defer otel_api.common.AttributeKeyValue.deinitOwnedSlice(allocator, memory_attrs);
 
@@ -321,7 +321,7 @@ pub fn main() !void {
 
     // CPU usage
     const cpu_attrs = try otel_api.common.AttributeBuilder.init(allocator)
-        .add("cpu.core", .{ .string = "all" })
+        .add(.{ .key = "cpu.core", .value = .{ .string = "all" } })
         .finish(allocator);
     defer otel_api.common.AttributeKeyValue.deinitOwnedSlice(allocator, cpu_attrs);
 
@@ -330,8 +330,8 @@ pub fn main() !void {
 
     // Disk space
     const disk_attrs = try otel_api.common.AttributeBuilder.init(allocator)
-        .add("disk.device", .{ .string = "/dev/disk1" })
-        .add("disk.mount_point", .{ .string = "/" })
+        .add(.{ .key = "disk.device", .value = .{ .string = "/dev/disk1" } })
+        .add(.{ .key = "disk.mount_point", .value = .{ .string = "/" } })
         .finish(allocator);
     defer otel_api.common.AttributeKeyValue.deinitOwnedSlice(allocator, disk_attrs);
 
@@ -348,26 +348,8 @@ pub fn main() !void {
     const flush_result = concrete_provider.forceFlush(5000);
     if (flush_result == .success) {
         std.debug.print("✅ Metrics successfully exported to OTLP endpoint!\n", .{});
-        std.debug.print("\nCheck your OTLP backend to view:\n", .{});
-        std.debug.print("📊 COUNTERS:\n", .{});
-        std.debug.print("  - Total HTTP requests processed\n", .{});
-        std.debug.print("  - Total bytes sent in responses\n", .{});
-        std.debug.print("  - Total request processing time\n", .{});
-        std.debug.print("📈 UP-DOWN COUNTERS:\n", .{});
-        std.debug.print("  - Current active requests (should be 0)\n", .{});
-        std.debug.print("  - Connection pool size changes\n", .{});
-        std.debug.print("📏 GAUGES:\n", .{});
-        std.debug.print("  - Current memory usage\n", .{});
-        std.debug.print("  - Current CPU usage\n", .{});
-        std.debug.print("  - Available disk space\n", .{});
-        std.debug.print("📈 HISTOGRAMS:\n", .{});
-        std.debug.print("  - HTTP request latency distributions\n", .{});
-        std.debug.print("  - Request/response size distributions\n", .{});
-        std.debug.print("  - Database query duration distributions\n", .{});
     } else {
         std.debug.print("❌ Failed to export metrics. Is your OTLP endpoint running?\n", .{});
-        std.debug.print("Default endpoint: http://localhost:4318/v1/metrics\n", .{});
-        std.debug.print("Try: docker run -p 4318:4318 otel/opentelemetry-collector:latest\n", .{});
     }
 
     std.debug.print("\n=== Summary ===\n", .{});

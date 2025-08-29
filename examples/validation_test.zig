@@ -37,10 +37,13 @@ pub fn main() !void {
     otel_api.common.setGlobalErrorHandler(validationErrorHandler);
 
     // Set up logging provider
+    var stderr_buffer = [_]u8{0} ** 1024;
+    const stderr_fh = std.fs.File.stderr();
+    var stderr = stderr_fh.writer(&stderr_buffer);
     const log_provider = try otel_sdk.logs.setupGlobalProvider(
         allocator,
         .{otel_sdk.logs.SimpleLogRecordProcessor.PipelineStep.init({})
-            .flowTo(otel_exporters.console.StreamLogExporter(std.fs.File.Writer).PipelineStep.init(.{}))},
+            .flowTo(otel_exporters.stream.LogRecordSink.PipelineStep.init(.{ .writer = &stderr.interface }))},
     );
     defer {
         log_provider.deinit();
@@ -51,7 +54,7 @@ pub fn main() !void {
     const metric_provider = try otel_sdk.metrics.setupGlobalProvider(
         allocator,
         .{otel_sdk.metrics.ManualReader.PipelineStep.init({})
-            .flowTo(otel_exporters.console.ConsoleMetricExporter.PipelineStep.init(.{}))},
+            .flowTo(otel_exporters.stream.MetricDataSink.PipelineStep.init(.{ .writer = &stderr.interface }))},
     );
     defer {
         metric_provider.deinit();
@@ -87,10 +90,9 @@ fn testLoggerValidation() !void {
     print("🔍 Testing Logger API Validation\n", .{});
     print("-" ** 30 ++ "\n", .{});
 
-    const scope = try otel_api.InstrumentationScope.initSimple("validation.logger.test", "1.0.0");
+    const scope = otel_api.InstrumentationScope{ .name = "validation.logger.test", .version = "1.0.0" };
     var logger = try otel_api.getGlobalLoggerProvider().getLoggerWithScope(scope);
-    const ctx = otel_api.Context.empty(std.heap.page_allocator);
-    defer ctx.deinit();
+    const ctx = &[_]otel_api.ContextKeyValue{};
 
     const errors_before = error_count;
 
@@ -148,7 +150,7 @@ fn testMeterValidation() !void {
     print("🔍 Testing Meter API Validation\n", .{});
     print("-" ** 30 ++ "\n", .{});
 
-    const scope = try otel_api.InstrumentationScope.initSimple("validation.meter.test", "1.0.0");
+    const scope = otel_api.InstrumentationScope{ .name = "validation.meter.test", .version = "1.0.0" };
     var meter = try otel_api.getGlobalMeterProvider().getMeterWithScope(scope);
 
     const errors_before = error_count;

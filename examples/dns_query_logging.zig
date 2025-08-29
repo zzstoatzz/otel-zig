@@ -18,27 +18,29 @@ pub fn main() !void {
     defer otel_api.provider_registry.unsetAllProviders();
 
     // Setup global provider with pipeline configuration in one call
+    var stderr_buffer = [_]u8{0} ** 1024;
+    const stderr_fh = std.fs.File.stderr();
+    var stderr = stderr_fh.writer(&stderr_buffer);
     const provider = try otel_sdk.logs.setupGlobalProvider(allocator, .{otel_sdk.logs.SimpleLogRecordProcessor.PipelineStep.init({})
-        .flowTo(otel_exporters.console.StreamLogExporter(std.fs.File.Writer).PipelineStep.init(.{}))});
+        .flowTo(otel_exporters.stream.LogRecordSink.PipelineStep.init(.{ .writer = &stderr.interface }))});
     defer {
         provider.deinit();
         provider.destroy();
     }
 
     // Get application logger from global registry (now backed by SDK)
-    const scope = try otel_api.InstrumentationScope.initSimple("dns.query.example", "1.0.0");
+    const scope = otel_api.InstrumentationScope{ .name = "dns.query.example", .version = "1.0.0" };
     var app_logger = try otel_api.getGlobalLoggerProvider().getLoggerWithScope(scope);
 
     // Create execution context
-    var ctx = otel_api.Context.empty(allocator);
-    defer ctx.deinit();
+    const ctx = &[_]otel_api.ContextKeyValue{};
 
     // Log application startup using proper log records
     const startup_attrs = try otel_api.common.AttributeBuilder.init(allocator)
-        .add("app.name", .{ .string = "dns-query-example" })
-        .add("app.version", .{ .string = "1.0.0" })
-        .add("app.language", .{ .string = "zig" })
-        .add("event.type", .{ .string = "application.startup" })
+        .add(.{ .key = "app.name", .value = .{ .string = "dns-query-example" } })
+        .add(.{ .key = "app.version", .value = .{ .string = "1.0.0" } })
+        .add(.{ .key = "app.language", .value = .{ .string = "zig" } })
+        .add(.{ .key = "event.type", .value = .{ .string = "application.startup" } })
         .finish(allocator);
     defer otel_api.common.AttributeKeyValue.deinitOwnedSlice(allocator, startup_attrs);
 
@@ -61,8 +63,8 @@ pub fn main() !void {
 
     // Log application shutdown
     const shutdown_attrs = try otel_api.common.AttributeBuilder.init(allocator)
-        .add("event.type", .{ .string = "application.shutdown" })
-        .add("app.exit_code", .{ .int = 0 })
+        .add(.{ .key = "event.type", .value = .{ .string = "application.shutdown" } })
+        .add(.{ .key = "app.exit_code", .value = .{ .int = 0 } })
         .finish(allocator);
     defer otel_api.common.AttributeKeyValue.deinitOwnedSlice(allocator, shutdown_attrs);
 
@@ -81,11 +83,11 @@ pub fn main() !void {
     );
 }
 
-fn performDnsQuery(ctx: otel_api.Context, allocator: std.mem.Allocator) !void {
+fn performDnsQuery(ctx: []const otel_api.ContextKeyValue, allocator: std.mem.Allocator) !void {
     const hostname = "google.com";
 
     // Get DNS operation logger from global registry
-    const scope = try otel_api.InstrumentationScope.initWithName("dns.resolver");
+    const scope = otel_api.InstrumentationScope{ .name = "dns.resolver" };
     var dns_logger = try otel_api.getGlobalLoggerProvider().getLoggerWithScope(scope);
 
     // Log DNS query initiation
@@ -106,10 +108,10 @@ fn performDnsQuery(ctx: otel_api.Context, allocator: std.mem.Allocator) !void {
     // Log detailed operation start
     const start_time = @as(i64, @intCast(std.time.nanoTimestamp()));
     const dns_start_attrs = try otel_api.common.AttributeBuilder.init(allocator)
-        .add("dns.hostname", .{ .string = hostname })
-        .add("operation.name", .{ .string = "dns_query" })
-        .add("operation.type", .{ .string = "dns_resolution" })
-        .add("operation.status", .{ .string = "started" })
+        .add(.{ .key = "dns.hostname", .value = .{ .string = hostname } })
+        .add(.{ .key = "operation.name", .value = .{ .string = "dns_query" } })
+        .add(.{ .key = "operation.type", .value = .{ .string = "dns_resolution" } })
+        .add(.{ .key = "operation.status", .value = .{ .string = "started" } })
         .finish(allocator);
     defer otel_api.AttributeKeyValue.deinitOwnedSlice(allocator, dns_start_attrs);
     dns_logger.emitLogRecord(
@@ -132,10 +134,10 @@ fn performDnsQuery(ctx: otel_api.Context, allocator: std.mem.Allocator) !void {
         // Log DNS query failure
         const duration_ns = @as(i64, @intCast(std.time.nanoTimestamp())) - start_time;
         const error_attrs = try otel_api.common.AttributeBuilder.init(allocator)
-            .add("dns.hostname", .{ .string = hostname })
-            .add("error.type", .{ .string = @errorName(err) })
-            .add("operation.status", .{ .string = "failed" })
-            .add("dns.duration_ns", .{ .int = duration_ns })
+            .add(.{ .key = "dns.hostname", .value = .{ .string = hostname } })
+            .add(.{ .key = "error.type", .value = .{ .string = @errorName(err) } })
+            .add(.{ .key = "operation.status", .value = .{ .string = "failed" } })
+            .add(.{ .key = "dns.duration_ns", .value = .{ .int = duration_ns } })
             .finish(allocator);
         defer otel_api.common.AttributeKeyValue.deinitOwnedSlice(allocator, error_attrs);
         dns_logger.emitLogRecord(
@@ -161,11 +163,11 @@ fn performDnsQuery(ctx: otel_api.Context, allocator: std.mem.Allocator) !void {
 
     // Log successful DNS resolution
     const success_attrs = try otel_api.common.AttributeBuilder.init(allocator)
-        .add("dns.hostname", .{ .string = hostname })
-        .add("dns.resolved_count", .{ .int = @as(i64, @intCast(address_list.addrs.len)) })
-        .add("dns.duration_ns", .{ .int = @as(i64, @intCast(duration_ns)) })
-        .add("dns.duration_ms", .{ .float = duration_ms })
-        .add("operation.status", .{ .string = "completed" })
+        .add(.{ .key = "dns.hostname", .value = .{ .string = hostname } })
+        .add(.{ .key = "dns.resolved_count", .value = .{ .int = @as(i64, @intCast(address_list.addrs.len)) } })
+        .add(.{ .key = "dns.duration_ns", .value = .{ .int = @as(i64, @intCast(duration_ns)) } })
+        .add(.{ .key = "dns.duration_ms", .value = .{ .float = duration_ms } })
+        .add(.{ .key = "operation.status", .value = .{ .string = "completed" } })
         .finish(allocator);
     defer otel_api.common.AttributeKeyValue.deinitOwnedSlice(allocator, success_attrs);
     dns_logger.emitLogRecord(
@@ -184,14 +186,14 @@ fn performDnsQuery(ctx: otel_api.Context, allocator: std.mem.Allocator) !void {
 
     // Log each resolved IP address
     for (address_list.addrs, 0..) |addr, i| {
-        const ip_str = try std.fmt.allocPrint(allocator, "{}", .{addr.in});
+        const ip_str = try std.fmt.allocPrint(allocator, "{f}", .{addr.in});
         defer allocator.free(ip_str);
 
         const ip_attrs = try otel_api.common.AttributeBuilder.init(allocator)
-            .add("dns.hostname", .{ .string = hostname })
-            .add("dns.resolved_ip", .{ .string = ip_str })
-            .add("dns.resolution_index", .{ .int = @as(i64, @intCast(i)) })
-            .add("dns.address_family", .{ .string = "ipv4" })
+            .add(.{ .key = "dns.hostname", .value = .{ .string = hostname } })
+            .add(.{ .key = "dns.resolved_ip", .value = .{ .string = ip_str } })
+            .add(.{ .key = "dns.resolution_index", .value = .{ .int = @as(i64, @intCast(i)) } })
+            .add(.{ .key = "dns.address_family", .value = .{ .string = "ipv4" } })
             .finish(allocator);
         defer otel_api.common.AttributeKeyValue.deinitOwnedSlice(allocator, ip_attrs);
         dns_logger.emitLogRecord(

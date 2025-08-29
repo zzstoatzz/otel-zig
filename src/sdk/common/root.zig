@@ -15,13 +15,6 @@
 
 const std = @import("std");
 
-// Time utilities
-pub const Clock = @import("clock.zig").Clock;
-pub const MonotonicClock = @import("clock.zig").MonotonicClock;
-pub const SystemClock = @import("clock.zig").SystemClock;
-pub const getTimestamp = @import("clock.zig").getTimestamp;
-pub const getMonotonicTime = @import("clock.zig").getMonotonicTime;
-
 // Configuration
 const config_zig = @import("config.zig");
 pub const Config = config_zig.Config;
@@ -32,10 +25,15 @@ pub const LogRecordLimits = config_zig.LogRecordLimits;
 pub const parseEnvironmentVariable = config_zig.parseEnvironmentVariable;
 pub const getEnvironmentVariable = config_zig.getEnvironmentVariable;
 
+// Pipeline Configuration
 const pipeline_zig = @import("pipeline.zig");
 pub const PipelineBuilder = pipeline_zig.PipelineBuilder;
 pub const PipelineStepInstructions = pipeline_zig.PipelineStepInstructions;
 pub const PipelineDeinitConnection = pipeline_zig.PipelineDeinitConnection;
+pub const buildPipeline = pipeline_zig.buildPipeline;
+
+// Instrumentation Scope Hash Map Context
+pub const InstrumentationScopeMapContext = @import("scope_context.zig").InstrumentationScopeMapContext;
 
 test {
     std.testing.refAllDecls(@This());

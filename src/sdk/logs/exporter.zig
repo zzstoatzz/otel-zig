@@ -136,7 +136,7 @@ pub const MockLogRecordExporter = struct {
     pub fn init(allocator: std.mem.Allocator) MockLogRecordExporter {
         return .{
             .allocator = allocator,
-            .exported_records = std.ArrayList(sdk.LogRecord).init(allocator),
+            .exported_records = .empty,
             .export_result = .success,
             .flush_result = .success,
             .shutdown_result = .success,
@@ -144,7 +144,7 @@ pub const MockLogRecordExporter = struct {
     }
 
     pub fn deinit(self: *MockLogRecordExporter) void {
-        self.exported_records.deinit();
+        self.exported_records.deinit(self.allocator);
     }
 
     pub fn destroy(self: *MockLogRecordExporter) void {
@@ -155,7 +155,7 @@ pub const MockLogRecordExporter = struct {
         _ = resource;
         for (records) |record| {
             // Deep copy the record since the exporter needs to own the data
-            self.exported_records.append(record) catch return .failure;
+            self.exported_records.append(self.allocator, record) catch return .failure;
         }
         return self.export_result;
     }

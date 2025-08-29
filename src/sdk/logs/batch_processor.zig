@@ -40,16 +40,16 @@ pub const BatchLogRecordProcessor = struct {
             .exporter = sdk.LogRecordExporter{ .noop = {} },
             .mutex = .{},
             .condition = .{},
-            .is_shutdown = std.atomic.Value(bool).init(false),
-            .is_running = std.atomic.Value(bool).init(false),
-            .flush_in_progress = std.atomic.Value(bool).init(false),
-            .export_in_progress = std.atomic.Value(bool).init(false),
+            .is_shutdown = .init(false),
+            .is_running = .init(false),
+            .flush_in_progress = .init(false),
+            .export_in_progress = .init(false),
             .flush_complete = .{},
             .export_complete = .{},
             .thread = null,
             .export_interval_ms = config.export_interval_ms orelse 5000,
             .max_queue_size = config.max_queue_size orelse 2048,
-            .log_queue = std.ArrayList(sdk.LogRecord).init(allocator),
+            .log_queue = .empty,
         };
         try self.start();
     }
@@ -88,16 +88,16 @@ pub const BatchLogRecordProcessor = struct {
             .exporter = exporter,
             .mutex = .{},
             .condition = .{},
-            .is_shutdown = std.atomic.Value(bool).init(false),
-            .is_running = std.atomic.Value(bool).init(false),
-            .flush_in_progress = std.atomic.Value(bool).init(false),
-            .export_in_progress = std.atomic.Value(bool).init(false),
+            .is_shutdown = .init(false),
+            .is_running = .init(false),
+            .flush_in_progress = .init(false),
+            .export_in_progress = .init(false),
             .flush_complete = .{},
             .export_complete = .{},
             .thread = null,
             .export_interval_ms = export_interval_ms orelse 5000,
             .max_queue_size = max_queue_size orelse 2048,
-            .log_queue = std.ArrayList(sdk.LogRecord).init(allocator),
+            .log_queue = .empty,
         };
 
         return self;
@@ -141,7 +141,7 @@ pub const BatchLogRecordProcessor = struct {
         for (self.log_queue.items) |record| {
             record.deinitOwned(self.allocator);
         }
-        self.log_queue.deinit();
+        self.log_queue.deinit(self.allocator);
         self.mutex.unlock();
 
         // Clean up exporter
@@ -153,7 +153,7 @@ pub const BatchLogRecordProcessor = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn onEmit(self: *BatchLogRecordProcessor, record: sdk.LogRecord, ctx: api.Context, resource: sdk.Resource) void {
+    pub fn onEmit(self: *BatchLogRecordProcessor, record: sdk.LogRecord, ctx: []const api.ContextKeyValue, resource: sdk.Resource) void {
         _ = ctx;
         _ = resource;
 
@@ -170,7 +170,7 @@ pub const BatchLogRecordProcessor = struct {
         }
 
         // Clone log record for queuing
-        const owned_record = sdk.LogRecord.initOwned(self.allocator, record) catch |err| {
+        var owned_record = sdk.LogRecord.initOwned(self.allocator, record) catch |err| {
             const message_body = if (record.body) |body| switch (body) {
                 .string => |s| s,
                 else => "(complex body)",
@@ -188,7 +188,7 @@ pub const BatchLogRecordProcessor = struct {
         };
 
         // Add cloned log record to queue
-        self.log_queue.append(owned_record) catch |err| {
+        self.log_queue.append(self.allocator, owned_record) catch |err| {
             owned_record.deinitOwned(self.allocator);
 
             const message_body = if (record.body) |body| switch (body) {
@@ -209,7 +209,7 @@ pub const BatchLogRecordProcessor = struct {
     }
 
     /// Force export all queued log records immediately
-    pub fn forceFlush(self: *BatchLogRecordProcessor, timeout_ms: ?u64) api.common.ProcessResult {
+    pub fn forceFlush(self: *BatchLogRecordProcessor, timeout_ms: ?u64) api.common.FlushResult {
         // Quick check without mutex
         if (self.is_shutdown.load(.acquire)) {
             return .failure;
@@ -288,7 +288,7 @@ pub const BatchLogRecordProcessor = struct {
         const flush_result = self.exporter.forceFlush(timeout_ms);
         self.mutex.lock();
 
-        return flush_result.asProcessResult();
+        return flush_result.asFlushResult();
     }
 
     pub fn shutdown(self: *BatchLogRecordProcessor, timeout_ms: ?u64) api.common.ProcessResult {
@@ -301,7 +301,7 @@ pub const BatchLogRecordProcessor = struct {
         // Shutdown the exporter
         const shutdown_result = self.exporter.shutdown(timeout_ms);
 
-        return if (result == .success and shutdown_result.asProcessResult() == .success)
+        return if (result == .success and shutdown_result == .success)
             .success
         else
             .failure;

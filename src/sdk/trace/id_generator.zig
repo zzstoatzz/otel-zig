@@ -119,13 +119,13 @@ pub fn generateSpanId() [8]u8 {
 /// Format a trace ID as a hex string (requires a buffer of at least 32 bytes)
 pub fn formatTraceId(id: [16]u8, buf: []u8) ![]const u8 {
     if (buf.len < 32) return error.BufferTooSmall;
-    return std.fmt.bufPrint(buf, "{x:0>32}", .{std.fmt.fmtSliceHexLower(&id)}) catch unreachable;
+    return std.fmt.bufPrint(buf, "{s:0>32}", .{std.fmt.bytesToHex(&id, .lower)}) catch unreachable;
 }
 
 /// Format a span ID as a hex string (requires a buffer of at least 16 bytes)
 pub fn formatSpanId(id: [8]u8, buf: []u8) ![]const u8 {
     if (buf.len < 16) return error.BufferTooSmall;
-    return std.fmt.bufPrint(buf, "{x:0>16}", .{std.fmt.fmtSliceHexLower(&id)}) catch unreachable;
+    return std.fmt.bufPrint(buf, "{s:0>16}", .{std.fmt.bytesToHex(&id, .lower)}) catch unreachable;
 }
 
 /// Parse a trace ID from a hex string

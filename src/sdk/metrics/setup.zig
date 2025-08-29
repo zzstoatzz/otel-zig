@@ -2,7 +2,6 @@ const std = @import("std");
 const api = @import("otel-api");
 const sdk = struct {
     const MeterProvider = @import("meter_provider.zig").MeterProvider;
-    const ResourceBuilder = @import("../resource/resource.zig").ResourceBuilder;
     const detectResource = @import("../resource/detector.zig").detectResource;
 };
 
@@ -13,19 +12,12 @@ const DefaultProvider = sdk.MeterProvider;
 fn createDefaultProviderValue(allocator: std.mem.Allocator) !DefaultProvider {
     // Step 1: Detect resource
     const detected_resource = try sdk.detectResource(allocator);
-    defer detected_resource.deinitOwned(allocator);
-
-    // Step 2: Merge resources
-    const merged_resource = try sdk.ResourceBuilder.init(allocator)
-        .addResource(detected_resource)
-        .withDefaults()
-        .finish(allocator);
-    errdefer merged_resource.deinitOwned(allocator);
+    errdefer detected_resource.deinitOwned(allocator);
 
     // Step 3: Create provider
     return .init(
         allocator,
-        merged_resource,
+        detected_resource,
     );
 }
 

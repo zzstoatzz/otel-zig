@@ -37,10 +37,13 @@ pub fn main() !void {
     defer otel_api.provider_registry.unsetAllProviders();
 
     // Setup global OTel logging provider with console exporter
+    var stderr_buffer = [_]u8{0} ** 1024;
+    const stderr_fh = std.fs.File.stderr();
+    var stderr = stderr_fh.writer(&stderr_buffer);
     const provider = try otel_sdk.logs.setupGlobalProvider(
         allocator,
         .{otel_sdk.logs.SimpleLogRecordProcessor.PipelineStep.init({})
-            .flowTo(otel_exporters.console.StreamLogExporter(std.fs.File.Writer).PipelineStep.init(.{}))},
+            .flowTo(otel_exporters.stream.LogRecordSink.PipelineStep.init(.{ .writer = &stderr.interface }))},
     );
     defer {
         provider.deinit();
@@ -68,7 +71,7 @@ pub fn main() !void {
     std.log.info("DNS Query Example application shutting down", .{});
 
     // Give OTLP exporter time to flush
-    std.time.sleep(1 * std.time.ns_per_s);
+    std.Thread.sleep(1 * std.time.ns_per_s);
 }
 
 fn performDnsQuery(allocator: std.mem.Allocator) !void {
@@ -102,7 +105,7 @@ fn performDnsQuery(allocator: std.mem.Allocator) !void {
 
     // Log each resolved IP address
     for (address_list.addrs, 0..) |addr, i| {
-        const ip_str = try std.fmt.allocPrint(allocator, "{}", .{addr.in});
+        const ip_str = try std.fmt.allocPrint(allocator, "{f}", .{addr.in});
         defer allocator.free(ip_str);
 
         ip_log.debug("Resolved IP address #{}: {s} for {s}", .{ i, ip_str, hostname });

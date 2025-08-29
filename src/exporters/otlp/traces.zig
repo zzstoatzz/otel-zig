@@ -6,6 +6,7 @@
 const std = @import("std");
 const otel_api = @import("otel-api");
 const otel_sdk = @import("otel-sdk");
+const protobuf = @import("protobuf");
 
 const ExportResult = otel_api.common.ExportResult;
 const OtlpExporterConfig = @import("root.zig").OtlpExporterConfig;
@@ -16,76 +17,11 @@ const SpanContext = otel_api.trace.SpanContext;
 // Import error handler for structured error reporting
 const error_handler = otel_api.common;
 const SpanExporter = otel_sdk.trace.SpanExporter;
+const convert = @import("convert.zig");
 
-// OTLP data structures for JSON serialization
-const OtlpTracesData = struct {
-    resourceSpans: []OtlpResourceSpans,
-};
-
-const OtlpResourceSpans = struct {
-    resource: OtlpResource,
-    scopeSpans: []OtlpScopeSpans,
-};
-
-const OtlpResource = struct {
-    attributes: []OtlpKeyValue,
-};
-
-const OtlpScopeSpans = struct {
-    scope: OtlpInstrumentationScope,
-    spans: []OtlpSpan,
-};
-
-const OtlpInstrumentationScope = struct {
-    name: []const u8,
-    version: ?[]const u8 = null,
-};
-
-const OtlpSpan = struct {
-    traceId: []const u8,
-    spanId: []const u8,
-    parentSpanId: ?[]const u8 = null,
-    name: []const u8,
-    kind: u32,
-    startTimeUnixNano: u64,
-    endTimeUnixNano: u64,
-    attributes: []OtlpKeyValue,
-    events: []OtlpEvent,
-    links: []OtlpLink,
-    status: OtlpStatus,
-    droppedAttributesCount: u32 = 0,
-    droppedEventsCount: u32 = 0,
-    droppedLinksCount: u32 = 0,
-};
-
-const OtlpEvent = struct {
-    timeUnixNano: u64,
-    name: []const u8,
-    attributes: []OtlpKeyValue,
-};
-
-const OtlpLink = struct {
-    traceId: []const u8,
-    spanId: []const u8,
-    attributes: []OtlpKeyValue,
-};
-
-const OtlpStatus = struct {
-    code: u32,
-    message: ?[]const u8 = null,
-};
-
-const OtlpKeyValue = struct {
-    key: []const u8,
-    value: OtlpAnyValue,
-};
-
-const OtlpAnyValue = union(enum) {
-    stringValue: []const u8,
-    intValue: i64,
-    doubleValue: f64,
-    boolValue: bool,
-};
+const common_v1 = @import("proto/opentelemetry/proto/common/v1.pb.zig");
+const resource_v1 = @import("proto/opentelemetry/proto/resource/v1.pb.zig");
+const trace_v1 = @import("proto/opentelemetry/proto/trace/v1.pb.zig");
 
 /// OTLP trace exporter implementation
 pub const OtlpTraceExporter = struct {
@@ -124,7 +60,7 @@ pub const OtlpTraceExporter = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn exportSpans(self: *OtlpTraceExporter, spans: []const *RecordingSpan, resource: Resource) ExportResult {
+    pub fn exportSpans(self: *OtlpTraceExporter, spans: []const otel_sdk.trace.SpanData, resource: Resource) ExportResult {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -140,7 +76,7 @@ pub const OtlpTraceExporter = struct {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
 
-        const json_data = convertToOtlpFormat(arena.allocator(), spans, resource) catch |err| {
+        var span_data = convertToOtlpFormat(arena.allocator(), spans, resource) catch |err| {
             const first_span_name = if (spans.len > 0) spans[0].name else "(no spans)";
             error_handler.reportError(.{
                 .component = .exporter,
@@ -152,9 +88,9 @@ pub const OtlpTraceExporter = struct {
             });
             return .failure;
         };
-        defer arena.allocator().free(json_data);
+        defer span_data.deinit(arena.allocator());
 
-        const result = self.sendRequest(arena.allocator(), json_data) catch |err| {
+        const result = self.sendRequest(arena.allocator(), span_data) catch |err| {
             error_handler.reportError(.{
                 .component = .exporter,
                 .operation = "otlp_trace_network",
@@ -194,10 +130,17 @@ pub const OtlpTraceExporter = struct {
         return SpanExporter{ .bridge = otel_sdk.trace.BridgeSpanExporter.init(self) };
     }
 
-    fn sendRequest(self: *OtlpTraceExporter, allocator: std.mem.Allocator, data: []const u8) !ExportResult {
-        // Create stack-based HTTP client
+    fn sendRequest(self: *OtlpTraceExporter, allocator: std.mem.Allocator, traces_data: trace_v1.TracesData) !ExportResult {
         var client = std.http.Client{ .allocator = self.allocator };
         defer client.deinit();
+
+        // Serialize to binary protobuf
+        var buffer = std.io.Writer.Allocating.init(allocator);
+        defer buffer.deinit();
+        try traces_data.encode(&buffer.writer, allocator); // protobuf encoding.
+        // _ = try buffer.writer.write(try traces_data.jsonEncode(.{}, allocator)); // Json encoding.
+        const protobuf_bytes = try buffer.toOwnedSlice();
+        defer allocator.free(protobuf_bytes);
 
         // Parse endpoint URL with detailed error context
         const uri = std.Uri.parse(self.config.endpoint) catch |err| {
@@ -221,37 +164,51 @@ pub const OtlpTraceExporter = struct {
         const full_url = try std.fmt.allocPrint(allocator, "{s}://{s}:{d}{s}", .{ scheme_str, host_str, uri.port orelse 4318, self.config.protocol_config.traces_path });
         defer allocator.free(full_url);
 
-        // Create HTTP request
-        const full_uri = try std.Uri.parse(full_url);
-        var server_header_buffer: [8192]u8 = undefined;
-        var req = try client.open(.POST, full_uri, .{
-            .server_header_buffer = &server_header_buffer,
-        });
-        defer req.deinit();
-
-        // Set request headers
-        req.headers.content_type = .{ .override = "application/json" };
-        req.transfer_encoding = .{ .content_length = @intCast(data.len) };
-
-        // Add custom headers from config
-        if (self.config.headers.len > 0) {
-            var extra_headers = try allocator.alloc(std.http.Header, self.config.headers.len);
-            for (self.config.headers, 0..) |header, h| {
-                extra_headers[h] = header;
-            }
-            req.extra_headers = extra_headers;
+        // Add custom headers from config (simplified approach)
+        var extra_headers = try allocator.alloc(std.http.Header, self.config.headers.len);
+        defer allocator.free(extra_headers);
+        for (self.config.headers, 0..) |header, h| {
+            extra_headers[h] = header;
         }
 
-        // Send request
-        try req.send();
-        try req.writeAll(data);
-        try req.finish();
-        try req.wait();
+        // Create HTTP request
+        var resp_writer = std.Io.Writer.Allocating.init(allocator);
+        defer resp_writer.deinit();
 
-        // Check response status
-        switch (req.response.status) {
+        const full_uri = try std.Uri.parse(full_url);
+        const req = try client.fetch(std.http.Client.FetchOptions{
+            .location = .{ .uri = full_uri },
+            .method = .POST,
+            .headers = .{
+                .content_type = .{ .override = "application/x-protobuf" },
+                .user_agent = .{ .override = "otel-zig-otlp" },
+            },
+            .extra_headers = extra_headers,
+            .response_writer = &resp_writer.writer,
+            .payload = protobuf_bytes,
+        });
+
+        const result_status_code = req.status;
+        const result_body = try resp_writer.toOwnedSlice();
+        defer allocator.free(result_body);
+
+        switch (result_status_code) {
             .ok => return .success,
-            .bad_request, .unauthorized, .forbidden, .not_found => {
+            .bad_request => {
+                // const error_context = try std.fmt.allocPrint(allocator, "{s}\ncurl -X POST -H 'Content-Type: application/json' -d '{s}' http://localhost:4318/v1/traces", .{ result_body, protobuf_bytes });
+                // defer allocator.free(error_context);
+                const error_context = try std.fmt.allocPrint(allocator, "{t}-{s}", .{ result_status_code, result_body });
+                defer allocator.free(error_context);
+                error_handler.reportError(.{
+                    .component = .exporter,
+                    .operation = "otlp_trace_response",
+                    .error_type = .unknown,
+                    .message = "OTLP trace export failed with HTTP error",
+                    .context = error_context,
+                });
+                return .failure;
+            },
+            .unauthorized, .forbidden, .not_found => {
                 error_handler.reportError(.{
                     .component = .exporter,
                     .operation = "otlp_trace_response",
@@ -262,216 +219,131 @@ pub const OtlpTraceExporter = struct {
                 return .failure;
             },
             else => {
+                const error_context = try std.fmt.allocPrint(allocator, "{t}-{s}", .{ result_status_code, result_body });
+                defer allocator.free(error_context);
+
+                error_handler.reportError(.{
+                    .component = .exporter,
+                    .operation = "otlp_trace_response",
+                    .error_type = .authentication,
+                    .message = "OTLP trace export failed with HTTP error",
+                    .context = error_context,
+                });
                 return .failure;
             },
         }
     }
 };
 
-/// Convert RecordingSpans to OTLP format JSON
-fn convertToOtlpFormat(allocator: std.mem.Allocator, spans: []const *RecordingSpan, resource: Resource) ![]u8 {
-    // Group spans by instrumentation scope
-    var scope_map = std.StringHashMap(std.ArrayList(*const RecordingSpan)).init(allocator);
+fn convertToOtlpFormat(allocator: std.mem.Allocator, spans: []const otel_sdk.trace.SpanData, resource: Resource) !trace_v1.TracesData {
+    var traces_data = trace_v1.TracesData{};
+
+    var rs = trace_v1.ResourceSpans{
+        .resource = try convert.resourceToProto(allocator, resource),
+    };
+
+    // Group by instrumentation scope
+    var scope_map = std.StringHashMap(std.ArrayList(otel_sdk.trace.SpanData)).init(allocator);
     defer {
-        var iterator = scope_map.iterator();
-        while (iterator.next()) |entry| {
-            entry.value_ptr.deinit();
+        var it = scope_map.iterator();
+        while (it.next()) |scope_entry| {
+            scope_entry.value_ptr.deinit(allocator);
         }
         scope_map.deinit();
     }
 
-    // For now, use a default scope since we don't have instrumentation scope in RecordingSpan
-    const default_scope_name = "otel-zig-sdk";
-    var span_list = try std.ArrayList(*const RecordingSpan).initCapacity(allocator, spans.len);
-    try span_list.appendSlice(spans);
-    try scope_map.put(default_scope_name, span_list);
-
-    // Convert to OTLP format
-    var scope_spans_list = std.ArrayList(OtlpScopeSpans).init(allocator);
-    defer scope_spans_list.deinit();
-
-    var scope_iterator = scope_map.iterator();
-    while (scope_iterator.next()) |entry| {
-        const scope_spans = entry.value_ptr.items;
-
-        // Convert spans for this scope
-        var otlp_spans = try allocator.alloc(OtlpSpan, scope_spans.len);
-        for (scope_spans, 0..) |span, i| {
-            otlp_spans[i] = try convertSpan(allocator, span);
+    for (spans) |span| {
+        const scope_name = span.scope.name;
+        const result = try scope_map.getOrPut(scope_name);
+        if (!result.found_existing) {
+            result.value_ptr.* = std.ArrayList(otel_sdk.trace.SpanData).empty;
         }
+        try result.value_ptr.append(allocator, span);
+    }
 
-        // Use default instrumentation scope
-        const scope = OtlpInstrumentationScope{
-            .name = default_scope_name,
-            .version = null,
+    var scope_it = scope_map.iterator();
+    while (scope_it.next()) |scope_entry| {
+        const scope_spans = scope_entry.value_ptr.*;
+        if (scope_spans.items.len == 0) continue;
+
+        // Convert instrumentation scope
+        var ss = trace_v1.ScopeSpans{
+            .scope = try convert.instrumentationScopeToProto(allocator, scope_spans.items[0].scope),
         };
 
-        try scope_spans_list.append(OtlpScopeSpans{
-            .scope = scope,
-            .spans = otlp_spans,
-        });
-    }
-
-    // Convert resource
-    var resource_attributes = try allocator.alloc(OtlpKeyValue, resource.attributes.len);
-    for (resource.attributes, 0..) |attr, i| {
-        resource_attributes[i] = OtlpKeyValue{
-            .key = attr.key,
-            .value = convertAttributeValue(attr.value),
-        };
-    }
-
-    const otlp_resource = OtlpResource{
-        .attributes = resource_attributes,
-    };
-
-    const resource_spans = OtlpResourceSpans{
-        .resource = otlp_resource,
-        .scopeSpans = scope_spans_list.items,
-    };
-
-    var resource_spans_array = try allocator.alloc(OtlpResourceSpans, 1);
-    resource_spans_array[0] = resource_spans;
-
-    const traces_data = OtlpTracesData{
-        .resourceSpans = resource_spans_array,
-    };
-
-    // Serialize to JSON
-    var json_buffer = std.ArrayList(u8).init(allocator);
-    defer json_buffer.deinit();
-
-    try std.json.stringify(traces_data, .{}, json_buffer.writer());
-    return json_buffer.toOwnedSlice();
-}
-
-fn convertSpan(allocator: std.mem.Allocator, span: *const RecordingSpan) !OtlpSpan {
-    // Convert trace and span IDs to hex strings
-    var trace_id_hex: [32]u8 = undefined;
-    var span_id_hex: [16]u8 = undefined;
-    _ = std.fmt.bufPrint(&trace_id_hex, "{}", .{std.fmt.fmtSliceHexLower(&span.span_context.trace_id.bytes)}) catch unreachable;
-    _ = std.fmt.bufPrint(&span_id_hex, "{}", .{std.fmt.fmtSliceHexLower(&span.span_context.span_id.bytes)}) catch unreachable;
-
-    // Handle parent span ID
-    var parent_span_id_hex: ?[]const u8 = null;
-    if (span.parent_span_context) |parent| {
-        if (!std.mem.eql(u8, &parent.span_id.bytes, &[_]u8{0} ** 8)) {
-            var parent_hex: [16]u8 = undefined;
-            _ = std.fmt.bufPrint(&parent_hex, "{}", .{std.fmt.fmtSliceHexLower(&parent.span_id.bytes)}) catch unreachable;
-            parent_span_id_hex = try allocator.dupe(u8, &parent_hex);
-        }
-    }
-
-    // Convert attributes
-    var attributes: []OtlpKeyValue = undefined;
-    if (span.attributes) |attributes_list| {
-        attributes = try allocator.alloc(OtlpKeyValue, attributes_list.items.len);
-        for (attributes_list.items, 0..) |attr, i| {
-            attributes[i] = OtlpKeyValue{
-                .key = attr.key,
-                .value = convertAttributeValue(attr.value),
+        // Convert Span
+        for (scope_spans.items) |span_data| {
+            // var tid_buf = [_]u8{0} ** (otel_api.common.TraceId.length * 2);
+            // var sid_buf = [_]u8{0} ** (otel_api.common.SpanId.length * 2);
+            // var psid_buf = [_]u8{0} ** (otel_api.common.SpanId.length * 2);
+            var span = trace_v1.Span{
+                .trace_id = try allocator.dupe(u8, span_data.ctx.trace_id.bytes[0..]),
+                .span_id = try allocator.dupe(u8, span_data.ctx.span_id.bytes[0..]),
+                .parent_span_id = if (span_data.parent_ctx) |pctx| try allocator.dupe(u8, pctx.span_id.bytes[0..]) else &.{},
+                .name = try allocator.dupe(u8, span_data.name),
+                .start_time_unix_nano = @intCast(span_data.start_time),
+                .end_time_unix_nano = @intCast(span_data.end_time),
+                .flags = @intCast(span_data.ctx.trace_flags),
+                .kind = @enumFromInt(@intFromEnum(span_data.kind)),
+                .trace_state = if (span_data.ctx.trace_state) |ts| try allocator.dupe(u8, ts) else &.{},
+                .dropped_attributes_count = 0,
+                .dropped_events_count = 0,
+                .dropped_links_count = 0,
             };
-        }
-    } else {
-        attributes = try allocator.alloc(OtlpKeyValue, 0);
-    }
 
-    // Convert events
-    var events: []OtlpEvent = undefined;
-    if (span.events) |events_list| {
-        events = try allocator.alloc(OtlpEvent, events_list.items.len);
-        for (events_list.items, 0..) |event, i| {
-            var event_attributes: []OtlpKeyValue = undefined;
-            if (event.attributes) |attrs| {
-                event_attributes = try allocator.alloc(OtlpKeyValue, attrs.len);
-                for (attrs, 0..) |attr, j| {
-                    event_attributes[j] = OtlpKeyValue{
-                        .key = attr.key,
-                        .value = convertAttributeValue(attr.value),
-                    };
-                }
-            } else {
-                event_attributes = try allocator.alloc(OtlpKeyValue, 0);
+            // sub objects
+            if (span_data.status.code != .unset) {
+                span.status = trace_v1.Status{
+                    .code = @enumFromInt(@intFromEnum(span_data.status.code)),
+                    .message = if (span_data.status.description) |desc| try allocator.dupe(u8, desc) else &.{},
+                };
             }
 
-            events[i] = OtlpEvent{
-                .timeUnixNano = @as(u64, @intCast(event.timestamp_ns)),
-                .name = event.name,
-                .attributes = event_attributes,
-            };
-        }
-    } else {
-        events = try allocator.alloc(OtlpEvent, 0);
-    }
-
-    // Convert links
-    var links: []OtlpLink = undefined;
-    if (span.links) |links_list| {
-        links = try allocator.alloc(OtlpLink, links_list.items.len);
-        for (links_list.items, 0..) |link, i| {
-            var link_trace_id_hex: [32]u8 = undefined;
-            var link_span_id_hex: [16]u8 = undefined;
-            _ = std.fmt.bufPrint(&link_trace_id_hex, "{}", .{std.fmt.fmtSliceHexLower(&link.span_context.trace_id.bytes)}) catch unreachable;
-            _ = std.fmt.bufPrint(&link_span_id_hex, "{}", .{std.fmt.fmtSliceHexLower(&link.span_context.span_id.bytes)}) catch unreachable;
-
-            var link_attributes: []OtlpKeyValue = undefined;
-            if (link.attributes) |attrs| {
-                link_attributes = try allocator.alloc(OtlpKeyValue, attrs.len);
-                for (attrs, 0..) |attr, j| {
-                    link_attributes[j] = OtlpKeyValue{
-                        .key = attr.key,
-                        .value = convertAttributeValue(attr.value),
-                    };
+            if (span_data.attributes.len > 0) {
+                for (span_data.attributes) |attr| {
+                    try span.attributes.append(allocator, try convert.attributeKeyValueToProto(allocator, attr));
                 }
-            } else {
-                link_attributes = try allocator.alloc(OtlpKeyValue, 0);
             }
 
-            links[i] = OtlpLink{
-                .traceId = try allocator.dupe(u8, &link_trace_id_hex),
-                .spanId = try allocator.dupe(u8, &link_span_id_hex),
-                .attributes = link_attributes,
-            };
+            if (span_data.events.len > 0) {
+                for (span_data.events) |span_event| {
+                    var event = trace_v1.Span.Event{
+                        .name = try allocator.dupe(u8, span_event.name),
+                        .time_unix_nano = @intCast(span_event.timestamp_ns),
+                        .dropped_attributes_count = 0,
+                    };
+                    for (span_event.attributes) |attr| {
+                        try event.attributes.append(allocator, try convert.attributeKeyValueToProto(allocator, attr));
+                    }
+                    try span.events.append(allocator, event);
+                }
+            }
+
+            if (span_data.links.len > 0) {
+                for (span_data.links) |span_link| {
+                    var link = trace_v1.Span.Link{
+                        .dropped_attributes_count = 0,
+                        .flags = @intCast(span_link.span_context.trace_flags),
+                        .span_id = try allocator.dupe(u8, span_link.span_context.span_id.bytes[0..]),
+                        .trace_id = try allocator.dupe(u8, span_link.span_context.trace_id.bytes[0..]),
+                        .trace_state = if (span_link.span_context.trace_state) |ts| try allocator.dupe(u8, ts) else &.{},
+                    };
+                    for (span_link.attributes) |attr| {
+                        try link.attributes.append(allocator, try convert.attributeKeyValueToProto(allocator, attr));
+                    }
+                    try span.links.append(allocator, link);
+                }
+            }
+
+            try ss.spans.append(allocator, span);
         }
-    } else {
-        links = try allocator.alloc(OtlpLink, 0);
+
+        try rs.scope_spans.append(allocator, ss);
     }
 
-    // Convert status
-    const status = OtlpStatus{
-        .code = @intFromEnum(span.status.code),
-        .message = if (span.status.description) |desc| if (desc.len > 0) desc else null else null,
-    };
+    try traces_data.resource_spans.append(allocator, rs);
 
-    return OtlpSpan{
-        .traceId = try allocator.dupe(u8, &trace_id_hex),
-        .spanId = try allocator.dupe(u8, &span_id_hex),
-        .parentSpanId = parent_span_id_hex,
-        .name = span.name,
-        .kind = @intFromEnum(span.kind),
-        .startTimeUnixNano = @as(u64, @intCast(span.start_time)),
-        .endTimeUnixNano = @as(u64, @intCast(span.end_time orelse 0)),
-        .attributes = attributes,
-        .events = events,
-        .links = links,
-        .status = status,
-        .droppedAttributesCount = span.dropped_attributes_count,
-        .droppedEventsCount = span.dropped_events_count,
-        .droppedLinksCount = span.dropped_links_count,
-    };
-}
-
-fn convertAttributeValue(value: otel_api.common.AttributeValue) OtlpAnyValue {
-    return switch (value) {
-        .string => |s| OtlpAnyValue{ .stringValue = s },
-        .bool => |b| OtlpAnyValue{ .boolValue = b },
-        .int => |i| OtlpAnyValue{ .intValue = i },
-        .float => |f| OtlpAnyValue{ .doubleValue = f },
-        .string_array => |arr| OtlpAnyValue{ .stringValue = std.fmt.allocPrint(std.heap.page_allocator, "{any}", .{arr}) catch "[]" },
-        .bool_array => |arr| OtlpAnyValue{ .stringValue = std.fmt.allocPrint(std.heap.page_allocator, "{any}", .{arr}) catch "[]" },
-        .int_array => |arr| OtlpAnyValue{ .stringValue = std.fmt.allocPrint(std.heap.page_allocator, "{any}", .{arr}) catch "[]" },
-        .float_array => |arr| OtlpAnyValue{ .stringValue = std.fmt.allocPrint(std.heap.page_allocator, "{any}", .{arr}) catch "[]" },
-    };
+    return traces_data;
 }
 
 /// Create an OTLP trace exporter with default configuration

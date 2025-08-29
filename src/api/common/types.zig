@@ -8,9 +8,10 @@ const std = @import("std");
 
 /// TraceId represents a unique identifier for a trace.
 /// As per OpenTelemetry specification, it is 16 bytes (128 bits).
-fn ByteId(length: comptime_int) type {
+fn ByteId(byte_length: comptime_int) type {
     return struct {
         const Self = @This();
+        pub const length = byte_length;
         bytes: [length]u8,
 
         /// Creates a new TraceId from a byte array
@@ -34,12 +35,8 @@ fn ByteId(length: comptime_int) type {
         /// Formats the TraceId as a hex string
         pub fn format(
             self: Self,
-            comptime fmt: []const u8,
-            options: std.fmt.FormatOptions,
             writer: anytype,
         ) !void {
-            _ = fmt;
-            _ = options;
             for (self.bytes) |byte| {
                 try writer.print("{x:0>2}", .{byte});
             }
@@ -47,13 +44,17 @@ fn ByteId(length: comptime_int) type {
 
         /// Creates a TraceId from a hex string
         pub fn fromHexString(hex: []const u8) !Self {
-            if (hex.len != length * 2) return error.InvalidLength;
+            if (hex.len != length * 2) return error.invalid_length;
 
             var bytes: [length]u8 = undefined;
             for (0..length) |i| {
                 bytes[i] = try std.fmt.parseInt(u8, hex[i * 2 .. i * 2 + 2], 16);
             }
             return .{ .bytes = bytes };
+        }
+
+        pub fn toHexString(self: Self, buffer: *[length * 2]u8) void {
+            buffer.* = std.fmt.bytesToHex(&self.bytes, .lower);
         }
     };
 }
@@ -96,7 +97,7 @@ test "TraceId hex string conversion" {
     const trace_id = try TraceId.fromHexString(hex_string);
 
     var buffer: [32]u8 = undefined;
-    const formatted = try std.fmt.bufPrint(&buffer, "{}", .{trace_id});
+    const formatted = try std.fmt.bufPrint(&buffer, "{f}", .{trace_id});
     try testing.expectEqualStrings(hex_string, formatted);
 }
 
@@ -107,7 +108,7 @@ test "SpanId hex string conversion" {
     const span_id = try SpanId.fromHexString(hex_string);
 
     var buffer: [16]u8 = undefined;
-    const formatted = try std.fmt.bufPrint(&buffer, "{}", .{span_id});
+    const formatted = try std.fmt.bufPrint(&buffer, "{f}", .{span_id});
     try testing.expectEqualStrings(hex_string, formatted);
 }
 

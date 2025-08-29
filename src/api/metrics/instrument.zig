@@ -9,10 +9,10 @@
 //! See: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/metrics/api.md#instrument
 
 const std = @import("std");
-
-// Import from relative paths
-const Context = @import("../context/root.zig").Context;
-const AttributeKeyValue = @import("../common/root.zig").AttributeKeyValue;
+const api = struct {
+    const ContextKeyValue = @import("../context/context.zig").ContextKeyValue;
+    const AttributeKeyValue = @import("../common/root.zig").AttributeKeyValue;
+};
 
 /// Advisory parameters for instrument creation
 /// These are optional recommendations that implementations MAY use or ignore
@@ -24,276 +24,251 @@ pub const AdvisoryParams = struct {
     attributes: ?[]const []const u8 = null,
 };
 
-/// Counter is a monotonic sum instrument that supports non-negative increments only.
-/// T must be a numeric type (i64, f64)
-///
-/// Per OpenTelemetry specification: "The increment value is expected to be non-negative.
-/// This API SHOULD be documented in a way to communicate to users that this value is
-/// expected to be non-negative. This API SHOULD NOT validate this value, that is left
-/// to implementations of the API."
-pub fn Counter(comptime T: type) type {
-    return union(enum) {
-        noop: []const u8,
-        bridge: InstrumentBridge,
-
-        /// Get the name of this instrument
-        pub inline fn getName(self: *const @This()) []const u8 {
-            return switch (self.*) {
-                .noop => |name| name,
-                .bridge => |bridge| bridge.getNameFn(bridge.instrument_ptr),
-            };
-        }
-
-        /// Add a non-negative value to the counter
-        ///
-        /// The increment value is expected to be non-negative. SDK implementations
-        /// will validate this requirement according to the OpenTelemetry specification.
-        pub inline fn add(self: *const @This(), ctx: Context, value: T, attributes: []const AttributeKeyValue) void {
-            switch (self.*) {
-                .noop => {}, // No-op implementation does nothing
-                .bridge => |bridge| {
-                    switch (T) {
-                        i64 => bridge.addI64Fn(bridge.instrument_ptr, ctx, value, attributes),
-                        f64 => bridge.addF64Fn(bridge.instrument_ptr, ctx, value, attributes),
-                        else => unreachable,
-                    }
-                },
-            }
-        }
-
-        /// Convenience method to add without attributes
-        pub inline fn addSimple(self: *@This(), ctx: Context, value: T) void {
-            self.add(ctx, value, &[_]AttributeKeyValue{});
-        }
-
-        /// Check if this instrument is enabled for recording measurements
-        pub inline fn enabled(self: *const @This()) bool {
-            return switch (self.*) {
-                .noop => false,
-                .bridge => |bridge| bridge.enabledFn(bridge.instrument_ptr),
-            };
-        }
-    };
-}
-
-/// UpDownCounter is a non-monotonic sum instrument
-/// T must be a numeric type (i64, f64)
-pub fn UpDownCounter(comptime T: type) type {
-    return union(enum) {
-        noop: []const u8,
-        bridge: InstrumentBridge,
-
-        /// Get the name of this instrument
-        pub inline fn getName(self: *const @This()) []const u8 {
-            return switch (self.*) {
-                .noop => |name| name,
-                .bridge => |bridge| bridge.getNameFn(bridge.instrument_ptr),
-            };
-        }
-
-        /// Add a value to the counter (can be negative)
-        pub inline fn add(self: *const @This(), ctx: Context, value: T, attributes: []const AttributeKeyValue) void {
-            switch (self.*) {
-                .noop => {}, // No-op implementation does nothing
-                .bridge => |bridge| {
-                    switch (T) {
-                        i64 => bridge.addI64Fn(bridge.instrument_ptr, ctx, value, attributes),
-                        f64 => bridge.addF64Fn(bridge.instrument_ptr, ctx, value, attributes),
-                        else => unreachable,
-                    }
-                },
-            }
-        }
-
-        /// Convenience method to add without attributes
-        pub inline fn addSimple(self: *@This(), ctx: Context, value: T) void {
-            self.add(ctx, value, &[_]AttributeKeyValue{});
-        }
-
-        /// Check if this instrument is enabled for recording measurements
-        pub inline fn enabled(self: *const @This()) bool {
-            return switch (self.*) {
-                .noop => false,
-                .bridge => |bridge| bridge.enabledFn(bridge.instrument_ptr),
-            };
-        }
-    };
-}
-
-/// Gauge records non-additive values (last value wins)
-/// T must be a numeric type (i64, f64)
-pub fn Gauge(comptime T: type) type {
-    return union(enum) {
-        noop: []const u8,
-        bridge: InstrumentBridge,
-
-        /// Get the name of this instrument
-        pub inline fn getName(self: *const @This()) []const u8 {
-            return switch (self.*) {
-                .noop => |name| name,
-                .bridge => |bridge| bridge.getNameFn(bridge.instrument_ptr),
-            };
-        }
-
-        /// Record a value
-        pub inline fn record(self: *const @This(), ctx: Context, value: T, attributes: []const AttributeKeyValue) void {
-            switch (self.*) {
-                .noop => {}, // No-op implementation does nothing
-                .bridge => |bridge| {
-                    switch (T) {
-                        i64 => bridge.recordI64Fn(bridge.instrument_ptr, ctx, value, attributes),
-                        f64 => bridge.recordF64Fn(bridge.instrument_ptr, ctx, value, attributes),
-                        else => unreachable,
-                    }
-                },
-            }
-        }
-
-        /// Convenience method to record without attributes
-        pub inline fn recordSimple(self: *@This(), ctx: Context, value: T) void {
-            self.record(ctx, value, &[_]AttributeKeyValue{});
-        }
-
-        /// Check if this instrument is enabled for recording measurements
-        pub inline fn enabled(self: *const @This()) bool {
-            return switch (self.*) {
-                .noop => false,
-                .bridge => |bridge| bridge.enabledFn(bridge.instrument_ptr),
-            };
-        }
-    };
-}
-
-/// Histogram records distribution of values. Values are expected to be non-negative.
-/// T must be a numeric type (i64, f64)
-///
-/// Per OpenTelemetry specification, histogram values should be non-negative.
-/// SDK implementations will validate this requirement.
-pub fn Histogram(comptime T: type) type {
-    return union(enum) {
-        noop: []const u8,
-        bridge: InstrumentBridge,
-
-        /// Get the name of this instrument
-        pub inline fn getName(self: *const @This()) []const u8 {
-            return switch (self.*) {
-                .noop => |name| name,
-                .bridge => |bridge| bridge.getNameFn(bridge.instrument_ptr),
-            };
-        }
-
-        /// Record a non-negative value in the histogram
-        ///
-        /// The value is expected to be non-negative. SDK implementations
-        /// will validate this requirement.
-        pub inline fn record(self: *const @This(), ctx: Context, value: T, attributes: []const AttributeKeyValue) void {
-            switch (self.*) {
-                .noop => {}, // No-op implementation does nothing
-                .bridge => |bridge| {
-                    switch (T) {
-                        i64 => bridge.recordI64Fn(bridge.instrument_ptr, ctx, value, attributes),
-                        f64 => bridge.recordF64Fn(bridge.instrument_ptr, ctx, value, attributes),
-                        else => unreachable,
-                    }
-                },
-            }
-        }
-
-        /// Convenience method to record without attributes
-        pub inline fn recordSimple(self: *@This(), ctx: Context, value: T) void {
-            self.record(ctx, value, &[_]AttributeKeyValue{});
-        }
-
-        /// Check if this instrument is enabled for recording measurements
-        pub inline fn enabled(self: *const @This()) bool {
-            return switch (self.*) {
-                .noop => false,
-                .bridge => |bridge| bridge.enabledFn(bridge.instrument_ptr),
-            };
-        }
-    };
-}
-
-/// Bridge structure that holds SDK instrument pointer and vtable
-pub const InstrumentBridge = struct {
-    instrument_ptr: *anyopaque,
-    getNameFn: *const fn (instrument_ptr: *anyopaque) []const u8,
-    // Separate functions for each type to avoid comptime parameters in function pointers
-    addI64Fn: *const fn (instrument_ptr: *anyopaque, ctx: Context, value: i64, attributes: []const AttributeKeyValue) void,
-    addF64Fn: *const fn (instrument_ptr: *anyopaque, ctx: Context, value: f64, attributes: []const AttributeKeyValue) void,
-    recordI64Fn: *const fn (instrument_ptr: *anyopaque, ctx: Context, value: i64, attributes: []const AttributeKeyValue) void,
-    recordF64Fn: *const fn (instrument_ptr: *anyopaque, ctx: Context, value: f64, attributes: []const AttributeKeyValue) void,
-    enabledFn: *const fn (instrument_ptr: *anyopaque) bool,
-
-    pub fn init(ptr: anytype) InstrumentBridge {
-        const T = @TypeOf(ptr);
-        const ptr_info = @typeInfo(T);
-
-        const VTable = struct {
-            pub fn getName(pointer: *anyopaque) []const u8 {
-                const self: T = @ptrCast(@alignCast(pointer));
-                return ptr_info.pointer.child.getName(self);
-            }
-            pub fn addI64(pointer: *anyopaque, ctx: Context, value: i64, attributes: []const AttributeKeyValue) void {
-                const self: T = @ptrCast(@alignCast(pointer));
-                return ptr_info.pointer.child.addI64(self, ctx, value, attributes);
-            }
-            pub fn addF64(pointer: *anyopaque, ctx: Context, value: f64, attributes: []const AttributeKeyValue) void {
-                const self: T = @ptrCast(@alignCast(pointer));
-                return ptr_info.pointer.child.addF64(self, ctx, value, attributes);
-            }
-            pub fn recordI64(pointer: *anyopaque, ctx: Context, value: i64, attributes: []const AttributeKeyValue) void {
-                const self: T = @ptrCast(@alignCast(pointer));
-                return ptr_info.pointer.child.recordI64(self, ctx, value, attributes);
-            }
-            pub fn recordF64(pointer: *anyopaque, ctx: Context, value: f64, attributes: []const AttributeKeyValue) void {
-                const self: T = @ptrCast(@alignCast(pointer));
-                return ptr_info.pointer.child.recordF64(self, ctx, value, attributes);
-            }
-            pub fn enabled(pointer: *anyopaque) bool {
-                const self: T = @ptrCast(@alignCast(pointer));
-                return ptr_info.pointer.child.enabled(self);
-            }
-        };
-
-        return .{
-            .instrument_ptr = ptr,
-            .getNameFn = VTable.getName,
-            .addI64Fn = VTable.addI64,
-            .addF64Fn = VTable.addF64,
-            .recordI64Fn = VTable.recordI64,
-            .recordF64Fn = VTable.recordF64,
-            .enabledFn = VTable.enabled,
-        };
-    }
+/// Instrument type enumeration
+pub const InstrumentType = enum {
+    Counter,
+    UpDownCounter,
+    Histogram,
+    Gauge,
+    ObservableCounter,
+    ObservableUpDownCounter,
+    ObservableGauge,
 };
 
-test "instrument enabled method" {
+const BaseType = enum {
+    float,
+    int,
+};
+
+fn Instrument(comptime inst_type: InstrumentType, comptime base_type: BaseType) type {
+    switch (inst_type) {
+        .ObservableCounter, .ObservableGauge, .ObservableUpDownCounter => @compileError("Attempt to create a Non-Observable Instrument of Obsevable type."),
+        else => {},
+    }
+    const ValueType = switch (base_type) {
+        .float => f64,
+        .int => i64,
+    };
+
+    return switch (inst_type) {
+        .Counter, .UpDownCounter => blk: {
+            const BridgeType = struct {
+                const Self = @This();
+                instrument_ptr: *anyopaque,
+                getNameFn: *const fn (instrument_ptr: *anyopaque) []const u8,
+                addFn: *const fn (instrument_ptr: *anyopaque, ctx: []const api.ContextKeyValue, value: ValueType, attributes: []const api.AttributeKeyValue) void,
+                enabledFn: *const fn (instrument_ptr: *anyopaque) bool,
+
+                pub fn init(ptr: anytype) Self {
+                    const T = @TypeOf(ptr);
+                    const ptr_info = @typeInfo(T);
+
+                    const VTable = struct {
+                        pub fn getName(pointer: *anyopaque) []const u8 {
+                            const self: T = @ptrCast(@alignCast(pointer));
+                            return ptr_info.pointer.child.getName(self);
+                        }
+                        pub fn add(pointer: *anyopaque, ctx: []const api.ContextKeyValue, value: ValueType, attributes: []const api.AttributeKeyValue) void {
+                            const self: T = @ptrCast(@alignCast(pointer));
+                            return ptr_info.pointer.child.add(self, ctx, value, attributes);
+                        }
+                        pub fn enabled(pointer: *anyopaque) bool {
+                            const self: T = @ptrCast(@alignCast(pointer));
+                            return ptr_info.pointer.child.enabled(self);
+                        }
+                    };
+
+                    return .{
+                        .instrument_ptr = ptr,
+                        .getNameFn = VTable.getName,
+                        .addFn = VTable.add,
+                        .enabledFn = VTable.enabled,
+                    };
+                }
+            };
+
+            break :blk union(enum) {
+                const Self = @This();
+                pub const Bridge = BridgeType;
+                noop: []const u8,
+                bridge: Bridge,
+                pub inline fn getName(self: Self) []const u8 {
+                    return switch (self) {
+                        .noop => |name| name,
+                        .bridge => |bridge| bridge.getNameFn(bridge.instrument_ptr),
+                    };
+                }
+
+                pub inline fn add(self: Self, ctx: []const api.ContextKeyValue, value: ValueType, attributes: []const api.AttributeKeyValue) void {
+                    switch (self) {
+                        .noop => {},
+                        .bridge => |bridge| bridge.addFn(bridge.instrument_ptr, ctx, value, attributes),
+                    }
+                }
+
+                pub inline fn addSimple(self: Self, value: ValueType) void {
+                    self.add(&.{}, value, &.{});
+                }
+
+                pub inline fn enabled(self: Self) bool {
+                    return switch (self) {
+                        .noop => false,
+                        .bridge => |bridge| bridge.enabledFn(bridge.instrument_ptr),
+                    };
+                }
+            };
+        },
+        .Gauge, .Histogram => blk: {
+            const BridgeType = struct {
+                const Self = @This();
+                instrument_ptr: *anyopaque,
+                getNameFn: *const fn (instrument_ptr: *anyopaque) []const u8,
+                // Separate functions for each type to avoid comptime parameters in function pointers
+                recordFn: *const fn (instrument_ptr: *anyopaque, ctx: []const api.ContextKeyValue, value: ValueType, attributes: []const api.AttributeKeyValue) void,
+                enabledFn: *const fn (instrument_ptr: *anyopaque) bool,
+
+                pub fn init(ptr: anytype) Self {
+                    const T = @TypeOf(ptr);
+                    const ptr_info = @typeInfo(T);
+
+                    const VTable = struct {
+                        pub fn getName(pointer: *anyopaque) []const u8 {
+                            const self: T = @ptrCast(@alignCast(pointer));
+                            return ptr_info.pointer.child.getName(self);
+                        }
+                        pub fn record(pointer: *anyopaque, ctx: []const api.ContextKeyValue, value: ValueType, attributes: []const api.AttributeKeyValue) void {
+                            const self: T = @ptrCast(@alignCast(pointer));
+                            return ptr_info.pointer.child.record(self, ctx, value, attributes);
+                        }
+                        pub fn enabled(pointer: *anyopaque) bool {
+                            const self: T = @ptrCast(@alignCast(pointer));
+                            return ptr_info.pointer.child.enabled(self);
+                        }
+                    };
+
+                    return .{
+                        .instrument_ptr = ptr,
+                        .getNameFn = VTable.getName,
+                        .recordFn = VTable.record,
+                        .enabledFn = VTable.enabled,
+                    };
+                }
+            };
+            break :blk union(enum) {
+                const Self = @This();
+                pub const Bridge = BridgeType;
+                noop: []const u8,
+                bridge: Bridge,
+                pub inline fn getName(self: Self) []const u8 {
+                    return switch (self) {
+                        .noop => |name| name,
+                        .bridge => |bridge| bridge.getNameFn(bridge.instrument_ptr),
+                    };
+                }
+
+                pub inline fn record(self: Self, ctx: []const api.ContextKeyValue, value: ValueType, attributes: []const api.AttributeKeyValue) void {
+                    switch (self) {
+                        .noop => {},
+                        .bridge => |bridge| bridge.recordFn(bridge.instrument_ptr, ctx, value, attributes),
+                    }
+                }
+
+                pub inline fn recordSimple(self: Self, value: ValueType) void {
+                    self.record(&.{}, value, &.{});
+                }
+
+                pub inline fn enabled(self: Self) bool {
+                    return switch (self) {
+                        .noop => false,
+                        .bridge => |bridge| bridge.enabledFn(bridge.instrument_ptr),
+                    };
+                }
+            };
+        },
+        else => unreachable,
+    };
+}
+
+pub fn Counter(comptime value_type: type) type {
+    const Base = switch (value_type) {
+        i64 => BaseType.int,
+        f64 => BaseType.float,
+        else => unreachable,
+    };
+    return Instrument(.Counter, Base);
+}
+
+pub fn UpDownCounter(comptime value_type: type) type {
+    const Base = switch (value_type) {
+        i64 => BaseType.int,
+        f64 => BaseType.float,
+        else => unreachable,
+    };
+    return Instrument(.UpDownCounter, Base);
+}
+
+pub fn Gauge(comptime value_type: type) type {
+    const Base = switch (value_type) {
+        i64 => BaseType.int,
+        f64 => BaseType.float,
+        else => unreachable,
+    };
+    return Instrument(.Gauge, Base);
+}
+
+pub fn Histogram(comptime value_type: type) type {
+    const Base = switch (value_type) {
+        i64 => BaseType.int,
+        f64 => BaseType.float,
+        else => unreachable,
+    };
+    return Instrument(.Histogram, Base);
+}
+
+test "instrument enabled and int add types." {
     const testing = std.testing;
 
     // Test noop Counter returns false
-    var noop_counter = Counter(i64){ .noop = "test" };
+    const noop_counter = Instrument(.Counter, .int){ .noop = "test" };
+    noop_counter.addSimple(@as(i64, 1));
     try testing.expect(!noop_counter.enabled());
 
     // Test noop UpDownCounter returns false
-    var noop_updown = UpDownCounter(i64){ .noop = "test" };
+    const noop_updown = Instrument(.UpDownCounter, .int){ .noop = "test" };
+    noop_updown.addSimple(@as(i64, 1));
     try testing.expect(!noop_updown.enabled());
 
     // Test noop Gauge returns false
-    var noop_gauge = Gauge(i64){ .noop = "test" };
+    const noop_gauge = Instrument(.Gauge, .int){ .noop = "test" };
+    noop_gauge.recordSimple(@as(i64, 1));
     try testing.expect(!noop_gauge.enabled());
 
     // Test noop Histogram returns false
-    var noop_histogram = Histogram(i64){ .noop = "test" };
+    const noop_histogram = Instrument(.Histogram, .int){ .noop = "test" };
+    noop_gauge.recordSimple(@as(i64, 1));
     try testing.expect(!noop_histogram.enabled());
 }
 
-test "instrument enabled method can be called multiple times" {
+test "instrument enabled and float add types." {
     const testing = std.testing;
 
-    // Test that method can be called multiple times (spec requirement)
-    var noop_counter = Counter(i64){ .noop = "test" };
+    // Test noop Counter returns false
+    const noop_counter = Instrument(.Counter, .float){ .noop = "test" };
+    noop_counter.addSimple(@as(i64, 1));
     try testing.expect(!noop_counter.enabled());
-    try testing.expect(!noop_counter.enabled());
-    try testing.expect(!noop_counter.enabled());
+
+    // Test noop UpDownCounter returns false
+    const noop_updown = Instrument(.UpDownCounter, .float){ .noop = "test" };
+    noop_updown.addSimple(@as(i64, 1));
+    try testing.expect(!noop_updown.enabled());
+
+    // Test noop Gauge returns false
+    const noop_gauge = Instrument(.Gauge, .float){ .noop = "test" };
+    noop_gauge.recordSimple(@as(i64, 1));
+    try testing.expect(!noop_gauge.enabled());
+
+    // Test noop Histogram returns false
+    const noop_histogram = Instrument(.Histogram, .float){ .noop = "test" };
+    noop_gauge.recordSimple(@as(i64, 1));
+    try testing.expect(!noop_histogram.enabled());
 }

@@ -11,19 +11,20 @@ const otel_api = @import("otel-api");
 const AttributeValue = otel_api.common.AttributeValue;
 const AttributeKeyValue = otel_api.common.AttributeKeyValue;
 const AttributeBuilder = otel_api.common.AttributeBuilder;
+const sdk_version = @import("../root.zig").sdk_version;
 
 /// Concrete resource implementation with owned attributes
 pub const Resource = struct {
     attributes: []const AttributeKeyValue,
-    schema_url: ?[]const u8,
+    schema_url: ?[]const u8 = null,
 
     /// SDK defaults for Resource
     pub const default: Resource = .{
         .schema_url = null,
         .attributes = &[_]AttributeKeyValue{
-            .{ .key = "telemetry.sdk.name", .value = .{ .string = "opentelemetry" } },
+            .{ .key = "telemetry.sdk.name", .value = .{ .string = "ibd1279/zig-otel" } },
             .{ .key = "telemetry.sdk.language", .value = .{ .string = "zig" } },
-            .{ .key = "telemetry.sdk.version", .value = .{ .string = "0.1.0" } },
+            .{ .key = "telemetry.sdk.version", .value = .{ .string = sdk_version } },
         },
     };
 
@@ -33,10 +34,29 @@ pub const Resource = struct {
         .attributes = &[_]AttributeKeyValue{},
     };
 
-    pub fn init(attributes: []const AttributeKeyValue, schema_url: ?[]const u8) !Resource {
-        return Resource{
-            .attributes = attributes,
+    /// Deep copy a Resource.
+    pub fn initOwned(allocator: std.mem.Allocator, source: Resource) !Resource {
+        const schema_url = if (source.schema_url) |url| try allocator.dupe(u8, url) else null;
+        errdefer if (schema_url) |url| allocator.free(url);
+        const attributes = try AttributeKeyValue.initOwnedSlice(allocator, source.attributes);
+        errdefer AttributeKeyValue.deinitOwnedSlice(allocator, attributes);
+
+        return .{
             .schema_url = schema_url,
+            .attributes = attributes,
+        };
+    }
+
+    /// Deep copy and dispose of the AttributeBuilder.
+    pub fn initOwnedFromBuilder(allocator: std.mem.Allocator, resource_schema_url: ?[]const u8, attrs: *AttributeBuilder) !Resource {
+        const schema_url = if (resource_schema_url) |url| try allocator.dupe(u8, url) else null;
+        errdefer if (schema_url) |url| allocator.free(url);
+        const attributes = try attrs.finish(allocator);
+        errdefer AttributeKeyValue.deinitOwnedSlice(allocator, attributes);
+
+        return .{
+            .schema_url = schema_url,
+            .attributes = attributes,
         };
     }
 
@@ -45,292 +65,43 @@ pub const Resource = struct {
         if (self.schema_url) |url| allocator.free(url);
     }
 
-    /// Convenience method for key-based attribute lookup
-    pub fn getAttribute(self: *const Resource, key: []const u8) ?AttributeValue {
-        for (self.attributes) |kv| {
-            if (std.mem.eql(u8, kv.key, key)) {
-                return kv.value;
-            }
-        }
-        return null;
-    }
-
     /// Merges two resources into one.
     ///
     /// The caller is responsible for calling `deinitOwned()` on
     /// the returned resource.
-    pub fn merge(allocator: std.mem.Allocator, self: Resource, other: Resource) !Resource {
+    pub fn initOwnedMerge(allocator: std.mem.Allocator, self: Resource, other: Resource) !Resource {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
 
-        var builder = AttributeBuilder.init(arena.allocator());
-
-        builder = builder.addKeyValues(self.attributes);
-        builder = builder.addKeyValues(other.attributes);
-
-        const merged_attrs = try builder.finish(allocator);
+        const merged_attrs = try AttributeBuilder.init(arena.allocator())
+            .addMany(self.attributes)
+            .addMany(other.attributes)
+            .finish(allocator);
+        errdefer AttributeKeyValue.deinitOwnedSlice(allocator, merged_attrs);
 
         // Schema URL precedence: other -> self -> null
         // Clone the schema URL to make it owned
-        const schema_source = other.schema_url orelse self.schema_url;
+        const schema_source = if (self.schema_url) |self_url| blk: {
+            if (other.schema_url) |other_url| {
+                if (std.mem.eql(u8, self_url, other_url)) {
+                    break :blk self_url;
+                } else {
+                    otel_api.common.reportValidationError(
+                        .resource,
+                        "Resource.initOwnedMerge",
+                        "Merging resources with different schemas",
+                        null,
+                    );
+                    break :blk null;
+                }
+            } else {
+                break :blk self_url;
+            }
+        } else other.schema_url;
         const owned_schema = if (schema_source) |url| try allocator.dupe(u8, url) else null;
+        errdefer if (owned_schema) |url| allocator.free(url);
 
-        return Resource.init(merged_attrs, owned_schema);
-    }
-};
-
-/// ResourceBuilder provides a fluent interface for constructing Resources.
-///
-/// Example usage:
-/// ```zig
-/// const resource = try ResourceBuilder.init(allocator)
-///     .withDefaults()  // Add telemetry.sdk.* attributes
-///     .addKeyValue(.{ .key = "service.name", .value = .{ .string = "my-service" }})
-///     .withSchemaUrl("https://opentelemetry.io/schemas/1.21.0")
-///     .finish(allocator);
-/// defer resource.deinitOwned(allocator);
-/// ```
-///
-/// Note: Later added values overwrite earlier added values.
-///
-/// The builder pattern is the recommended way to create Resources in the SDK,
-/// as it handles attribute merging and memory management cleanly.
-pub const ResourceBuilder = union(enum) {
-    valid: struct {
-        allocator: std.mem.Allocator,
-        attributes: AttributeBuilder,
-        schema_url: ?[]const u8,
-    },
-    invalid: anyerror,
-
-    /// Create a new, blank ResourceBuilder.
-    ///
-    /// The `allocator` is used for the intermediatary Builder state, and has
-    /// no impact on the memory ownership of the result from calling `finish()`.
-    pub fn init(allocator: std.mem.Allocator) ResourceBuilder {
-        const attr_builder = AttributeBuilder.init(allocator);
-        return .{ .valid = .{
-            .allocator = allocator,
-            .attributes = attr_builder,
-            .schema_url = null,
-        } };
-    }
-
-    /// Release local copy of the memory.
-    pub fn deinit(self: ResourceBuilder) void {
-        switch (self) {
-            .valid => |builder| {
-                builder.attributes.deinit();
-            },
-            .invalid => {},
-        }
-    }
-
-    /// Get the deep copy slice of `AttributeKeyValue` and `schema_url`, then
-    /// destroy this builder.
-    ///
-    /// The provided allocator will be used for the resulting resource, not the
-    /// allocator provided when the builder was created.
-    ///
-    /// Returned slice must be released with `Resource.deinitOwned` to
-    /// release the keys, the values, and the schema url.
-    pub fn finish(self: ResourceBuilder, allocator: std.mem.Allocator) !Resource {
-        defer self.deinit();
-        return switch (self) {
-            .valid => |builder| blk: {
-                // if the attribute builder cannot provide attributes,
-                // surface the error, and let the `defer self.deinit()`
-                // takeover.
-                const raw_attributes = try builder.attributes.build();
-
-                // Deduplicate attributes before creating owned slice (last-wins strategy)
-                const deduplicated = blk2: {
-                    if (raw_attributes.len == 0) {
-                        break :blk2 try allocator.alloc(AttributeKeyValue, 0);
-                    }
-
-                    // Use HashMap to track the last occurrence index of each key
-                    var key_to_last_index = std.StringHashMap(usize).init(allocator);
-                    defer key_to_last_index.deinit();
-
-                    // Build map of key -> last occurrence index
-                    for (raw_attributes, 0..) |entry, i| {
-                        try key_to_last_index.put(entry.key, i);
-                    }
-
-                    // Collect unique entries in order of first appearance
-                    var result = std.ArrayList(AttributeKeyValue).init(allocator);
-                    defer result.deinit();
-
-                    var seen_keys = std.StringHashMap(void).init(allocator);
-                    defer seen_keys.deinit();
-
-                    for (raw_attributes) |entry| {
-                        const key = entry.key;
-
-                        // If this is the first time we see this key AND it's the last occurrence
-                        if (!seen_keys.contains(key)) {
-                            try seen_keys.put(key, {});
-                            const last_index = key_to_last_index.get(key).?;
-                            try result.append(raw_attributes[last_index]);
-                        }
-                    }
-
-                    break :blk2 try result.toOwnedSlice();
-                };
-                defer allocator.free(deduplicated);
-
-                const attributes = try AttributeKeyValue.initOwnedSlice(
-                    allocator,
-                    deduplicated,
-                );
-                errdefer AttributeKeyValue.deinitOwnedSlice(allocator, attributes);
-
-                const owned_schema_url = if (builder.schema_url) |url| try allocator.dupe(u8, url) else null;
-                errdefer if (owned_schema_url) |url| allocator.free(url);
-
-                break :blk .{
-                    .attributes = attributes,
-                    .schema_url = owned_schema_url,
-                };
-            },
-            .invalid => |e| e,
-        };
-    }
-
-    pub inline fn withDefaults(self: ResourceBuilder) ResourceBuilder {
-        return self.addResource(.default);
-    }
-
-    /// Adds a resource to the builder. This is effecitively the merge
-    /// operation.
-    ///
-    /// The resource must like longer than the builder.
-    pub fn addResource(self: ResourceBuilder, resource: Resource) ResourceBuilder {
-        defer self.deinit();
-        return switch (self) {
-            .valid => |builder| blk: {
-                // if the attribute builder cannot provide attributes,
-                // invalidate the builder, and let the `defer self.deinit()`
-                // takeover.
-                const self_kvs = builder.attributes.build() catch |e| {
-                    break :blk .{ .invalid = e };
-                };
-
-                // Merge the attributes.
-                const attr_builder = AttributeBuilder.init(builder.allocator)
-                    .addKeyValues(self_kvs)
-                    .addKeyValues(resource.attributes);
-                errdefer attr_builder.deinit();
-
-                // Take the new schema url if it isn't null.
-                const schema_url = resource.schema_url orelse builder.schema_url;
-
-                break :blk .{
-                    .valid = .{
-                        .allocator = builder.allocator,
-                        .attributes = attr_builder,
-                        .schema_url = schema_url,
-                    },
-                };
-            },
-            .invalid => self,
-        };
-    }
-
-    /// Add Attributes to the resource builder.
-    ///
-    /// The slice of attributeKeyValues must live longer than the builder.
-    pub fn addKeyValues(self: ResourceBuilder, kvs: []const AttributeKeyValue) ResourceBuilder {
-        defer self.deinit();
-        return switch (self) {
-            .valid => |builder| blk: {
-                // if the attribute builder cannot provide attributes,
-                // invalidate the builder, and let the `defer self.deinit()`
-                // takeover.
-                const self_kvs = builder.attributes.build() catch |e| {
-                    break :blk .{ .invalid = e };
-                };
-
-                // Merge the attributes.
-                const attr_builder = AttributeBuilder.init(builder.allocator)
-                    .addKeyValues(self_kvs)
-                    .addKeyValues(kvs);
-                errdefer attr_builder.deinit();
-
-                break :blk .{
-                    .valid = .{
-                        .allocator = builder.allocator,
-                        .attributes = attr_builder,
-                        .schema_url = builder.schema_url,
-                    },
-                };
-            },
-            .invalid => self,
-        };
-    }
-
-    /// Add an attribute to the resource builder.
-    ///
-    /// The AttributeKeyValues must live longer than the builder.
-    pub fn addKeyValue(self: ResourceBuilder, kv: AttributeKeyValue) ResourceBuilder {
-        defer self.deinit();
-        return switch (self) {
-            .valid => |builder| blk: {
-                // if the attribute builder cannot provide attributes,
-                // invalidate the builder, and let the `defer self.deinit()`
-                // takeover.
-                const self_kvs = builder.attributes.build() catch |e| {
-                    break :blk .{ .invalid = e };
-                };
-
-                // Merge the attributes.
-                const attr_builder = AttributeBuilder.init(builder.allocator)
-                    .addKeyValues(self_kvs)
-                    .addKeyValue(kv);
-                errdefer attr_builder.deinit();
-
-                break :blk .{
-                    .valid = .{
-                        .allocator = builder.allocator,
-                        .attributes = attr_builder,
-                        .schema_url = builder.schema_url,
-                    },
-                };
-            },
-            .invalid => self,
-        };
-    }
-
-    /// Add a schema url.
-    ///
-    /// If the `url` argument is null, this method unsets the schema url.
-    pub fn addSchemaUrl(self: ResourceBuilder, url: ?[]const u8) ResourceBuilder {
-        defer self.deinit();
-        return switch (self) {
-            .valid => |builder| blk: {
-                // if the attribute builder cannot provide attributes,
-                // invalidate the builder, and let the `defer self.deinit()`
-                // takeover.
-                const self_kvs = builder.attributes.build() catch |e| {
-                    break :blk .{ .invalid = e };
-                };
-
-                // make the new attributes builder.
-                const attr_builder = AttributeBuilder.init(builder.allocator)
-                    .addKeyValues(self_kvs);
-                errdefer attr_builder.deinit();
-
-                break :blk .{
-                    .valid = .{
-                        .allocator = builder.allocator,
-                        .attributes = attr_builder,
-                        .schema_url = url,
-                    },
-                };
-            },
-            .invalid => self,
-        };
+        return Resource{ .attributes = merged_attrs, .schema_url = owned_schema };
     }
 };
 
@@ -343,17 +114,11 @@ test "Resource basic operations" {
         .{ .key = "deployment.environment", .value = .{ .string = "production" } },
     };
 
-    var resource = try Resource.init(&attrs, null);
+    const resource = Resource{ .attributes = &attrs };
 
     // Test direct field access
     try testing.expectEqual(@as(usize, 3), resource.attributes.len);
     try testing.expect(resource.attributes.len > 0);
-
-    // Test convenience method
-    try testing.expect(resource.getAttribute("service.name") != null);
-    if (resource.getAttribute("service.name")) |value| {
-        try testing.expectEqualStrings("my-service", value.string);
-    }
 
     // Test direct iteration
     var found_service = false;
@@ -374,64 +139,84 @@ test "Resource merge" {
         .{ .key = "service.name", .value = .{ .string = "service-a" } },
         .{ .key = "host.name", .value = .{ .string = "host1" } },
     };
-    const resource1 = try Resource.init(&attrs1, null);
+    const resource1 = Resource{ .attributes = &attrs1 };
 
     const attrs2 = [_]AttributeKeyValue{
         .{ .key = "service.name", .value = .{ .string = "service-b" } },
         .{ .key = "service.version", .value = .{ .string = "2.0.0" } },
     };
-    const resource2 = try Resource.init(&attrs2, null);
+    const resource2 = Resource{ .attributes = &attrs2 };
 
-    var merged = try Resource.merge(allocator, resource1, resource2);
+    var merged = try Resource.initOwnedMerge(allocator, resource1, resource2);
     defer merged.deinitOwned(allocator);
 
     // service.name should be overridden by resource2
-    if (merged.getAttribute("service.name")) |value| {
-        try testing.expectEqualStrings("service-b", value.string);
-    } else {
-        try testing.expect(false);
-    }
+    const service_name = AttributeKeyValue.scanSlice(merged.attributes, "service.name");
+    try testing.expect(service_name != null);
+    try testing.expectEqualStrings("service-b", service_name.?.value.string);
 
     // host.name should remain from resource1
-    if (merged.getAttribute("host.name")) |value| {
-        try testing.expectEqualStrings("host1", value.string);
-    } else {
-        try testing.expect(false);
-    }
+    const host_name = AttributeKeyValue.scanSlice(merged.attributes, "host.name");
+    try testing.expect(host_name != null);
+    try testing.expectEqualStrings("host1", host_name.?.value.string);
 
     // service.version should be added from resource2
-    if (merged.getAttribute("service.version")) |value| {
-        try testing.expectEqualStrings("2.0.0", value.string);
-    } else {
-        try testing.expect(false);
-    }
+    const service_version = AttributeKeyValue.scanSlice(merged.attributes, "service.version");
+    try testing.expect(service_version != null);
+    try testing.expectEqualStrings("2.0.0", service_version.?.value.string);
 }
 
 test "Empty resource" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    var resource = try ResourceBuilder.init(allocator).finish(allocator);
-    defer resource.deinitOwned(allocator);
-
+    var resource = Resource.empty;
     try testing.expectEqual(@as(usize, 0), resource.attributes.len);
-    try testing.expect(resource.getAttribute("any.key") == null);
+    const attributes_ptr = resource.attributes.ptr;
+
+    resource = try Resource.initOwned(allocator, resource);
+    defer resource.deinitOwned(allocator);
+    try testing.expectEqual(@as(usize, 0), resource.attributes.len);
+    try testing.expect(attributes_ptr != resource.attributes.ptr);
 }
 
 test "Default resource" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    var resource = try ResourceBuilder.init(allocator).withDefaults().finish(allocator);
-    defer resource.deinitOwned(allocator);
-
+    var resource = Resource.default;
     try testing.expect(resource.attributes.len > 0);
-    try testing.expect(resource.getAttribute("telemetry.sdk.name") != null);
-    try testing.expect(resource.getAttribute("telemetry.sdk.language") != null);
-    try testing.expect(resource.getAttribute("telemetry.sdk.version") != null);
+    const attributes_ptr = resource.attributes.ptr;
+    // Test expected default attributes
+    var sdk_name = AttributeKeyValue.scanSlice(resource.attributes, "telemetry.sdk.name");
+    try testing.expect(sdk_name != null);
+    try testing.expectEqualStrings("ibd1279/zig-otel", sdk_name.?.value.string);
 
-    const sdk_name = resource.getAttribute("telemetry.sdk.name").?;
-    try testing.expectEqualStrings("opentelemetry", sdk_name.string);
+    var sdk_language = AttributeKeyValue.scanSlice(resource.attributes, "telemetry.sdk.language");
+    try testing.expect(sdk_language != null);
+    try testing.expectEqualStrings("zig", sdk_language.?.value.string);
+
+    var sdk_version_attr = AttributeKeyValue.scanSlice(resource.attributes, "telemetry.sdk.version");
+    try testing.expect(sdk_version_attr != null);
+    try testing.expectEqualStrings(@import("../root.zig").sdk_version, sdk_version_attr.?.value.string);
+
+    resource = try Resource.initOwned(allocator, resource);
+    defer resource.deinitOwned(allocator);
+    try testing.expect(resource.attributes.len > 0);
+    try testing.expect(attributes_ptr != resource.attributes.ptr);
+
+    // Test expected default attributes
+    sdk_name = AttributeKeyValue.scanSlice(resource.attributes, "telemetry.sdk.name");
+    try testing.expect(sdk_name != null);
+    try testing.expectEqualStrings("ibd1279/zig-otel", sdk_name.?.value.string);
+
+    sdk_language = AttributeKeyValue.scanSlice(resource.attributes, "telemetry.sdk.language");
+    try testing.expect(sdk_language != null);
+    try testing.expectEqualStrings("zig", sdk_language.?.value.string);
+
+    sdk_version_attr = AttributeKeyValue.scanSlice(resource.attributes, "telemetry.sdk.version");
+    try testing.expect(sdk_version_attr != null);
+    try testing.expectEqualStrings(@import("../root.zig").sdk_version, sdk_version_attr.?.value.string);
 }
 
 test "Resource merge clones schema_url" {
@@ -441,73 +226,42 @@ test "Resource merge clones schema_url" {
     const attrs1 = [_]AttributeKeyValue{
         .{ .key = "service.name", .value = .{ .string = "service-a" } },
     };
-    const resource1 = try Resource.init(&attrs1, "https://schema1.example.com");
+    const resource1 = Resource{ .attributes = &attrs1, .schema_url = null };
 
     const attrs2 = [_]AttributeKeyValue{
         .{ .key = "service.version", .value = .{ .string = "1.0.0" } },
     };
-    const resource2 = try Resource.init(&attrs2, "https://schema2.example.com");
+    const resource2 = Resource{ .attributes = &attrs2, .schema_url = "https://schema2.example.com" };
 
     // Merge resources - should clone the schema_url from resource2 (precedence: other -> self)
-    const merged = try Resource.merge(allocator, resource1, resource2);
+    const merged = try Resource.initOwnedMerge(allocator, resource1, resource2);
     defer merged.deinitOwned(allocator);
 
     // Verify schema_url was copied from resource2 and is owned
     try testing.expect(merged.schema_url != null);
+    try testing.expect(merged.schema_url.?.ptr != resource2.schema_url.?.ptr);
     if (merged.schema_url) |url| {
         try testing.expectEqualStrings("https://schema2.example.com", url);
         // The key test: this should not crash when we call deinitOwned
         // because the schema_url should be an owned copy
     }
-}
 
-test "ResourceBuilder duplicate key handling - last wins" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
-
-    const resource = try ResourceBuilder.init(allocator)
-        .addKeyValue(.{ .key = "service.name", .value = .{ .string = "first-service" } })
-        .addKeyValue(.{ .key = "service.version", .value = .{ .string = "1.0.0" } })
-        .addKeyValue(.{ .key = "service.name", .value = .{ .string = "last-service" } }) // should win
-        .addKeyValue(.{ .key = "environment", .value = .{ .string = "prod" } })
-        .addKeyValue(.{ .key = "service.version", .value = .{ .string = "2.0.0" } }) // should win
-        .finish(allocator);
-    defer resource.deinitOwned(allocator);
-
-    try testing.expectEqual(@as(usize, 3), resource.attributes.len);
-
-    // Find each attribute and verify last-wins behavior
-    var found_service = false;
-    var found_version = false;
-    var found_environment = false;
-
-    for (resource.attributes) |kv| {
-        if (std.mem.eql(u8, kv.key, "service.name")) {
-            try testing.expectEqualStrings("last-service", kv.value.string);
-            found_service = true;
-        } else if (std.mem.eql(u8, kv.key, "service.version")) {
-            try testing.expectEqualStrings("2.0.0", kv.value.string);
-            found_version = true;
-        } else if (std.mem.eql(u8, kv.key, "environment")) {
-            try testing.expectEqualStrings("prod", kv.value.string);
-            found_environment = true;
-        }
-    }
-
-    try testing.expect(found_service);
-    try testing.expect(found_version);
-    try testing.expect(found_environment);
+    try testing.expectEqualStrings("service.name", merged.attributes[0].key);
+    try testing.expectEqualStrings("service-a", merged.attributes[0].value.string);
+    try testing.expectEqualStrings("service.version", merged.attributes[1].key);
+    try testing.expectEqualStrings("1.0.0", merged.attributes[1].value.string);
 }
 
 test "ResourceBuilder duplicate key handling - no duplicates unchanged" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const resource = try ResourceBuilder.init(allocator)
-        .addKeyValue(.{ .key = "service.name", .value = .{ .string = "my-service" } })
-        .addKeyValue(.{ .key = "service.version", .value = .{ .string = "1.0.0" } })
-        .addKeyValue(.{ .key = "environment", .value = .{ .string = "prod" } })
-        .finish(allocator);
+    const attrs = [_]AttributeKeyValue{
+        .{ .key = "service.name", .value = .{ .string = "my-service" } },
+        .{ .key = "service.version", .value = .{ .string = "1.0.0" } },
+        .{ .key = "environment", .value = .{ .string = "prod" } },
+    };
+    const resource = try Resource.initOwned(allocator, .{ .attributes = &attrs });
     defer resource.deinitOwned(allocator);
 
     try testing.expectEqual(@as(usize, 3), resource.attributes.len);
@@ -521,7 +275,7 @@ test "ResourceBuilder duplicate key handling - no duplicates unchanged" {
     try testing.expectEqualStrings("prod", resource.attributes[2].value.string);
 }
 
-test "ResourceBuilder duplicate key handling - with merge operations" {
+test "Resource with AttributeBuilder duplicate key handling - with merge operations" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
@@ -530,100 +284,58 @@ test "ResourceBuilder duplicate key handling - with merge operations" {
         .{ .key = "service.name", .value = .{ .string = "base-service" } },
         .{ .key = "host.name", .value = .{ .string = "base-host" } },
     };
-    const base_resource = try Resource.init(&base_attrs, null);
+    var builder = AttributeBuilder.init(allocator).addMany(&base_attrs)
+        .add(.{ .key = "service.name", .value = .{ .string = "builder-service" } }) // should win over base
+        .add(.{ .key = "environment", .value = .{ .string = "prod" } })
+        .add(.{ .key = "service.name", .value = .{ .string = "final-service" } }); // should win over previous.
 
-    // Create a resource using builder that adds conflicting keys
-    const resource = try ResourceBuilder.init(allocator)
-        .addResource(base_resource)
-        .addKeyValue(.{ .key = "service.name", .value = .{ .string = "builder-service" } }) // should win over base
-        .addKeyValue(.{ .key = "environment", .value = .{ .string = "prod" } })
-        .addKeyValue(.{ .key = "service.name", .value = .{ .string = "final-service" } }) // should win over previous
-        .finish(allocator);
+    const resource = try Resource.initOwnedFromBuilder(allocator, null, &builder);
     defer resource.deinitOwned(allocator);
 
     try testing.expectEqual(@as(usize, 3), resource.attributes.len);
 
     // Find each attribute and verify final resolution
-    var found_service = false;
-    var found_host = false;
-    var found_environment = false;
+    const service_name = AttributeKeyValue.scanSlice(resource.attributes, "service.name");
+    try testing.expect(service_name != null);
+    try testing.expectEqualStrings("final-service", service_name.?.value.string);
 
-    for (resource.attributes) |kv| {
-        if (std.mem.eql(u8, kv.key, "service.name")) {
-            try testing.expectEqualStrings("final-service", kv.value.string);
-            found_service = true;
-        } else if (std.mem.eql(u8, kv.key, "host.name")) {
-            try testing.expectEqualStrings("base-host", kv.value.string);
-            found_host = true;
-        } else if (std.mem.eql(u8, kv.key, "environment")) {
-            try testing.expectEqualStrings("prod", kv.value.string);
-            found_environment = true;
-        }
-    }
+    const host_name = AttributeKeyValue.scanSlice(resource.attributes, "host.name");
+    try testing.expect(host_name != null);
+    try testing.expectEqualStrings("base-host", host_name.?.value.string);
 
-    try testing.expect(found_service);
-    try testing.expect(found_host);
-    try testing.expect(found_environment);
+    const environment = AttributeKeyValue.scanSlice(resource.attributes, "environment");
+    try testing.expect(environment != null);
+    try testing.expectEqualStrings("prod", environment.?.value.string);
 }
 
-test "ResourceBuilder duplicate key handling - with defaults" {
+test "ResourceBuilder duplicate key handling - with merge" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
     // Test that withDefaults() properly handles duplicates with custom attributes
-    const resource = try ResourceBuilder.init(allocator)
-        .withDefaults()
-        .addKeyValue(.{ .key = "telemetry.sdk.name", .value = .{ .string = "custom-sdk" } }) // should override default
-        .addKeyValue(.{ .key = "service.name", .value = .{ .string = "my-service" } })
-        .addKeyValue(.{ .key = "telemetry.sdk.name", .value = .{ .string = "final-sdk" } }) // should win
-        .finish(allocator);
+    var builder = AttributeBuilder.init(allocator)
+        .add(.{ .key = "port", .value = .{ .int = 8080 } })
+        .add(.{ .key = "telemetry.sdk.name", .value = .{ .string = "custom-sdk" } }) // should override default
+        .add(.{ .key = "service.name", .value = .{ .string = "my-service" } })
+        .add(.{ .key = "telemetry.sdk.name", .value = .{ .string = "final-sdk" } }); // should win
+    const override = try Resource.initOwnedFromBuilder(allocator, null, &builder);
+    defer override.deinitOwned(allocator);
+
+    const resource = try Resource.initOwnedMerge(allocator, .default, override);
     defer resource.deinitOwned(allocator);
 
     // Should have defaults plus custom attributes, with duplicates resolved
     try testing.expect(resource.attributes.len >= 3); // At least the 3 default SDK attributes
 
-    // Find the overridden SDK name
-    var found_custom_sdk = false;
-    var found_service = false;
-
-    for (resource.attributes) |kv| {
-        if (std.mem.eql(u8, kv.key, "telemetry.sdk.name")) {
-            try testing.expectEqualStrings("final-sdk", kv.value.string);
-            found_custom_sdk = true;
-        } else if (std.mem.eql(u8, kv.key, "service.name")) {
-            try testing.expectEqualStrings("my-service", kv.value.string);
-            found_service = true;
-        }
-    }
-
-    try testing.expect(found_custom_sdk);
-    try testing.expect(found_service);
-}
-
-test "ResourceBuilder duplicate key handling - order preservation" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
-
-    // Test that order is preserved based on first appearance of each key
-    const resource = try ResourceBuilder.init(allocator)
-        .addKeyValue(.{ .key = "first", .value = .{ .string = "1" } }) // position 0
-        .addKeyValue(.{ .key = "second", .value = .{ .string = "2" } }) // position 1
-        .addKeyValue(.{ .key = "third", .value = .{ .string = "3" } }) // position 2
-        .addKeyValue(.{ .key = "second", .value = .{ .string = "2-new" } }) // duplicate, should not change order
-        .addKeyValue(.{ .key = "fourth", .value = .{ .string = "4" } }) // position 3
-        .addKeyValue(.{ .key = "first", .value = .{ .string = "1-new" } }) // duplicate, should not change order
-        .finish(allocator);
-    defer resource.deinitOwned(allocator);
-
-    try testing.expectEqual(@as(usize, 4), resource.attributes.len);
-
-    // Should maintain order based on first appearance
-    try testing.expectEqualStrings("first", resource.attributes[0].key);
-    try testing.expectEqualStrings("1-new", resource.attributes[0].value.string); // last value
-    try testing.expectEqualStrings("second", resource.attributes[1].key);
-    try testing.expectEqualStrings("2-new", resource.attributes[1].value.string); // last value
-    try testing.expectEqualStrings("third", resource.attributes[2].key);
-    try testing.expectEqualStrings("3", resource.attributes[2].value.string);
-    try testing.expectEqualStrings("fourth", resource.attributes[3].key);
-    try testing.expectEqualStrings("4", resource.attributes[3].value.string);
+    // Find the overridden SDK name, should be in the original order.
+    try testing.expectEqualStrings("telemetry.sdk.name", resource.attributes[0].key);
+    try testing.expectEqualStrings("final-sdk", resource.attributes[0].value.string);
+    try testing.expectEqualStrings("telemetry.sdk.language", resource.attributes[1].key);
+    try testing.expectEqualStrings("zig", resource.attributes[1].value.string);
+    try testing.expectEqualStrings("telemetry.sdk.version", resource.attributes[2].key);
+    try testing.expectEqualStrings(@import("../root.zig").sdk_version, resource.attributes[2].value.string);
+    try testing.expectEqualStrings("port", resource.attributes[3].key);
+    try testing.expectEqual(@as(i64, 8080), resource.attributes[3].value.int);
+    try testing.expectEqualStrings("service.name", resource.attributes[4].key);
+    try testing.expectEqualStrings("my-service", resource.attributes[4].value.string);
 }

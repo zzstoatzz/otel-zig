@@ -2,37 +2,27 @@ const std = @import("std");
 const trace_api = @import("otel-api").trace;
 const provider_registry = @import("otel-api").provider_registry;
 
-const trace_provider = @import("basic_provider.zig");
-
-const ResourceBuilder = @import("../resource/resource.zig").ResourceBuilder;
+const trace_provider = @import("tracer_provider.zig");
 const detectResource = @import("../resource/detector.zig").detectResource;
 
 const createDefaultIdGenerator = @import("id_generator.zig").createDefaultIdGenerator;
 const samplers = @import("samplers/root.zig");
 
-const DefaultProvider = trace_provider.BasicTracerProvider;
+const DefaultProvider = trace_provider.TracerProvider;
 
 /// Create a default provider value with automatically detected resources.
 /// Returns provider by value - used internally by setupGlobalProvider.
 fn createDefaultProviderValue(allocator: std.mem.Allocator) !DefaultProvider {
     // Step 1: Detect resource
     const detected_resource = try detectResource(allocator);
-    defer detected_resource.deinitOwned(allocator);
+    errdefer detected_resource.deinitOwned(allocator);
 
-    // Step 2: Merge resources
-    const merged_resource = try ResourceBuilder.init(allocator)
-        .addResource(detected_resource)
-        .withDefaults()
-        .finish(allocator);
-    errdefer merged_resource.deinitOwned(allocator);
-
-    // Step 3: Create provider
+    // Step 2: Create provider
     return DefaultProvider.init(
         allocator,
-        merged_resource,
+        detected_resource,
         createDefaultIdGenerator(),
         samplers.always_on,
-        null,
     );
 }
 

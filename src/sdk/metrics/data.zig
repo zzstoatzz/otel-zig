@@ -28,20 +28,16 @@ pub const I64HistogramData = struct {
     /// Formats the histogram data into a human-readable string
     pub fn format(
         self: I64HistogramData,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
         writer: anytype,
     ) !void {
-        _ = fmt;
-        _ = options;
-        try writer.print("Histogram{{ count = {}, sum = {}, boundaries = {any}, bucket_counts = {any}", .{
+        try writer.print("Histogram{{ count = {d}, sum = {d}, boundaries = {any}, bucket_counts = {any}", .{
             self.count,
             self.sum,
             self.boundaries,
             self.bucket_counts,
         });
-        if (self.min) |min| try writer.print(" min={}", .{min});
-        if (self.max) |max| try writer.print(" max={}", .{max});
+        if (self.min) |min| try writer.print(" min={d}", .{min});
+        if (self.max) |max| try writer.print(" max={d}", .{max});
         try writer.print(" }}", .{});
     }
 };
@@ -58,20 +54,16 @@ pub const F64HistogramData = struct {
     /// Formats the histogram data into a human-readable string
     pub fn format(
         self: F64HistogramData,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
         writer: anytype,
     ) !void {
-        _ = fmt;
-        _ = options;
-        try writer.print("Histogram{{ count = {}, sum = {}, boundaries = {any}, bucket_counts = {any}", .{
+        try writer.print("Histogram{{ count = {d}, sum = {d}, boundaries = {any}, bucket_counts = {any}", .{
             self.count,
             self.sum,
             self.boundaries,
             self.bucket_counts,
         });
-        if (self.min) |min| try writer.print(" min={}", .{min});
-        if (self.max) |max| try writer.print(" max={}", .{max});
+        if (self.min) |min| try writer.print(" min={d}", .{min});
+        if (self.max) |max| try writer.print(" max={d}", .{max});
         try writer.print(" }}", .{});
     }
 };
@@ -87,17 +79,15 @@ pub const MetricValue = union(enum) {
 
     pub fn format(
         self: MetricValue,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
         writer: anytype,
     ) !void {
         switch (self) {
-            .i64_sum => |v| try writer.print("{}", .{v}),
-            .f64_sum => |v| try writer.print("{}", .{v}),
-            .i64_gauge => |v| try writer.print("{}", .{v}),
-            .f64_gauge => |v| try writer.print("{}", .{v}),
-            .i64_histogram => |v| try v.format(fmt, options, writer),
-            .f64_histogram => |v| try v.format(fmt, options, writer),
+            .i64_sum => |v| try writer.print("{d}", .{v}),
+            .f64_sum => |v| try writer.print("{d}", .{v}),
+            .i64_gauge => |v| try writer.print("{d}", .{v}),
+            .f64_gauge => |v| try writer.print("{d}", .{v}),
+            .i64_histogram => |v| try v.format(writer),
+            .f64_histogram => |v| try v.format(writer),
         }
     }
 };

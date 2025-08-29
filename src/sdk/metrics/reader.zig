@@ -46,7 +46,14 @@ pub const Reader = union(enum) {
         }
     }
 
-    pub fn forceFlush(self: *const Reader, timeout_ms: ?u64) api.common.ProcessResult {
+    pub fn unregisterAllMeters(self: *const Reader) void {
+        switch (self.*) {
+            .noop => {},
+            .bridge => |reader| reader.unregisterAllMetersFn(reader.reader_ptr),
+        }
+    }
+
+    pub fn forceFlush(self: *const Reader, timeout_ms: ?u64) api.common.FlushResult {
         return switch (self.*) {
             .noop => .success,
             .bridge => |reader| reader.forceFlushFn(reader.reader_ptr, timeout_ms),
@@ -95,12 +102,13 @@ pub const Reader = union(enum) {
 pub const BridgeReader = struct {
     reader_ptr: *anyopaque,
     collectFn: *const fn (reader_ptr: *anyopaque) void,
-    forceFlushFn: *const fn (reader_ptr: *anyopaque, timeout_ms: ?u64) api.common.ProcessResult,
+    forceFlushFn: *const fn (reader_ptr: *anyopaque, timeout_ms: ?u64) api.common.FlushResult,
     shutdownFn: *const fn (reader_ptr: *anyopaque, timeout_ms: ?u64) api.common.ProcessResult,
     deinitFn: *const fn (reader_ptr: *anyopaque) void,
     destroyFn: *const fn (reader_ptr: *anyopaque) void,
     registerMeterFn: *const fn (reader_ptr: *anyopaque, meter: *sdk.BasicMeter) void,
     unregisterMeterFn: *const fn (reader_ptr: *anyopaque, meter: *sdk.BasicMeter) void,
+    unregisterAllMetersFn: *const fn (reader_ptr: *anyopaque) void,
     recordMeasurementFn: *const fn (reader_ptr: *anyopaque, value: MetricValue, attributes: []const api.AttributeKeyValue, metadata: sdk.MetricMetadata, metadata_hash: u64) void,
 
     pub fn init(ptr: anytype) BridgeReader {
@@ -112,7 +120,7 @@ pub const BridgeReader = struct {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.collect(self);
             }
-            pub fn forceFlush(pointer: *anyopaque, timeout_ms: ?u64) api.common.ProcessResult {
+            pub fn forceFlush(pointer: *anyopaque, timeout_ms: ?u64) api.common.FlushResult {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.forceFlush(self, timeout_ms);
             }
@@ -136,6 +144,10 @@ pub const BridgeReader = struct {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.unregisterMeter(self, meter);
             }
+            pub fn unregisterAllMeters(pointer: *anyopaque) void {
+                const self: T = @ptrCast(@alignCast(pointer));
+                return ptr_info.pointer.child.unregisterAllMeters(self);
+            }
             pub fn recordMeasurement(pointer: *anyopaque, value: MetricValue, attributes: []const api.AttributeKeyValue, metadata: sdk.MetricMetadata, metadata_hash: u64) void {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.recordMeasurement(self, value, attributes, metadata, metadata_hash);
@@ -151,6 +163,7 @@ pub const BridgeReader = struct {
             .destroyFn = VTable.destroy,
             .registerMeterFn = VTable.registerMeter,
             .unregisterMeterFn = VTable.unregisterMeter,
+            .unregisterAllMetersFn = VTable.unregisterAllMeters,
             .recordMeasurementFn = VTable.recordMeasurement,
         };
     }

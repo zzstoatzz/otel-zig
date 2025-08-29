@@ -13,7 +13,6 @@ const sdk = struct {
     const LoggerProvider = @import("logger_provider.zig").LoggerProvider;
     const PipelineBuilder = @import("../common/pipeline.zig").PipelineBuilder;
     const Resource = @import("../resource/resource.zig").Resource;
-    const ResourceBuilder = @import("../resource/resource.zig").ResourceBuilder;
 };
 
 // Import validation functions from API layer
@@ -31,10 +30,7 @@ test "BatchLogRecordProcessor basic functionality" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const resource = try sdk.ResourceBuilder.init(allocator)
-        .withDefaults()
-        .finish(allocator);
-
+    const resource = try sdk.Resource.initOwned(allocator, .default);
     var provider = sdk.LoggerProvider.init(allocator, resource);
     defer provider.deinit();
 
@@ -57,11 +53,13 @@ test "BatchLogRecordProcessor basic functionality" {
     try provider.registerProcessor(processor.logProcessor());
 
     // Get logger
-    const scope = try api.InstrumentationScope.initSimple("test.batch.logger", "1.0.0");
+    const scope = api.InstrumentationScope{ .name = "test.batch.logger", .version = "1.0.0" };
     var logger = try provider.getLoggerWithScope(scope);
 
     // Emit a simple log record
-    const ctx = api.Context.init(allocator);
+    const ctx = try api.ContextKeyValue.initOwnedSlice(allocator, &.{});
+    defer api.ContextKeyValue.deinitOwnedSlice(allocator, ctx);
+
     logger.emitLogRecord(
         ctx,
         .info,
@@ -93,9 +91,7 @@ test "BasicLogger log emission through pipeline" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const resource = try sdk.ResourceBuilder.init(allocator)
-        .withDefaults()
-        .finish(allocator);
+    const resource = try sdk.Resource.initOwned(allocator, .default);
 
     var provider = sdk.LoggerProvider.init(allocator, resource);
     defer provider.deinit();
@@ -113,11 +109,11 @@ test "BasicLogger log emission through pipeline" {
     try provider.registerProcessor(processor.logProcessor());
 
     // Get logger
-    const scope = try api.InstrumentationScope.initSimple("test.logger", "1.0.0");
+    const scope = api.InstrumentationScope{ .name = "test.logger", .version = "1.0.0" };
     var logger = try provider.getLoggerWithScope(scope);
 
     // Emit logs of different severities
-    const ctx = api.Context.init(allocator);
+    const ctx = &[_]api.ContextKeyValue{};
 
     logger.emitLogRecord(
         ctx,
@@ -167,10 +163,7 @@ test "BasicLogger severity filtering" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const resource = try sdk.ResourceBuilder.init(allocator)
-        .withDefaults()
-        .finish(allocator);
-
+    const resource = try sdk.Resource.initOwned(allocator, .default);
     var provider = sdk.LoggerProvider.init(allocator, resource);
     defer provider.deinit();
 
@@ -183,33 +176,30 @@ test "BasicLogger severity filtering" {
 
     try provider.registerProcessor(processor.logProcessor());
 
-    const scope = try api.InstrumentationScope.initSimple("test.logger", "1.0.0");
+    const scope = api.InstrumentationScope{ .name = "test.logger", .version = "1.0.0" };
     var logger = try provider.getLoggerWithScope(scope);
-    const ctx = api.Context.init(allocator);
+    const ctx = &[_]api.ContextKeyValue{};
 
-    // Test enabled() method - with processor registered, all severities should be enabled
-    // since min_severity = .invalid allows all severities through
+    // Test enabled() method - with processor registered, not all severities should be enabled
+    // since min_severity = .debug is the default.
     try testing.expect(logger.enabled(ctx, .@"error"));
     try testing.expect(logger.enabled(ctx, .warn));
     try testing.expect(logger.enabled(ctx, .info));
     try testing.expect(logger.enabled(ctx, .debug));
-    try testing.expect(logger.enabled(ctx, .trace));
+    try testing.expect(!logger.enabled(ctx, .trace));
 }
 
 test "BasicLogger processor enabled() integration" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const resource = try sdk.ResourceBuilder.init(allocator)
-        .withDefaults()
-        .finish(allocator);
-
+    const resource = try sdk.Resource.initOwned(allocator, .default);
     var provider = sdk.LoggerProvider.init(allocator, resource);
     defer provider.deinit();
 
-    const scope = try api.InstrumentationScope.initSimple("test.logger", "1.0.0");
+    const scope = api.InstrumentationScope{ .name = "test.logger", .version = "1.0.0" };
     var logger = try provider.getLoggerWithScope(scope);
-    const ctx = api.Context.init(allocator);
+    const ctx = &[_]api.ContextKeyValue{};
 
     // Test 1: No processors - should return false per spec
     try testing.expect(!logger.enabled(ctx, .info));
@@ -232,17 +222,15 @@ test "BasicLogger processor enabled() integration" {
     // Test 3: Verify severity filtering still works
     // Since min_severity = .invalid (0), all severities should be enabled
     try testing.expect(logger.enabled(ctx, .@"error"));
-    try testing.expect(logger.enabled(ctx, .trace)); // All severities >= .invalid (0)
+    try testing.expect(!logger.enabled(ctx, .trace)); // All severities >= .debug (0)
+    try testing.expect(logger.enabled(ctx, .info)); // All severities >= .debug (0)
 }
 
 test "BasicLogger shutdown behavior" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const resource = try sdk.ResourceBuilder.init(allocator)
-        .withDefaults()
-        .finish(allocator);
-
+    const resource = try sdk.Resource.initOwned(allocator, .default);
     var provider = sdk.LoggerProvider.init(allocator, resource);
     defer provider.deinit();
 
@@ -254,9 +242,9 @@ test "BasicLogger shutdown behavior" {
 
     try provider.registerProcessor(processor.logProcessor());
 
-    const scope = try api.InstrumentationScope.initSimple("test.logger", "1.0.0");
+    const scope = api.InstrumentationScope{ .name = "test.logger", .version = "1.0.0" };
     var logger = try provider.getLoggerWithScope(scope);
-    const ctx = api.Context.init(allocator);
+    const ctx = &[_]api.ContextKeyValue{};
 
     // Emit log before shutdown
     logger.emitLogRecord(ctx, .info, .{ .string = "Before shutdown" }, null, null, null, null, "INFO", null, null, null);
@@ -277,10 +265,7 @@ test "BasicLoggerProvider flush behavior" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const resource = try sdk.ResourceBuilder.init(allocator)
-        .withDefaults()
-        .finish(allocator);
-
+    const resource = try sdk.Resource.initOwned(allocator, .default);
     var provider = sdk.LoggerProvider.init(allocator, resource);
     defer provider.deinit();
 
@@ -306,10 +291,7 @@ test "BasicLogger with attributes and timestamps" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const resource = try sdk.ResourceBuilder.init(allocator)
-        .withDefaults()
-        .finish(allocator);
-
+    const resource = try sdk.Resource.initOwned(allocator, .default);
     var provider = sdk.LoggerProvider.init(allocator, resource);
     defer provider.deinit();
 
@@ -320,9 +302,9 @@ test "BasicLogger with attributes and timestamps" {
     processor.* = SimpleLogRecordProcessor.init(allocator, mock_exporter.logRecordExporter());
     try provider.registerProcessor(processor.logProcessor());
 
-    const scope = try api.InstrumentationScope.initSimple("test.logger", "1.0.0");
+    const scope = api.InstrumentationScope{ .name = "test.logger", .version = "1.0.0" };
     var logger = try provider.getLoggerWithScope(scope);
-    const ctx = api.Context.init(allocator);
+    const ctx = &[_]api.ContextKeyValue{};
 
     // Create attributes
     const attributes = [_]api.AttributeKeyValue{

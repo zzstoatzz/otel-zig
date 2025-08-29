@@ -119,21 +119,18 @@ pub fn ObservableResult(comptime T: type) type {
         measurements: std.ArrayList(Measurement),
 
         /// Initialize a new ObservableResult
-        pub fn init(allocator: std.mem.Allocator) Self {
-            return Self{
-                .measurements = .init(allocator),
-            };
-        }
+        pub const empty = Self{ .measurements = .empty };
 
         /// Record a measurement with attributes and optional timestamp
         ///
         /// `attributes` is non-owning.
         pub fn observe(
             self: *Self,
+            allocator: std.mem.Allocator,
             value: T,
             attributes: []const AttributeKeyValue,
         ) void {
-            self.measurements.append(Measurement{
+            self.measurements.append(allocator, Measurement{
                 .value = value,
                 .attributes = attributes,
             }) catch |err| {
@@ -149,13 +146,13 @@ pub fn ObservableResult(comptime T: type) type {
         }
 
         /// Record a measurement without attributes
-        pub fn observeValue(self: *Self, value: T) void {
-            self.observe(value, &[_]AttributeKeyValue{});
+        pub fn observeValue(self: *Self, allocator: std.mem.Allocator, value: T) void {
+            self.observe(allocator, value, &[_]AttributeKeyValue{});
         }
 
         /// Deinitialize the result
-        pub fn deinit(self: *Self) void {
-            self.measurements.deinit();
+        pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+            self.measurements.deinit(allocator);
         }
     };
 }
@@ -274,11 +271,11 @@ test "ObservableResult basic functionality" {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var result = ObservableResult(i64).init(allocator);
-    defer result.deinit();
+    var result = ObservableResult(i64).empty;
+    defer result.deinit(allocator);
 
-    result.observeValue(42);
-    result.observe(100, &[_]AttributeKeyValue{
+    result.observeValue(allocator, 42);
+    result.observe(allocator, 100, &[_]AttributeKeyValue{
         .{ .key = "test", .value = .{ .string = "value" } },
     });
 

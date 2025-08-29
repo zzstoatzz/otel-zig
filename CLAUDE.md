@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Versions
 
-The code targets zig version 0.14.1. Because zig prefers structs instead of individual arguments, you need to pass `.{}` as the second argument to `std.debug.print`, event when you aren't formatting any output. You can also often skip the full type name if the destination value is already known; for example, if the method signature was `fn method(v: AttributeValue) void`, you can call it like `method(.{.string = "foo"});`, which allows you to avoid repeating an easily inferred type. The same is true of return statements.
+The code targets zig version 0.15.1. This often means you should ask the human what the current way to do things is. For example, *Io.Writers, ArrayList, and the Http library all had large refactors in the upgrade to 0.15, which was after your training data set.
 
 ## Build Commands
 
@@ -13,15 +13,9 @@ The code targets zig version 0.14.1. Because zig prefers structs instead of indi
 - `zig build test-api` - Run API-only tests
 - `zig build test-sdk` - Run SDK-only tests
 - `zig build test-exporters` - Run exporter tests
-- `zig build examples` - Build and run all examples
-- `zig build example-dns-query` - Run DNS query logging example
-- `zig build example-dns-query-otlp` - Run DNS query OTLP example
-- `zig build example-dns-query-std-log-console` - Run DNS query std.log bridge console example
-- `zig build example-dns-query-std-log-otlp` - Run DNS query std.log bridge OTLP example
-- `zig build example-metrics` - Run metrics demo
-- `zig build example-metrics-histogram` - Run metrics histogram example.
-- `zig build example-metrics-otlp` - Run metrics OTLP example
-- `zig build example-simple-trace-otlp` - Run simple trace OTLP example
+- `zig build --verbose example-multithreaded-http -- console 20 1.0` - run a comprehensive test for 20 seconds outputting to the console.
+- `zig build --verbose example-multithreaded-http -- otlp 20 0.5` - run a comprehensive test for 20 seconds using the otlp exporter and sampling 50%.
+- `zig build -l` - to lest all the build targets and to find one not on this list.
 
 ## Running individual files
 
@@ -51,7 +45,7 @@ You can normally find the path to protobuf under the `.cache` directory.
 
 ## Architecture Overview
 
-This is a Zig implementation of the OpenTelemetry API and SDK following the official OpenTelemetry specification. The codebase is structured with clear separation between API interfaces and SDK implementations. The API
+This is a Zig implementation of the OpenTelemetry API and SDK following the official OpenTelemetry specification. The codebase is structured with clear separation between API interfaces and SDK implementations. While this implementation tries to follow the specification closely, [where it makes more zig sense, we diverge](https://github.com/nodejs/node/issues/57992#issuecomment-2844248550).
 
 ### Module Structure
 
@@ -71,7 +65,7 @@ The SDK follows the classic OpenTelemetry pattern:
 ```
 Provider (creates loggers/meters/tracers)
     ↓
-Processor (processes telemetry records)
+Processor/Reader (processes telemetry records)
     ↓
 Exporter (sends data to backends)
 ```
@@ -84,27 +78,29 @@ The codebase uses a bridge pattern to separate API from SDK:
 
 - **API Layer**: Defines interfaces using tagged unions (`Logger`, `LoggerProvider`, etc.)
 - **Bridge Types**: Enable SDK implementations to plug into API interfaces. These are provided in the API layer and use template meta progamming (`LoggerProviderBridge`)
-- **SDK Layer**: Provides concrete implementations (`BasicLogger`, `BasicLoggerProvider`, `BasicTracerProvider`, etc.)
+- **SDK Layer**: Provides concrete implementations (`sdk.Logger`, `sdk.LoggerProvider`, `sdk.BasicTracerProvider`, etc.)
 
 ### Memory Management
 
-All API types are **non-owning** - they hold references, not owned data. Callers are responsible for data lifetime management. The SDK tries to avoid creating new variants unless required. Usually a cloning method added to the API is sufficient (e.g. `AttributeKeyValue` has `initOwned()`, `initOwnedSlice`, `deinitOwned`, and `deinitOwnedSlice`). Types and collections are usually immutable. A builder should be used when cases of mutability are required (e.g. `AttributeBuilder`).
+All API types are **non-owning** - they hold references, not owned data. Callers are responsible for data lifetime management. The SDK tries to avoid creating new variants unless required. Usually a cloning method added to the API is sufficient (e.g. `AttributeKeyValue` has `initOwned()`, `initOwnedSlice`, `deinitOwned`, and `deinitOwnedSlice`). Types and collections are usually immutable. A builder should be used when cases of mutability are required (e.g. `AttributeBuilder`). In many cases, you can pass an empty, non-owning slice to things via `&.{}`.
 
 SDK types have more flexibilty in terms of owning the memory and mutability.
 
-Exporters should copy and own memory when they are buffering or otherwise asyncronously using data.
+Exporters and Processors should copy and own memory when they are buffering or otherwise asyncronously using data.
 
 ## Key Patterns
 
-### Resource
-Every provider requires a `Resource` when it is created. Always use a `ResourceBuilder` for creating resources instead of manual or stack based constructions.
+### Builder
+There is a generic provided `Builder` type under `api.common`. It currently powers the `AttributeBuilder`, `BaggageBuilder`, and `ContextBuilder`. All of their usage is similar to below.
 
 ```zig
 // example use builder.
-const resource = try ResourceBuilder.init(allocator)
-    .withDefaults()
+const resource = try AttributeBuilder.init(allocator)
+    .add(.{.key = "attributeKey", .value .{ .string = "attributeValue"}})
     .finish(allocator);
 ```
+
+The builders have a `build()` and a `finish` method. The build method does not deinit the builder. The finish method does. In both cases, the slice returned is considered owned and the caller must free it.
 
 ### Instrumentation Scope
 Every logger/meter/tracer has an associated `InstrumentationScope` that identifies the instrumentation library (name, version, schema_url, attributes).
@@ -138,28 +134,6 @@ const attributes = &[_]AttributeKeyValue{
 
 **Memory Management**: AttributeValue is non-owning by default. Use `initOwned()` methods when you need to clone string data.
 
-**AttributeBuilder Usage**: For building owned `[]AttributeKeyValue` collections, use `AttributeBuilder`:
-
-```zig
-// AttributeBuilder creates owned attribute collections
-const owned_attrs = try otel_api.common.AttributeBuilder.init(allocator_for_temp_objects)
-    .add("service.name", .{ .string = "my-service" })
-    .addInt("http.status_code", 200)
-    .addFloat("request.timeout", 30.0)
-    .addBool("feature.enabled", true)
-    .finish(allocator_for_owned_slice_attribute_key_value);
-defer otel_api.common.AttributeKeyValue.deinitOwnedSlice(allocator_for_owned_slice_attribute_key_value, owned_attrs);
-```
-
-**Key Benefits**:
-- **Functional style**: Method chaining for clean code
-- **Type-safe helpers**: `addString()`, `addInt()`, `addFloat()`, `addBool()` methods
-- **Deduplication**: Last-wins strategy for duplicate keys
-- **Owned memory**: Creates deep copies of all keys and string values
-- **Error recovery**: Invalid builders return empty arrays in release mode
-
-Prefer to use `[]AttributeKeyValue` rather than using an ArrayList. Use `AttributeBuilder` when you need owned attribute collections. Prefer the stack based array for un-owned or temporary collections.
-
 ### Pipeline System
 The SDK uses a pipeline architecture for connecting processors and exporters with proper memory ownership.
 
@@ -180,33 +154,7 @@ pub const PipelineStep = PipelineStepInstructions(
 - Processor owns exporter, **must** call `exporter.deinit()` and `exporter.destroy()` in its `deinit()`
 - Each component cleans up what it was connected to via `.flowTo()`
 
-**Custom Exporter Pattern**:
-```zig
-const MyExporter = struct {
-    pub const PipelineStep = PipelineStepInstructions(
-        MyExporter, SpanExporter, MyConfig,
-        spanExporter, _init, PipelineDeinitConnection
-    );
-
-    pub fn _init(self: *MyExporter, config: MyConfig, allocator: Allocator) !void {
-        self.* = init(allocator, config);
-    }
-
-    pub fn spanExporter(self: *MyExporter) SpanExporter {
-        return SpanExporter{ .bridge = BridgeSpanExporter.init(self) };
-    }
-
-    // Standard exporter methods required:
-    pub fn exportSpans(...) ExportResult { ... }
-    pub fn forceFlush(...) ExportResult { ... }
-    pub fn shutdown(...) ExportResult { ... }
-    pub fn deinit(self: *MyExporter) void { ... }
-    pub fn destroy(self: *MyExporter) void { self.allocator.destroy(self); }
-};
-
-// Usage:
-.{ProcessorStep.init(config).flowTo(MyExporter.PipelineStep.init(my_config))}
-```
+**Testing**: The sdk provides a mock exporter (usually in the exporter.zig file) that can be used in testing to "collect" records. A `noop` exporter can be used to create a discarding exporter.
 
 ### Global Provider Registry
 Thread-safe global provider management through `provider_registry.zig` with mutex-protected storage.
@@ -268,57 +216,15 @@ Two-phase pattern where `.end()` marks span completion and `.deinit()` handles m
 
 The logs, metrics, and tracing implementations are complete and architecturally consistent. All three signals use identical patterns for provider setup, pipeline configuration, and memory management.
 
-### Tracing Implementation Status ✅ COMPLETE
-- **API Layer**: Complete with bridge pattern and spec-compliant interfaces
-- **SDK Layer**: Full implementation complete (BasicTracer, BasicTracerProvider, RecordingSpan)
-- **Pipeline Architecture**: Complete with PipelineStep implementations for all components
-- **Provider Setup**: Complete with setupGlobalProvider function matching logs/metrics exactly
-- **Memory Management**: Two-phase span lifecycle (.end()/.deinit()) with proper cleanup
-- **Exporters**: OTLP and console exporters with PipelineStep integration
-- **Sampling**: Basic samplers implemented (TraceIdRatioBasedSampler, ParentBasedSampler)
-- **Context Integration**: Proper context propagation with explicit span injection
-- **Batch Processing**: BatchSpanProcessor implemented with configurable options
-- **Architectural Consistency**: All patterns now match logs/metrics exactly
-
 Semantic conventions has not been started.
 
-Exporters are complete for OTLP and console, with full PipelineStep integration and batch processing support.
+Exporters are complete for OTLP and *Io.Writer, with full PipelineStep integration and batch processing support.
 
-The examples serve as comprehensive integration tests and demonstrate proper usage patterns for all three signals.
+The examples serve as comprehensive integration tests and demonstrate proper usage patterns for all three signals. `examples/multithreaded_http_telemetry.zig` is the most comprehensive in that it test all the signals and most of the SDK functionality, and exporters.
 
 ## Testing Utilities
 
 The codebase provides mock implementations for clean, testable code without stderr output or external dependencies.
-
-### MockSpanExporter
-
-Located in `src/sdk/trace/exporter.zig`, provides a test-friendly span exporter that captures exported spans for verification:
-
-```zig
-// Initialize mock exporter
-const mock_exporter = try allocator.create(MockSpanExporter);
-mock_exporter.* = MockSpanExporter.init(allocator);
-defer mock_exporter.destroy();
-
-// Use in tests
-const processor = try BatchSpanProcessor.init(
-    allocator,
-    mock_exporter.spanExporter(),
-    resource,
-    export_interval_ms,
-    max_queue_size,
-);
-
-// Verify exported data
-try testing.expectEqual(@as(usize, 1), mock_exporter.spanCount());
-const exported_span = mock_exporter.getSpan(0).?;
-```
-
-**Key Methods:**
-- `spanCount()` - Number of exported spans
-- `getSpan(index)` - Get span by index
-- `clearSpans()` - Reset collected spans
-- `spanExporter()` - Get SpanExporter interface
 
 ### MockErrorHandler
 
@@ -352,4 +258,4 @@ try testing.expectEqualStrings("Expected error message", error_info.message);
 **Best Practice:** Always use these mock handlers in tests to keep test output clean and enable verification of error conditions without relying on stderr inspection.
 
 ## Local Resources
-The OTel specification is in the `spec` directory. A C++ reference implementation is in the `reference/cpp-sdk` directory. The protobuf definitions are in the `opentelemetry-proto` directory.
+The OTel specification is in the `spec` directory. The protobuf definitions are in the `opentelemetry-proto` directory.

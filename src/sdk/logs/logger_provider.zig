@@ -1,22 +1,33 @@
+//! OpenTelemetry SDK Meter Provider Implementation
+//!
+//! This module provides the concrete implementation of the MeterProvider interface
+//! for the SDK. MeterProvider manages meters and their lifecycle.
+
 const std = @import("std");
 const api = @import("otel-api");
+
 const sdk = struct {
-    const InstrumentationScopeMapContext = @import("../common/scope_context.zig").InstrumentationScopeMapContext;
-    const LogRecordProcessor = @import("processor.zig").LogRecordProcessor;
-    const Logger = @import("logger.zig").Logger;
-    const PipelineBuilder = @import("../common/pipeline.zig").PipelineBuilder;
     const Resource = @import("../resource/resource.zig").Resource;
-    const ResourceBuilder = @import("../resource/resource.zig").ResourceBuilder;
+    const common = struct {
+        const InstrumentationScopeMapContext = @import("../common/scope_context.zig").InstrumentationScopeMapContext;
+        const PipelineBuilder = @import("../common/pipeline.zig").PipelineBuilder;
+        const Timeout = @import("../common/timeout.zig");
+    };
+    const logs = struct {
+        const LogRecordProcessor = @import("processor.zig").LogRecordProcessor;
+        const Logger = @import("logger.zig").Logger;
+    };
 };
 
 /// Basic logger provider with caching
 pub const LoggerProvider = struct {
-    // internal state fields
     allocator: std.mem.Allocator,
     resource: sdk.Resource,
-    cache: std.HashMapUnmanaged(api.InstrumentationScope, *sdk.Logger, sdk.InstrumentationScopeMapContext, 80),
-    processors: std.ArrayListUnmanaged(sdk.LogRecordProcessor),
+    cache: std.HashMapUnmanaged(api.InstrumentationScope, *sdk.logs.Logger, sdk.common.InstrumentationScopeMapContext, 80),
+    processors: std.ArrayListUnmanaged(sdk.logs.LogRecordProcessor),
     mutex: std.Thread.Mutex,
+    is_shutdown: std.atomic.Value(bool),
+    default_min_severity: api.logs.Severity,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -28,10 +39,18 @@ pub const LoggerProvider = struct {
             .cache = .empty,
             .processors = .empty,
             .mutex = .{},
+            .is_shutdown = .init(false),
+            .default_min_severity = if (@import("builtin").mode == .Debug) .debug else .warn,
         };
     }
 
     pub fn deinit(self: *LoggerProvider) void {
+        // make sure we have flushed before we fully clean up.
+        _ = self.shutdown(null);
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         // Iterate over all the loggers to clean them up.
         var iter = self.cache.iterator();
         while (iter.next()) |kv| {
@@ -58,6 +77,48 @@ pub const LoggerProvider = struct {
         self.allocator.destroy(self);
     }
 
+    pub fn shutdown(self: *LoggerProvider, timeout_ms: ?u64) api.common.ProcessResult {
+        if (self.is_shutdown.load(.monotonic)) return .success;
+
+        const timeout = sdk.common.Timeout.init(timeout_ms);
+
+        // The mutex block is distinct because the mutex must be released before
+        // forceFlush can be called.
+        {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+
+            // flag each logger as shutdown to stop collection.
+            var iter = self.cache.iterator();
+            while (iter.next()) |kv| {
+                if (timeout.isExpired()) return .timeout;
+                kv.value_ptr.*.shutdown();
+            }
+        }
+
+        const result = self.forceFlush(timeout.remaining() catch return .timeout).asProcessResult();
+        if (result.isSuccess()) self.is_shutdown.store(true, .monotonic);
+        return result;
+    }
+
+    /// Interface defined method to force the attached processor to flush.
+    pub fn forceFlush(self: *LoggerProvider, timeout_ms: ?u64) api.common.FlushResult {
+        // Shutdown providers can still force flush. No shutdown check.
+
+        const timeout = sdk.common.Timeout.init(timeout_ms);
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        for (self.processors.items) |*processor| {
+            const flush_result = processor.forceFlush(timeout.remaining() catch return .timeout);
+            switch (flush_result) {
+                .success => {},
+                else => return flush_result,
+            }
+        }
+        return .success;
+    }
+
     /// Interface definde method to get a logger.
     pub fn getLoggerWithScope(self: *LoggerProvider, scope: api.InstrumentationScope) !api.logs.Logger {
         self.mutex.lock();
@@ -74,11 +135,11 @@ pub const LoggerProvider = struct {
         errdefer owned_scope.deinitOwned(self.allocator);
 
         // Create new SDK logger
-        const sdk_logger = try self.allocator.create(sdk.Logger);
+        const sdk_logger = try self.allocator.create(sdk.logs.Logger);
         errdefer self.allocator.destroy(sdk_logger);
 
         // TODO: Why is the invalid hard-coded here? Should come from config.
-        sdk_logger.* = sdk.Logger.init(self.allocator, .invalid, owned_scope, self);
+        sdk_logger.* = sdk.logs.Logger.init(self, owned_scope, self.default_min_severity);
 
         // Cache the resulting logger for this scope.
         try self.cache.put(self.allocator, owned_scope, sdk_logger);
@@ -87,49 +148,10 @@ pub const LoggerProvider = struct {
         return sdk_logger.logger();
     }
 
-    /// Interface defined method to force the attached processor to flush.
-    pub fn forceFlush(self: *LoggerProvider, timeout_ms: ?u64) api.common.FlushResult {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        for (self.processors.items) |*processor| {
-            const flush_result = processor.forceFlush(timeout_ms);
-            switch (flush_result) {
-                .success => {},
-                .failure => return .failure,
-                .timeout => return .timeout,
-            }
-        }
-        return .success;
-    }
-
-    pub fn shutdown(self: *LoggerProvider, timeout_ms: ?u64) api.common.ProcessResult {
-        // The mutex block is distinct because the mutex must be released before
-        // forceFlush can be called.
-        {
-            self.mutex.lock();
-            defer self.mutex.unlock();
-
-            // flag each logger as shutdown to stop collection.
-            var iter = self.cache.iterator();
-            while (iter.next()) |kv| {
-                kv.value_ptr.*.shutdown();
-            }
-        }
-
-        // Above mutex is now unlocked so forceFlush can take the mutex.
-        const flush_result = self.forceFlush(timeout_ms);
-        return switch (flush_result) {
-            .success => .success,
-            .failure => .failure,
-            .timeout => .timeout,
-        };
-    }
-
     /// Attach a processor to this provider.
     ///
     /// This method is not thread-safe and should only be called during initialization.
-    pub fn registerProcessor(self: *LoggerProvider, processor: sdk.LogRecordProcessor) !void {
+    pub fn registerProcessor(self: *LoggerProvider, processor: sdk.logs.LogRecordProcessor) !void {
         try self.processors.append(self.allocator, processor);
     }
 
@@ -139,55 +161,7 @@ pub const LoggerProvider = struct {
     }
 
     /// Generate a pipelinebuilder for this provider.
-    pub fn pipelineBuilder(self: *LoggerProvider) sdk.PipelineBuilder(*LoggerProvider) {
+    pub fn pipelineBuilder(self: *LoggerProvider) sdk.common.PipelineBuilder(*LoggerProvider) {
         return .init(self);
     }
 };
-
-test "LoggerProvider logger caching" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
-
-    const resource = try sdk.ResourceBuilder.init(allocator)
-        .withDefaults()
-        .finish(allocator);
-
-    var provider = LoggerProvider.init(allocator, resource);
-    defer provider.deinit();
-
-    const scope1 = try api.InstrumentationScope.initSimple("test.logger", "1.0.0");
-    const scope2 = try api.InstrumentationScope.initSimple("test.logger", "1.0.0"); // Same
-    const scope3 = try api.InstrumentationScope.initSimple("other.logger", "1.0.0"); // Different
-
-    const logger1 = try provider.getLoggerWithScope(scope1);
-    const logger2 = try provider.getLoggerWithScope(scope2);
-    const logger3 = try provider.getLoggerWithScope(scope3);
-
-    // Same scope should return same logger instance
-    try testing.expect(logger1.bridge.logger_ptr == logger2.bridge.logger_ptr);
-    try testing.expect(logger1.bridge.logger_ptr != logger3.bridge.logger_ptr);
-
-    // Verify cache contains 2 unique entries
-    try testing.expectEqual(@as(u32, 2), provider.cache.count());
-}
-
-test "LoggerProvider processor registration using pipeline builder" {
-    const SimpleLogRecordProcessor = @import("simple_processor.zig").SimpleLogRecordProcessor;
-    const MockLogRecordExporter = @import("exporter.zig").MockLogRecordExporter;
-
-    const testing = std.testing;
-    const allocator = testing.allocator;
-
-    const resource = try sdk.ResourceBuilder.init(allocator)
-        .withDefaults()
-        .finish(allocator);
-
-    var provider = LoggerProvider.init(allocator, resource);
-    defer provider.deinit();
-
-    try sdk.PipelineBuilder(*LoggerProvider).init(&provider)
-        .with(SimpleLogRecordProcessor.PipelineStep.init({}).flowTo(MockLogRecordExporter.PipelineStep.init({})))
-        .done();
-
-    try testing.expectEqual(@as(usize, 1), provider.processors.items.len);
-}

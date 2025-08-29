@@ -32,9 +32,6 @@ const otel_api = @import("otel-api");
 // Resource types
 const resource_zig = @import("resource.zig");
 pub const Resource = resource_zig.Resource;
-pub const ResourceBuilder = resource_zig.ResourceBuilder;
-
-pub const mergeResources = Resource.merge;
 
 // Resource detection
 pub const ResourceDetector = @import("detector.zig").ResourceDetector;

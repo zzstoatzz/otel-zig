@@ -66,7 +66,7 @@ pub const SimpleLogRecordProcessor = struct {
         self.exporter = exporter;
     }
 
-    pub fn onEmit(self: *SimpleLogRecordProcessor, record: sdk.LogRecord, ctx: api.Context, resource: sdk.Resource) void {
+    pub fn onEmit(self: *SimpleLogRecordProcessor, record: sdk.LogRecord, ctx: []const api.ContextKeyValue, resource: sdk.Resource) void {
         _ = ctx;
 
         self.mutex.lock();
@@ -94,7 +94,7 @@ pub const SimpleLogRecordProcessor = struct {
         }
     }
 
-    pub fn forceFlush(self: *SimpleLogRecordProcessor, timeout_ms: ?u64) api.common.ProcessResult {
+    pub fn forceFlush(self: *SimpleLogRecordProcessor, timeout_ms: ?u64) api.common.FlushResult {
         self.mutex.lock();
         defer self.mutex.unlock();
 

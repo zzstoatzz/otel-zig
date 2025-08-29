@@ -7,15 +7,7 @@ const std = @import("std");
 const api = @import("otel-api");
 
 /// Instrument type enumeration
-pub const InstrumentType = enum {
-    Counter,
-    UpDownCounter,
-    Histogram,
-    Gauge,
-    ObservableCounter,
-    ObservableUpDownCounter,
-    ObservableGauge,
-};
+pub const InstrumentType = api.metrics.InstrumentType;
 
 /// Metadata passed from instrument to reader for aggregation creation
 pub const MetricMetadata = struct {

@@ -74,13 +74,8 @@ pub const BaggageKeyValue = struct {
     /// Format the entry for debugging/display
     pub fn format(
         self: BaggageKeyValue,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
         writer: anytype,
     ) !void {
-        _ = fmt;
-        _ = options;
-
         try writer.print("{s}={s}", .{ self.key, self.value });
         if (self.metadata) |meta| {
             try writer.print("{s}", .{meta});
@@ -89,125 +84,7 @@ pub const BaggageKeyValue = struct {
 };
 
 /// BaggageBuilder provides a functional interface for constructing arrays of BaggageKeyValue
-pub const BaggageBuilder = union(enum) {
-    valid: struct {
-        allocator: std.mem.Allocator,
-        entries: []BaggageKeyValue,
-    },
-    invalid: anyerror,
-
-    /// Initialize a new BaggageBuilder
-    pub fn init(allocator: std.mem.Allocator) BaggageBuilder {
-        const entries = allocator.alloc(BaggageKeyValue, 0) catch |e| return .{ .invalid = e };
-        return .{
-            .valid = .{
-                .allocator = allocator,
-                .entries = entries,
-            },
-        };
-    }
-
-    /// Clean up resources held by the builder
-    pub fn deinit(self: BaggageBuilder) void {
-        switch (self) {
-            .valid => |valid| {
-                valid.allocator.free(valid.entries);
-            },
-            .invalid => {},
-        }
-    }
-
-    /// Add a baggage entry without metadata
-    pub inline fn add(self: BaggageBuilder, key: []const u8, value: []const u8) BaggageBuilder {
-        return self.addKeyValue(.{ .key = key, .value = value });
-    }
-
-    /// Add a baggage entry with metadata
-    pub fn addWithMetadata(self: BaggageBuilder, key: []const u8, value: []const u8, metadata: ?[]const u8) BaggageBuilder {
-        return self.addKeyValue(.{ .key = key, .value = value, .metadata = metadata });
-    }
-
-    /// Add a pre-constructed baggage entry
-    pub fn addKeyValue(self: BaggageBuilder, new_kv: BaggageKeyValue) BaggageBuilder {
-        defer self.deinit();
-        return switch (self) {
-            .valid => |builder| blk: {
-                const new_len = builder.entries.len + 1;
-                const new_entries = builder.allocator.alloc(BaggageKeyValue, new_len) catch |e| return .{ .invalid = e };
-                errdefer builder.allocator.free(new_entries);
-                @memcpy(new_entries[0..builder.entries.len], builder.entries);
-                new_entries[builder.entries.len] = new_kv;
-
-                break :blk .{
-                    .valid = .{
-                        .allocator = builder.allocator,
-                        .entries = new_entries,
-                    },
-                };
-            },
-            .invalid => self,
-        };
-    }
-
-    /// Add multiple BaggageKeyValue pairs at once
-    pub fn addKeyValues(self: BaggageBuilder, kvs: []const BaggageKeyValue) BaggageBuilder {
-        var current = self;
-        for (kvs) |kv| {
-            current = current.add(kv);
-        }
-        return current;
-    }
-
-    /// Finish building and return the final array of BaggageKeyValue
-    /// This consumes the builder and automatically handles cleanup
-    pub fn finish(self: BaggageBuilder, target_allocator: std.mem.Allocator) ![]BaggageKeyValue {
-        defer self.deinit();
-        return switch (self) {
-            .valid => |builder| blk: {
-                // Deduplicate entries before creating owned slice (last-wins strategy)
-                const deduplicated = blk2: {
-                    if (builder.entries.len == 0) {
-                        break :blk2 try target_allocator.alloc(BaggageKeyValue, 0);
-                    }
-
-                    // Use HashMap to track the last occurrence index of each key
-                    var key_to_last_index = std.StringHashMap(usize).init(target_allocator);
-                    defer key_to_last_index.deinit();
-
-                    // Build map of key -> last occurrence index
-                    for (builder.entries, 0..) |entry, i| {
-                        try key_to_last_index.put(entry.key, i);
-                    }
-
-                    // Collect unique entries in order of first appearance
-                    var result = std.ArrayList(BaggageKeyValue).init(target_allocator);
-                    defer result.deinit();
-
-                    var seen_keys = std.StringHashMap(void).init(target_allocator);
-                    defer seen_keys.deinit();
-
-                    for (builder.entries) |entry| {
-                        const key = entry.key;
-
-                        // If this is the first time we see this key AND it's the last occurrence
-                        if (!seen_keys.contains(key)) {
-                            try seen_keys.put(key, {});
-                            const last_index = key_to_last_index.get(key).?;
-                            try result.append(builder.entries[last_index]);
-                        }
-                    }
-
-                    break :blk2 try result.toOwnedSlice();
-                };
-                defer target_allocator.free(deduplicated);
-
-                const kvs = try BaggageKeyValue.initOwnedSlice(target_allocator, deduplicated);
-                break :blk kvs;
-            },
-            .invalid => |e| e,
-        };
-    }
-};
+pub const BaggageBuilder = @import("../common/builder.zig").Builder(BaggageKeyValue);
 
 test "BaggageBuilder basic operations" {
     const testing = std.testing;
@@ -221,7 +98,7 @@ test "BaggageBuilder basic operations" {
 
     // Test single entry
     const single_entries = try BaggageBuilder.init(allocator)
-        .add("user.id", "12345")
+        .add(.{ .key = "user.id", .value = "12345" })
         .finish(allocator);
     defer BaggageKeyValue.deinitOwnedSlice(allocator, single_entries);
 
@@ -235,9 +112,9 @@ test "BaggageBuilder functional chaining" {
     const allocator = testing.allocator;
 
     const entries = try BaggageBuilder.init(allocator)
-        .add("key1", "value1")
-        .addWithMetadata("key2", "value2", "metadata")
-        .add("key1", "duplicate_value") // duplicate key, should use last-wins
+        .add(.{ .key = "key1", .value = "value1" })
+        .add(.{ .key = "key2", .value = "value2", .metadata = "metadata" })
+        .add(.{ .key = "key1", .value = "duplicate_value" }) // duplicate key, should use last-wins
         .finish(allocator);
     defer BaggageKeyValue.deinitOwnedSlice(allocator, entries);
 
@@ -248,36 +125,16 @@ test "BaggageBuilder functional chaining" {
     try testing.expectEqualStrings("value2", entries[1].value);
 }
 
-test "BaggageBuilder with pre-constructed entries" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
-
-    // Use non-owned entry since the builder will create owned copies
-    const entry = BaggageKeyValue{ .key = "test.key", .value = "test.value", .metadata = "some.metadata" };
-
-    const entries = try BaggageBuilder.init(allocator)
-        .addKeyValue(entry)
-        .add("another.key", "another.value")
-        .finish(allocator);
-    defer BaggageKeyValue.deinitOwnedSlice(allocator, entries);
-
-    try testing.expectEqual(@as(usize, 2), entries.len);
-    try testing.expectEqualStrings("test.key", entries[0].key);
-    try testing.expectEqualStrings("test.value", entries[0].value);
-    try testing.expectEqualStrings("another.key", entries[1].key);
-    try testing.expectEqualStrings("another.value", entries[1].value);
-}
-
 test "BaggageBuilder duplicate key handling - last wins" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
     const entries = try BaggageBuilder.init(allocator)
-        .add("user.id", "first-value")
-        .add("session.id", "sess-123")
-        .add("user.id", "last-value") // should win
-        .add("trace.id", "trace-456")
-        .add("session.id", "sess-789") // should win
+        .add(.{ .key = "user.id", .value = "first-value" })
+        .add(.{ .key = "session.id", .value = "sess-123" })
+        .add(.{ .key = "user.id", .value = "last-value" }) // should win
+        .add(.{ .key = "trace.id", .value = "trace-456" })
+        .add(.{ .key = "session.id", .value = "sess-789" }) // should win
         .finish(allocator);
     defer BaggageKeyValue.deinitOwnedSlice(allocator, entries);
 
@@ -311,9 +168,9 @@ test "BaggageBuilder duplicate key handling - no duplicates unchanged" {
     const allocator = testing.allocator;
 
     const entries = try BaggageBuilder.init(allocator)
-        .add("user.id", "12345")
-        .add("session.id", "sess-123")
-        .add("trace.id", "trace-456")
+        .add(.{ .key = "user.id", .value = "12345" })
+        .add(.{ .key = "session.id", .value = "sess-123" })
+        .add(.{ .key = "trace.id", .value = "trace-456" })
         .finish(allocator);
     defer BaggageKeyValue.deinitOwnedSlice(allocator, entries);
 
@@ -333,10 +190,10 @@ test "BaggageBuilder duplicate key handling - all same key" {
     const allocator = testing.allocator;
 
     const entries = try BaggageBuilder.init(allocator)
-        .add("user.id", "first")
-        .add("user.id", "second")
-        .add("user.id", "third")
-        .add("user.id", "final")
+        .add(.{ .key = "user.id", .value = "first" })
+        .add(.{ .key = "user.id", .value = "second" })
+        .add(.{ .key = "user.id", .value = "third" })
+        .add(.{ .key = "user.id", .value = "final" })
         .finish(allocator);
     defer BaggageKeyValue.deinitOwnedSlice(allocator, entries);
 
@@ -350,9 +207,9 @@ test "BaggageBuilder duplicate key handling - with metadata" {
     const allocator = testing.allocator;
 
     const entries = try BaggageBuilder.init(allocator)
-        .addWithMetadata("user.id", "first-value", "original-metadata")
-        .add("session.id", "sess-123")
-        .addWithMetadata("user.id", "last-value", "new-metadata") // should win including metadata
+        .add(.{ .key = "user.id", .value = "first-value", .metadata = "original-metadata" })
+        .add(.{ .key = "session.id", .value = "sess-123" })
+        .add(.{ .key = "user.id", .value = "last-value", .metadata = "new-metadata" }) // should win including metadata
         .finish(allocator);
     defer BaggageKeyValue.deinitOwnedSlice(allocator, entries);
 
@@ -385,12 +242,12 @@ test "BaggageBuilder duplicate key handling - order preservation" {
 
     // Test that order is preserved based on first appearance of each key
     const entries = try BaggageBuilder.init(allocator)
-        .add("first", "1") // position 0
-        .add("second", "2") // position 1
-        .add("third", "3") // position 2
-        .add("second", "2-new") // duplicate, should not change order
-        .add("fourth", "4") // position 3
-        .add("first", "1-new") // duplicate, should not change order
+        .add(.{ .key = "first", .value = "1" }) // position 0
+        .add(.{ .key = "second", .value = "2" }) // position 1
+        .add(.{ .key = "third", .value = "3" }) // position 2
+        .add(.{ .key = "second", .value = "2-new" }) // duplicate, should not change order
+        .add(.{ .key = "fourth", .value = "4" }) // position 3
+        .add(.{ .key = "first", .value = "1-new" }) // duplicate, should not change order
         .finish(allocator);
     defer BaggageKeyValue.deinitOwnedSlice(allocator, entries);
 
@@ -430,4 +287,71 @@ test "BaggageKeyValue basic operations" {
     try testing.expectEqualStrings("owned.key", owned_entry.key);
     try testing.expectEqualStrings("owned.value", owned_entry.value);
     try testing.expectEqualStrings("owned.metadata", owned_entry.metadata.?);
+}
+
+test "BaggageKeyValue eql method" {
+    const testing = std.testing;
+
+    // Test equal entries without metadata
+    const entry1 = BaggageKeyValue{ .key = "user.id", .value = "12345", .metadata = null };
+    const entry2 = BaggageKeyValue{ .key = "user.id", .value = "12345", .metadata = null };
+    try testing.expect(entry1.eql(entry2));
+    try testing.expect(entry2.eql(entry1));
+
+    // Test different keys
+    const entry3 = BaggageKeyValue{ .key = "session.id", .value = "12345", .metadata = null };
+    try testing.expect(!entry1.eql(entry3));
+    try testing.expect(!entry3.eql(entry1));
+
+    // Test different values
+    const entry4 = BaggageKeyValue{ .key = "user.id", .value = "54321", .metadata = null };
+    try testing.expect(!entry1.eql(entry4));
+    try testing.expect(!entry4.eql(entry1));
+
+    // Test both with null metadata
+    const entry5 = BaggageKeyValue{ .key = "user.id", .value = "12345", .metadata = null };
+    const entry6 = BaggageKeyValue{ .key = "user.id", .value = "12345", .metadata = null };
+    try testing.expect(entry5.eql(entry6));
+
+    // Test one with metadata, one without
+    const entry7 = BaggageKeyValue{ .key = "user.id", .value = "12345", .metadata = "some-metadata" };
+    const entry8 = BaggageKeyValue{ .key = "user.id", .value = "12345", .metadata = null };
+    try testing.expect(!entry7.eql(entry8));
+    try testing.expect(!entry8.eql(entry7));
+
+    // Test both with metadata (should be true regardless of metadata content based on current implementation)
+    const entry9 = BaggageKeyValue{ .key = "user.id", .value = "12345", .metadata = "metadata1" };
+    const entry10 = BaggageKeyValue{ .key = "user.id", .value = "12345", .metadata = "metadata2" };
+    try testing.expect(entry9.eql(entry10));
+    try testing.expect(entry10.eql(entry9));
+}
+
+test "BaggageKeyValue format method" {
+    const testing = std.testing;
+    var buffer = [_]u8{0} ** 60;
+
+    // Test formatting without metadata
+    const entry1 = BaggageKeyValue{ .key = "user.id", .value = "12345", .metadata = null };
+    const result1 = try std.fmt.bufPrint(&buffer, "{f}", .{entry1});
+    try testing.expectEqualStrings("user.id=12345", result1);
+
+    // Test formatting with metadata
+    const entry2 = BaggageKeyValue{ .key = "session.id", .value = "abcdef", .metadata = ";priority=high" };
+    const result2 = try std.fmt.bufPrint(&buffer, "{f}", .{entry2});
+    try testing.expectEqualStrings("session.id=abcdef;priority=high", result2);
+
+    // Test formatting with empty key and value
+    const entry3 = BaggageKeyValue{ .key = "", .value = "", .metadata = null };
+    const result3 = try std.fmt.bufPrint(&buffer, "{f}", .{entry3});
+    try testing.expectEqualStrings("=", result3);
+
+    // Test formatting with empty metadata
+    const entry4 = BaggageKeyValue{ .key = "test.key", .value = "test.value", .metadata = "" };
+    const result4 = try std.fmt.bufPrint(&buffer, "{f}", .{entry4});
+    try testing.expectEqualStrings("test.key=test.value", result4);
+
+    // Test formatting with special characters
+    const entry5 = BaggageKeyValue{ .key = "special-key_123", .value = "value with spaces", .metadata = ";attr=value" };
+    const result5 = try std.fmt.bufPrint(&buffer, "{f}", .{entry5});
+    try testing.expectEqualStrings("special-key_123=value with spaces;attr=value", result5);
 }

@@ -193,7 +193,7 @@ pub const PeriodicReader = struct {
     }
 
     /// Force flush the exporter
-    pub fn forceFlush(self: *PeriodicReader, timeout_ms: ?u64) api.common.ProcessResult {
+    pub fn forceFlush(self: *PeriodicReader, timeout_ms: ?u64) api.common.FlushResult {
         const start_time = std.time.milliTimestamp();
 
         // force flush has to cascade to the exporter as well, but we don't need to hold the mutex for that part.
@@ -221,9 +221,9 @@ pub const PeriodicReader = struct {
             if (timeout_ms) |collection_timeout| {
                 const delta: u64 = @intCast(std.time.milliTimestamp() - start_time);
                 if (delta >= collection_timeout) return .timeout;
-                break :blk exporter.forceFlush(collection_timeout - delta).asProcessResult();
+                break :blk exporter.forceFlush(collection_timeout - delta).asFlushResult();
             } else {
-                break :blk exporter.forceFlush(null).asProcessResult();
+                break :blk exporter.forceFlush(null).asFlushResult();
             }
         } else .success;
     }
@@ -271,6 +271,14 @@ pub const PeriodicReader = struct {
                 break;
             }
         }
+    }
+
+    /// Unregister all meters from periodic collection
+    pub fn unregisterAllMeters(self: *PeriodicReader) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        self.registered_meters.clearAndFree(self.allocator);
     }
 
     /// Set the exporter for this processor
@@ -347,7 +355,7 @@ test "BasicPeriodicProcessor - direct init vs pipeline init thread behavior" {
         processor.* = try PeriodicReader.init(allocator, mock_exporter.metricExporter(), 100); // 100ms
         {
             errdefer processor.deinit();
-            try provider.registerProcessor(processor.reader());
+            try provider.registerReader(processor.reader());
         }
     }
 
@@ -356,7 +364,7 @@ test "BasicPeriodicProcessor - direct init vs pipeline init thread behavior" {
     try testing.expect(processor.thread == null);
 
     // Create a basic meter for testing
-    const scope = try api.InstrumentationScope.initSimple("test.meter", "1.0.0");
+    const scope = api.InstrumentationScope{ .name = "test.meter", .version = "1.0.0" };
     _ = try provider.getMeterWithScope(scope);
 
     // Start the thread manually (since we're not using pipeline)
@@ -367,7 +375,7 @@ test "BasicPeriodicProcessor - direct init vs pipeline init thread behavior" {
     try testing.expect(processor.thread != null);
 
     // Create a second meter
-    const scope2 = try api.InstrumentationScope.initSimple("test.meter2", "1.0.0");
+    const scope2 = api.InstrumentationScope{ .name = "test.meter2", .version = "1.0.0" };
     _ = try provider.getMeterWithScope(scope2);
 
     // Verify thread is still running and we have both meters
@@ -376,7 +384,7 @@ test "BasicPeriodicProcessor - direct init vs pipeline init thread behavior" {
     try testing.expect(processor.registered_meters.items.len == 2);
 
     // Wait a bit to allow some collections to happen
-    std.time.sleep(250 * std.time.ns_per_ms);
+    std.Thread.sleep(250 * std.time.ns_per_ms);
 
     // Verify some exports happened (thread is working)
     const export_count = mock_exporter.exportCount();
@@ -387,7 +395,7 @@ test "BasicPeriodicProcessor - direct init vs pipeline init thread behavior" {
     try testing.expect(processor.is_shutdown.load(.acquire));
 
     // Give thread time to exit
-    std.time.sleep(50 * std.time.ns_per_ms);
+    std.Thread.sleep(50 * std.time.ns_per_ms);
 }
 
 test "BasicPeriodicProcessor - no thread start without meters" {
@@ -435,21 +443,21 @@ test "PeriodicReader and Observable instrument test." {
         processor.* = try PeriodicReader.init(allocator, mock_exporter.metricExporter(), 100); // 100ms
         {
             errdefer processor.deinit();
-            try provider.registerProcessor(processor.reader());
+            try provider.registerReader(processor.reader());
         }
     }
 
     try processor.start();
 
-    const scope = try api.InstrumentationScope.initSimple("cardinality", "1.0.0");
+    const scope = api.InstrumentationScope{ .name = "cardinality", .version = "1.0.0" };
     var meter = try provider.getMeterWithScope(scope);
-    const ctx = api.Context.empty(allocator);
+    const ctx = &[_]api.ContextKeyValue{};
 
     const CbStruct = struct {
-        fn callback(_: std.mem.Allocator, result: *api.metrics.ObservableResult(i64), context: *anyopaque) void {
+        fn callback(alloc: std.mem.Allocator, result: *api.metrics.ObservableResult(i64), context: *anyopaque) void {
             const self: *PeriodicReader = @ptrCast(@alignCast(context));
             const cardinality = self.reader_state.aggregations.getCardinality();
-            result.observeValue(@intCast(cardinality));
+            result.observeValue(alloc, @intCast(cardinality));
         }
     };
 
@@ -467,8 +475,8 @@ test "PeriodicReader and Observable instrument test." {
     const up_down = try meter.createCounter(i64, "foo", null, "1", null);
     for (0..15) |i| {
         const attributes = try api.AttributeBuilder.init(allocator)
-            .addString("bar", "baz")
-            .addInt("basic", @intCast(i % 4))
+            .add(.{ .key = "bar", .value = .{ .string = "baz" } })
+            .add(.{ .key = "basic", .value = .{ .int = @intCast(i % 4) } })
             .finish(allocator);
         defer api.AttributeKeyValue.deinitOwnedSlice(allocator, attributes);
         up_down.add(ctx, 1, attributes);

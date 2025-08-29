@@ -46,14 +46,10 @@ const std = @import("std");
 
 // Console exporters for simple output
 pub const console = @import("console/root.zig");
+pub const stream = @import("stream/root.zig");
 
 // OTLP exporters for OpenTelemetry Protocol
 pub const otlp = @import("otlp/root.zig");
-
-// Common exporter utilities and types
-pub const ExportResult = @import("common.zig").ExportResult;
-pub const ExportError = @import("common.zig").ExportError;
-pub const ExporterConfig = @import("common.zig").ExporterConfig;
 
 test {
     std.testing.refAllDecls(@This());

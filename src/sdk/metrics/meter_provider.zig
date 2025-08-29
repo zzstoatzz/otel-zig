@@ -1,27 +1,36 @@
+//! OpenTelemetry SDK Meter Provider Implementation
+//!
+//! This module provides the concrete implementation of the MeterProvider interface
+//! for the SDK. MeterProvider manages meters and their lifecycle.
+
 const std = @import("std");
 const api = @import("otel-api");
 
 const sdk = struct {
-    const InstrumentationScopeMapContext = @import("../common/scope_context.zig").InstrumentationScopeMapContext;
     const Resource = @import("../resource/resource.zig").Resource;
-    const PipelineBuilder = @import("../common/pipeline.zig").PipelineBuilder;
-    const Meter = @import("meter.zig").Meter;
-    const Reader = @import("reader.zig").Reader;
-    const View = @import("view.zig").View;
-    const ViewApplication = @import("view.zig").ViewApplication;
-    const AggregationType = @import("view.zig").AggregationType;
-    const InstrumentType = @import("metadata.zig").InstrumentType;
+    const common = struct {
+        const InstrumentationScopeMapContext = @import("../common/scope_context.zig").InstrumentationScopeMapContext;
+        const PipelineBuilder = @import("../common/pipeline.zig").PipelineBuilder;
+        const Timeout = @import("../common/timeout.zig");
+    };
+    const metrics = struct {
+        const AggregationType = @import("aggregations.zig").AggregationType;
+        const InstrumentType = @import("metadata.zig").InstrumentType;
+        const Meter = @import("meter.zig").Meter;
+        const Reader = @import("reader.zig").Reader;
+        const View = @import("view.zig");
+    };
 };
 
 /// Basic meter provider with caching and configuration
 pub const MeterProvider = struct {
-    // internal state fields
     allocator: std.mem.Allocator,
     resource: sdk.Resource,
-    cache: std.HashMapUnmanaged(api.InstrumentationScope, *sdk.Meter, sdk.InstrumentationScopeMapContext, 80),
-    readers: std.ArrayListUnmanaged(sdk.Reader),
-    views: std.ArrayListUnmanaged(sdk.View),
+    cache: std.HashMapUnmanaged(api.InstrumentationScope, *sdk.metrics.Meter, sdk.common.InstrumentationScopeMapContext, 80),
+    readers: std.ArrayListUnmanaged(sdk.metrics.Reader),
+    views: std.ArrayListUnmanaged(sdk.metrics.View),
     mutex: std.Thread.Mutex,
+    is_shutdown: std.atomic.Value(bool),
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -34,123 +43,93 @@ pub const MeterProvider = struct {
             .readers = .empty,
             .views = .empty,
             .mutex = .{},
+            .is_shutdown = .init(false),
         };
     }
 
     pub fn deinit(self: *MeterProvider) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        // make sure we have shutdown before freeing resources. This
+        // involves the mutex, so doing it outside of the Mutex.
+        _ = self.shutdown(null);
 
-        // Iterate over the meters.
-        var iter = self.cache.iterator();
-        while (iter.next()) |kv| {
-            // Unregister the meter from the processors
-            for (self.readers.items) |*reader| reader.unregisterMeter(kv.value_ptr.*);
+        // readers reference the meters for invoking the async instruments
+        // clean those up. Probably involves a mutex on the reader, so
+        // doing it outside of the Mutex
+        for (self.readers.items) |*reader| reader.unregisterAllMeters();
 
-            // Clean up the meter.
-            kv.key_ptr.deinitOwned(self.allocator);
-            kv.value_ptr.*.deinit();
-            self.allocator.destroy(kv.value_ptr.*);
-        }
-        self.cache.deinit(self.allocator);
+        // Clean up the local lists.
+        {
+            self.mutex.lock();
+            defer self.mutex.unlock();
 
-        // Iterate over the processors.
-        for (self.readers.items) |reader| {
-            // Clean up the processor.
-            reader.deinit();
-            reader.destroy();
-        }
-        self.readers.deinit(self.allocator);
-
-        // Clean up views
-        self.views.deinit(self.allocator);
-
-        // Clean up the resource.
-        self.resource.deinitOwned(self.allocator);
-    }
-
-    /// Add a view to this provider
-    /// Views are immutable after setupGlobalProvider is called
-    pub fn addView(self: *MeterProvider, view: sdk.View) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        try self.views.append(self.allocator, view);
-    }
-
-    /// Apply all registered views to an instrument, returning view applications
-    /// If no views match, returns a single default view application
-    pub fn applyViews(
-        self: *MeterProvider,
-        instrument_name: []const u8,
-        instrument_type: sdk.InstrumentType,
-        instrument_unit: []const u8,
-        instrument_description: ?[]const u8,
-        meter_name: []const u8,
-        meter_version: ?[]const u8,
-        meter_schema_url: ?[]const u8,
-        allocator: std.mem.Allocator,
-    ) ![]sdk.ViewApplication {
-        _ = instrument_description; // TODO: Use in view validation
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        var applications = std.ArrayList(sdk.ViewApplication).init(allocator);
-        defer applications.deinit();
-
-        for (self.views.items) |view| {
-            if (view.instrument_selector.matches(
-                instrument_name,
-                instrument_type,
-                instrument_unit,
-                meter_name,
-                meter_version,
-                meter_schema_url,
-            )) {
-                // Validate aggregation compatibility
-                if (view.aggregation_override) |override_type| {
-                    if (!isAggregationCompatible(instrument_type, override_type)) {
-                        api.common.reportValidationError(.meter, "applyViews", "Incompatible aggregation type for instrument", null);
-                        continue; // Skip this view
-                    }
-                }
-
-                const app = sdk.ViewApplication{
-                    .view = view,
-                };
-                try applications.append(app);
+            // Clean up the meters.
+            var iter = self.cache.iterator();
+            while (iter.next()) |kv| {
+                kv.key_ptr.deinitOwned(self.allocator);
+                kv.value_ptr.*.deinit();
+                self.allocator.destroy(kv.value_ptr.*);
             }
+            self.cache.deinit(self.allocator);
+
+            // Clean up the readers.
+            for (self.readers.items) |reader| {
+                reader.deinit();
+                reader.destroy();
+            }
+            self.readers.deinit(self.allocator);
         }
 
-        // If no views matched, add default view
-        if (applications.items.len == 0) {
-            try applications.append(.{ .view = sdk.View.default });
-        }
-
-        return try applications.toOwnedSlice();
-    }
-
-    /// Check if an aggregation type is compatible with an instrument type
-    fn isAggregationCompatible(instrument_type: sdk.InstrumentType, aggregation_type: sdk.AggregationType) bool {
-        return switch (instrument_type) {
-            .Counter, .UpDownCounter, .ObservableCounter, .ObservableUpDownCounter => switch (aggregation_type) {
-                .sum, .drop => true,
-                else => false,
-            },
-            .Gauge, .ObservableGauge => switch (aggregation_type) {
-                .last_value, .drop => true,
-                else => false,
-            },
-            .Histogram => switch (aggregation_type) {
-                .histogram, .sum, .drop => true, // Histograms can be aggregated as sums
-                else => false,
-            },
-        };
+        // Clean up the owned structures. With the meters gone, these can be cleaned up.
+        self.views.deinit(self.allocator);
+        self.resource.deinitOwned(self.allocator);
     }
 
     /// Destroys the provider instance (assumes deinit() was already called)
     pub fn destroy(self: *MeterProvider) void {
         self.allocator.destroy(self);
+    }
+
+    pub fn shutdown(self: *MeterProvider, timeout_ms: ?u64) api.common.ProcessResult {
+        if (self.is_shutdown.load(.monotonic)) return .success;
+
+        const timeout = sdk.common.Timeout.init(timeout_ms);
+
+        // The mutex block is distinct because the mutex must be released before
+        // forceFlush can be called.
+        {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+
+            // Flag each meter as shutdown to stop collection and instrument creation
+            var iter = self.cache.iterator();
+            while (iter.next()) |kv| {
+                if (timeout.isExpired()) return .timeout;
+                kv.value_ptr.*.shutdown();
+            }
+        }
+
+        const result = self.forceFlush(timeout.remaining() catch return .timeout).asProcessResult();
+        if (result.isSuccess()) self.is_shutdown.store(true, .monotonic);
+        return result;
+    }
+
+    /// Interface defined method to force the attached processor to flush.
+    pub fn forceFlush(self: *MeterProvider, timeout_ms: ?u64) api.common.FlushResult {
+        // Shutdown providers can still force flush. No shutdown check.
+
+        const timeout = sdk.common.Timeout.init(timeout_ms);
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        for (self.readers.items) |*reader| {
+            reader.collect();
+            const flush_result = reader.forceFlush(timeout.remaining() catch return .timeout);
+            switch (flush_result) {
+                .success => {},
+                else => return flush_result,
+            }
+        }
+        return .success;
     }
 
     /// Interface defined method to get a meter.
@@ -170,10 +149,10 @@ pub const MeterProvider = struct {
         errdefer owned_scope.deinitOwned(self.allocator);
 
         // Create new SDK meter
-        const sdk_meter = try self.allocator.create(sdk.Meter);
+        const sdk_meter = try self.allocator.create(sdk.metrics.Meter);
         errdefer self.allocator.destroy(sdk_meter);
 
-        sdk_meter.* = try sdk.Meter.init(self.allocator, owned_scope, self.resource, self);
+        sdk_meter.* = try sdk.metrics.Meter.init(self, owned_scope);
 
         // Register the meter with the processor for collection
         //
@@ -186,49 +165,90 @@ pub const MeterProvider = struct {
         return sdk_meter.meter();
     }
 
-    /// Interface defined method to force the attached processor to flush.
-    pub fn forceFlush(self: *MeterProvider, timeout_ms: ?u64) api.common.FlushResult {
+    /// Add a view to this provider
+    /// Views are immutable after setupGlobalProvider is called
+    pub fn addView(self: *MeterProvider, view: sdk.metrics.View) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        for (self.readers.items) |*reader| {
-            reader.collect();
-            const flush_result = reader.forceFlush(timeout_ms);
-            switch (flush_result) {
-                .success => {},
-                .failure => return .failure,
-                .timeout => return .timeout,
-            }
-        }
-        return .success;
+        try self.views.append(self.allocator, view);
     }
 
-    pub fn shutdown(self: *MeterProvider, timeout_ms: ?u64) api.common.ProcessResult {
-        // The mutex block is distinct because the mutex must be released before
-        // forceFlush can be called.
-        {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+    /// Apply all registered views to an instrument, returning view applications
+    /// If no views match, returns a single default view application
+    pub fn applyViews(
+        self: *MeterProvider,
+        instrument_name: []const u8,
+        instrument_type: sdk.metrics.InstrumentType,
+        instrument_unit: []const u8,
+        instrument_description: ?[]const u8,
+        meter_name: []const u8,
+        meter_version: ?[]const u8,
+        meter_schema_url: ?[]const u8,
+        allocator: std.mem.Allocator,
+    ) ![]sdk.metrics.View.Application {
+        _ = instrument_description; // TODO: Use in view validation
+        self.mutex.lock();
+        defer self.mutex.unlock();
 
-            // Flag each meter as shutdown to stop collection and instrument creation
-            var iter = self.cache.iterator();
-            while (iter.next()) |kv| {
-                kv.value_ptr.*.shutdown();
+        var applications = std.ArrayList(sdk.metrics.View.Application).empty;
+        defer applications.deinit(allocator);
+
+        for (self.views.items) |view| {
+            if (view.instrument_selector.matches(
+                instrument_name,
+                instrument_type,
+                instrument_unit,
+                meter_name,
+                meter_version,
+                meter_schema_url,
+            )) {
+                // Validate aggregation compatibility
+                if (view.aggregation_override) |override_type| {
+                    if (!isAggregationCompatible(instrument_type, override_type)) {
+                        api.common.reportValidationError(.meter, "applyViews", "Incompatible aggregation type for instrument", null);
+                        continue; // Skip this view
+                    }
+                }
+
+                const app = sdk.metrics.View.Application{
+                    .view = view,
+                };
+                try applications.append(allocator, app);
             }
         }
-        const flush_result = self.forceFlush(timeout_ms);
-        return switch (flush_result) {
-            .success => .success,
-            .failure => .failure,
-            .timeout => .timeout,
+
+        // If no views matched, add default view
+        if (applications.items.len == 0) {
+            try applications.append(allocator, .{ .view = .default });
+        }
+
+        return try applications.toOwnedSlice(allocator);
+    }
+
+    /// Check if an aggregation type is compatible with an instrument type
+    fn isAggregationCompatible(instrument_type: sdk.metrics.InstrumentType, aggregation_type: sdk.metrics.AggregationType) bool {
+        return switch (instrument_type) {
+            .Counter, .UpDownCounter, .ObservableCounter, .ObservableUpDownCounter => switch (aggregation_type) {
+                .sum, .drop => true,
+                else => false,
+            },
+            .Gauge, .ObservableGauge => switch (aggregation_type) {
+                .last_value, .drop => true,
+                else => false,
+            },
+            .Histogram => switch (aggregation_type) {
+                .histogram, .sum, .drop => true, // Histograms can be aggregated as sums
+                else => false,
+            },
         };
     }
 
-    /// Attach a processor to this provider.
+    /// Attach a reader to this provider.
     ///
     /// This method is not thread-safe and should only be called during initialization.
-    pub fn registerProcessor(self: *MeterProvider, processor: sdk.Reader) !void {
-        try self.readers.append(self.allocator, processor);
+    pub fn registerReader(self: *MeterProvider, reader: sdk.metrics.Reader) !void {
+        try self.readers.append(self.allocator, reader);
     }
 
     /// Convert the provider into an API interface.
@@ -237,7 +257,7 @@ pub const MeterProvider = struct {
     }
 
     /// Generate a pipelinebuilder for this provider.
-    pub fn pipelineBuilder(self: *MeterProvider) sdk.PipelineBuilder(*MeterProvider) {
+    pub fn pipelineBuilder(self: *MeterProvider) sdk.common.PipelineBuilder(*MeterProvider) {
         return .init(self);
     }
 };

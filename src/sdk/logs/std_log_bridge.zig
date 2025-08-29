@@ -43,7 +43,7 @@ pub const BridgeConfig = struct {
 /// Bridge state - kept minimal for performance
 const BridgeState = struct {
     config: BridgeConfig,
-    context: api.Context,
+    context: []api.ContextKeyValue,
     instrumentation_scope: api.InstrumentationScope,
     initialized: std.atomic.Value(bool),
 };
@@ -60,15 +60,14 @@ pub fn init(config: BridgeConfig) !void {
     if (bridge_state.initialized.load(.acquire)) return;
 
     // Create context - using page allocator since this is global state
-    const context = api.Context.empty(std.heap.page_allocator);
+    const context = try api.ContextKeyValue.initOwnedSlice(std.heap.page_allocator, &.{});
+    errdefer api.ContextKeyValue.deinitOwnedSlice(std.heap.page_allocator, context);
 
     // Create instrumentation scope
-    const instrumentation_scope = try api.InstrumentationScope.init(
-        config.instrumentation_scope_name,
-        config.instrumentation_scope_version,
-        null, // schema_url
-        &[_]api.common.AttributeKeyValue{}, // attributes
-    );
+    const instrumentation_scope = api.InstrumentationScope{
+        .name = config.instrumentation_scope_name,
+        .version = config.instrumentation_scope_version,
+    };
 
     bridge_state = BridgeState{
         .config = config,
@@ -87,7 +86,7 @@ pub fn deinit() void {
 
     if (!bridge_state.initialized.load(.acquire)) return;
 
-    bridge_state.context.deinit();
+    api.ContextKeyValue.deinitOwnedSlice(std.heap.page_allocator, bridge_state.context);
     bridge_state.initialized.store(false, .release);
 }
 

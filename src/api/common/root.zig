@@ -21,6 +21,7 @@ const attributes_zig = @import("attributes.zig");
 pub const AttributeValue = attributes_zig.AttributeValue;
 pub const AttributeKeyValue = attributes_zig.AttributeKeyValue;
 pub const AttributeBuilder = attributes_zig.AttributeBuilder;
+pub const validateAttributeKey = attributes_zig.validateAttributeKey;
 
 // Re-export instrumentation scope
 pub const InstrumentationScope = @import("instrumentation_scope.zig").InstrumentationScope;
