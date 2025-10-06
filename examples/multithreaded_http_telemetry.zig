@@ -711,7 +711,7 @@ fn httpServerThread(shared_state: *SharedState, config: Config) !void {
         const product: u64 = @as(u64, a) * @as(u64, b);
 
         // Check if product is >= 2^31
-        const max_value: u64 = (1 << 31) + 0xFFFF; // 2^31 + some more buffer
+        const max_value: u64 = (1 << 31) + 0x7FFFFFF; // 2^31 + some more buffer
         if (product >= max_value) {
             try request.respond("Product too large", .{ .status = .bad_request });
             span.setStatus(.{ .code = .@"error", .description = "Product exceeds limits" });

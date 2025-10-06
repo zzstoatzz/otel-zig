@@ -5,54 +5,126 @@ This is a zig implementation of the OTel API and SDK. It was build for zig 0.15.
 ## Quickstart
 
 ### Provider Setup
-Providers are configured using the `setupGlobalProvider` pattern with pipeline configuration. The setup is consistent across all three signals (logs, metrics, traces) and involves configuring an exporter, processor, resource, and provider implementation:
+Providers are configured using the `setupGlobalProvider` pattern with pipeline configuration. The setup is consistent across all three signals (logs, metrics, traces) and involves configuring an exporter, processor, resource, and provider implementation.
+
+The logging system supports integration with the existing `std.log`, in additional to otel API calls. This example shows both, using the OTLP exporter.
 
 ```zig
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 defer _ = gpa.deinit();
 const allocator = gpa.allocator();
 
-// Logs setup
-const log_provider = try otel_sdk.logs.setupGlobalProvider(
+// Clean up global providers at program exit
+defer otel_api.provider_registry.unsetAllProviders();
+
+// Setup global OTel logging provider with OTLP exporter
+const provider = try otel_sdk.logs.setupGlobalProvider(
     allocator,
     .{otel_sdk.logs.SimpleLogRecordProcessor.PipelineStep.init({})
-        .flowTo(otel_exporters.console.ConsoleLogExporter.PipelineStep.init(.{}))},
+        .flowTo(otel_exporters.otlp.OtlpLogExporter.PipelineStep.init(.{}))},
 );
 defer {
-    log_provider.deinit();
-    log_provider.destroy();
+    provider.deinit();
+    provider.destroy();
 }
 
+// Only need this to Initialize the std.log bridge.
+try otel_sdk.std_log_bridge.init(.{
+    .enabled = true,
+    .include_scope_attribute = true,
+    .instrumentation_scope_name = "dns.query.std_log.example",
+    .instrumentation_scope_version = "1.0.0",
+});
+defer otel_sdk.std_log_bridge.deinit();
+
+// Now all std.log calls will automatically emit OpenTelemetry log records after the above.
+std.log.info("This is really an OTel log.", .{});
+
+// normal otel calls still work too.
+const logger_scope = otel_api.InstrumentationScope{ .name = "multiply", .version = "1.0.0" };
+var logger = try logger_provider.getLoggerWithScope(logger_scope);
+logger.emitLog(
+    &.{}, // context
+    .info, // log level
+    "HTTP server thread started", // log message
+    &[_]otel_api.common.AttributeKeyValue{ // attributes.
+        .{ .key = "address", .value = .{ .string = shared_state.server_address } },
+        .{ .key = "port", .value = .{ .int = @intCast(shared_state.server_port) } },
+    },
+    null, // event_name
+);
+```
+
+Metrics setup is very similar, although it doesn't currently support any other integrations.
+
+```zig
 // Metrics setup
-const metric_provider = try otel_sdk.metrics.setupGlobalProvider(
+const concrete_provider = try otel_sdk.metrics.setupGlobalProvider(
     allocator,
-    .{otel_sdk.metrics.BasicMetricProcessor.PipelineStep.init({})
+    .{otel_sdk.metrics.ManualReader.PipelineStep.init({})
         .flowTo(otel_exporters.otlp.OtlpMetricExporter.PipelineStep.init(.{}))},
 );
 defer {
-    metric_provider.deinit();
-    metric_provider.destroy();
+    concrete_provider.deinit();
+    concrete_provider.destroy();
 }
 
-// Traces setup
-const trace_provider = try otel_sdk.trace.setupGlobalProvider(
-    allocator,
-    .{otel_sdk.trace.BasicSpanProcessor.PipelineStep.init({})
-        .flowTo(otel_exporters.otlp.OtlpTraceExporter.PipelineStep.init(.{}))},
-);
-defer {
-    trace_provider.deinit();
-    trace_provider.destroy();
-}
-
-// Get providers from global registry (now backed by SDK)
-const scope = try otel_api.InstrumentationScope.initSimple("my.app", "1.0.0");
-var logger = try otel_api.getGlobalLoggerProvider().getLoggerWithScope(scope);
+// Get a meter
+const scope = otel_api.InstrumentationScope{ .name = "example.metric.otlp", .version = "1.0.0" };
 var meter = try otel_api.getGlobalMeterProvider().getMeterWithScope(scope);
-var tracer = try otel_api.getGlobalTracerProvider().getTracerWithScope(scope);
 ```
 
-This pattern registers providers globally, making them available through the API's global registry functions. The same setupGlobalProvider pattern is used consistently across logs, metrics, and traces.
+Traces is similar to metrics. This example uses the stream exporter to output to stderr.
+
+```zig
+    // Set up trace provider using the new setupGlobalProvider pattern
+    var stderr_buffer = [_]u8{0} ** 1024;
+    var stderr = otel_exporters.console.initStream(true, &stderr_buffer);
+    const concrete_provider = try otel_sdk.trace.setupGlobalProvider(
+        allocator,
+        .{otel_sdk.trace.BasicSpanProcessor.PipelineStep.init({})
+            .flowTo(otel_exporters.stream.SpanDataSink.PipelineStep.init(.{
+            .writer = &stderr.interface,
+            .flush_after_each = true,
+        }))},
+    );
+    defer {
+        concrete_provider.deinit();
+        concrete_provider.destroy();
+    }
+
+    // Get the global tracer provider interface
+    var tp = otel_api.getGlobalTracerProvider();
+
+    // Get a tracer
+    const scope = otel_api.InstrumentationScope{ .name = "example-component", .version = "1.0.0" };
+    var tracer = try tp.getTracerWithScope(scope);
+
+    // Create a root context
+    const ctx = &[_]otel_api.ContextKeyValue{};
+
+    // Start a parent span
+    const parent_result = try tracer.startSpan("parent-operation", .{
+        .kind = .server,
+        .attributes = &[_]otel_api.common.AttributeKeyValue{
+            .{
+                .key = "http.method",
+                .value = otel_api.common.AttributeValue{ .string = "GET" },
+            },
+            .{
+                .key = "http.url",
+                .value = otel_api.common.AttributeValue{ .string = "/api/example" },
+            },
+        },
+    }, ctx);
+    defer {
+        parent_result.end(null);
+        parent_result.deinit();
+    }
+    // do stuff before the span is ended.
+```
+
+These examples show the setup of the SDK, but most usages should focus on the APIs exposed from `otel_api.getGlobalTracerProvider()` and similar methods.
 
 ## The API
 
