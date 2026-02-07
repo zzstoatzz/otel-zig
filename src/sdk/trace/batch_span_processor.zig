@@ -320,31 +320,39 @@ pub const BatchSpanProcessor = struct {
         return result.asFlushResult().asProcessResult();
     }
 
-    /// Export all queued spans (must be called with mutex held)
-    fn exportBatchLocked(self: *BatchSpanProcessor) void {
+    /// Export all queued spans, releasing the mutex during HTTP export.
+    /// Must be called with mutex held. Mutex is held again on return.
+    fn exportBatchUnlocked(self: *BatchSpanProcessor) void {
         if (self.is_shutdown.load(.acquire) or self.span_queue.items.len == 0) {
             return;
         }
 
-        // Export all queued spans
+        // Drain queue under the lock
+        const spans_to_export = self.span_queue.toOwnedSlice(self.allocator) catch return;
+
+        // Release mutex during export — HTTP calls can take seconds
+        self.mutex.unlock();
+
         if (self.exporter) |exporter| {
-            for (self.span_queue.items) |item| {
+            for (spans_to_export) |item| {
                 _ = exporter.exportSpans(&.{item.data}, item.resource);
             }
         }
 
-        // Clean up exported spans
-        for (self.span_queue.items) |span| {
+        for (spans_to_export) |span| {
             span.data.deinitOwned(self.allocator);
         }
-        self.span_queue.clearRetainingCapacity();
+        self.allocator.free(spans_to_export);
+
+        // Re-acquire mutex before returning
+        self.mutex.lock();
     }
 
     /// Export all queued spans (acquires mutex)
     fn exportBatch(self: *BatchSpanProcessor) void {
         self.mutex.lock();
         defer self.mutex.unlock();
-        self.exportBatchLocked();
+        self.exportBatchUnlocked();
     }
 
     /// Background thread function that periodically exports spans
@@ -356,10 +364,10 @@ pub const BatchSpanProcessor = struct {
             }
 
             self.mutex.lock();
-            defer self.mutex.unlock();
 
             // Double-check under mutex
             if (self.is_shutdown.load(.acquire)) {
+                self.mutex.unlock();
                 break;
             }
 
@@ -373,22 +381,41 @@ pub const BatchSpanProcessor = struct {
 
             // Skip if flush is in progress
             if (self.flush_in_progress.load(.acquire)) {
+                self.mutex.unlock();
                 continue;
             }
 
             // Try to acquire export lock
             if (self.export_in_progress.swap(true, .seq_cst)) {
                 // Already exporting, skip this cycle
+                self.mutex.unlock();
                 continue;
             }
 
-            defer {
-                self.export_in_progress.store(false, .release);
-                self.export_complete.broadcast();
+            // Drain queue under the lock, then release before exporting
+            // (same pattern as forceFlush — avoids blocking onEnd callers during HTTP export)
+            const spans_to_export = if (self.span_queue.items.len > 0)
+                self.span_queue.toOwnedSlice(self.allocator) catch null
+            else
+                null;
+
+            self.mutex.unlock();
+
+            // Export outside the lock — HTTP calls can take seconds
+            if (spans_to_export) |spans| {
+                if (self.exporter) |exporter| {
+                    for (spans) |item| {
+                        _ = exporter.exportSpans(&.{item.data}, item.resource);
+                    }
+                }
+                for (spans) |span| {
+                    span.data.deinitOwned(self.allocator);
+                }
+                self.allocator.free(spans);
             }
 
-            // Do the export
-            self.exportBatchLocked();
+            self.export_in_progress.store(false, .release);
+            self.export_complete.broadcast();
         }
     }
 
