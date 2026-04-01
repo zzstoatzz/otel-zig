@@ -5,7 +5,7 @@
 //! and becomes immutable after ending.
 
 const std = @import("std");
-const api = @import("otel-api");
+const io = std.Options.debug_io;const api = @import("otel-api");
 
 const Span = api.trace.Span;
 const AttributeValue = api.common.AttributeValue;
@@ -218,7 +218,7 @@ pub const RecordingSpan = struct {
     }
 
     pub fn end(self: *RecordingSpan, bridge: api.trace.Span.Bridge, options: ?api.trace.Span.EndOptions) void {
-        const default_ts: i64 = @intCast(std.time.nanoTimestamp());
+        const default_ts: i64 = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds);
         const end_ts = if (options) |opts| opts.end_time_ns orelse default_ts else default_ts;
 
         // Notify processor if available
@@ -257,7 +257,7 @@ pub const RecordingSpan = struct {
         const exception_attrs: ?[]api.AttributeKeyValue = attrs_builder.build() catch null;
         if (exception_attrs) |attrs| self.tracer.provider.allocator.free(attrs);
 
-        const default_ts: i64 = @intCast(std.time.nanoTimestamp());
+        const default_ts: i64 = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds);
         self.addEvent(.{
             .name = "exception",
             .timestamp_ns = timestamp orelse default_ts,

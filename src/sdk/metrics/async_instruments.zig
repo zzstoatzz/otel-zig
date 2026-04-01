@@ -4,7 +4,7 @@
 //! It includes callback management, metric collection, and performance monitoring.
 
 const std = @import("std");
-const api = @import("otel-api");
+const io = std.Options.debug_io;const api = @import("otel-api");
 
 const sdk = struct {
     const AggregationTemporality = @import("aggregations.zig").AggregationTemporality;
@@ -54,7 +54,7 @@ pub fn Observable(comptime T: type) type {
         next_callback_id: u64,
 
         /// Configuration and state
-        mutex: std.Thread.Mutex,
+        mutex: std.Io.Mutex,
         config: AsyncInstrumentConfig,
 
         // Internal metrics instruments (if measure_callbacks is true)
@@ -167,7 +167,7 @@ pub fn Observable(comptime T: type) type {
                 .metadata_hash = metadata_hash,
                 .callbacks = .empty,
                 .next_callback_id = 1,
-                .mutex = std.Thread.Mutex{},
+                .mutex = std.Io.Mutex.init,
                 .config = config,
                 .callback_duration_histogram = callback_duration_histogram,
                 .callback_executions_counter = callback_executions_counter,
@@ -179,8 +179,8 @@ pub fn Observable(comptime T: type) type {
 
         /// Clean up resources
         pub fn deinit(self: *Self, _: std.mem.Allocator) void {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(io);
+            defer self.mutex.unlock(io);
 
             // Free owned advisory params
             if (self.advisory_params) |params| {
@@ -212,8 +212,8 @@ pub fn Observable(comptime T: type) type {
 
         /// Register a callback
         pub fn registerCallback(self: *Self, callback: api.metrics.TypeErasedCallback(T)) api.metrics.CallbackHandle {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(io);
+            defer self.mutex.unlock(io);
 
             const callback_id = self.next_callback_id;
 
@@ -235,8 +235,8 @@ pub fn Observable(comptime T: type) type {
         fn unregisterCallback(instrument_ptr: *anyopaque, callback_id: u64) void {
             const self: *Self = @ptrCast(@alignCast(instrument_ptr));
 
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(io);
+            defer self.mutex.unlock(io);
 
             for (self.callbacks.items, 0..) |entry, i| {
                 if (entry.id == callback_id) {
@@ -257,8 +257,8 @@ pub fn Observable(comptime T: type) type {
 
             // lock for iteration over the callbacks.
             {
-                self.mutex.lock();
-                defer self.mutex.unlock();
+                self.mutex.lockUncancelable(io);
+                defer self.mutex.unlock(io);
 
                 for (self.callbacks.items) |*entry| {
                     // Execute callback and collect measurements
@@ -365,7 +365,7 @@ pub fn Observable(comptime T: type) type {
         /// Execute a single callback with proper error handling and timing
         fn executeCallback(self: *Self, allocator: std.mem.Allocator, entry: *CallbackEntry) ![]api.metrics.ObservableResult(T).Measurement {
             const ctx = &[_]api.ContextKeyValue{};
-            const start_time = std.time.nanoTimestamp();
+            const start_time = std.Io.Timestamp.now(io, .real).nanoseconds;
 
             var result = api.metrics.ObservableResult(T).empty;
             defer result.deinit(allocator);
@@ -378,7 +378,7 @@ pub fn Observable(comptime T: type) type {
 
             // Record timing if enabled
             if (self.config.measure_callbacks) {
-                const end_time = std.time.nanoTimestamp();
+                const end_time = std.Io.Timestamp.now(io, .real).nanoseconds;
                 const execution_time = @as(u64, @intCast(end_time - start_time));
 
                 // Record execution metrics using OTel instruments

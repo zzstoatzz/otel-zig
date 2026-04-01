@@ -106,17 +106,14 @@ pub const EnvironmentVariables = struct {
 };
 
 /// Get an environment variable value
-pub fn getEnvironmentVariable(name: []const u8) ?[]const u8 {
-    return std.process.getEnvVarOwned(std.heap.page_allocator, name) catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => return null,
-        else => return null,
-    };
+pub fn getEnvironmentVariable(name: [*:0]const u8) ?[]const u8 {
+    if (std.c.getenv(name)) |p| return std.mem.span(p);
+    return null;
 }
 
 /// Parse an environment variable as a specific type
-pub fn parseEnvironmentVariable(comptime T: type, name: []const u8) ?T {
+pub fn parseEnvironmentVariable(comptime T: type, name: [*:0]const u8) ?T {
     const value = getEnvironmentVariable(name) orelse return null;
-    defer std.heap.page_allocator.free(value);
     
     return switch (T) {
         bool => std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1"),

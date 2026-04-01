@@ -1,5 +1,5 @@
 const std = @import("std");
-const otel_api = @import("otel-api");
+const io = std.Options.debug_io;const otel_api = @import("otel-api");
 const otel_sdk = @import("otel-sdk");
 const protobuf = @import("protobuf");
 
@@ -37,7 +37,7 @@ pub const OtlpMetricExporter = struct {
     config: OtlpExporterConfig,
     allocator: std.mem.Allocator,
     is_shutdown: bool = false,
-    mutex: std.Thread.Mutex = .{},
+    mutex: std.Io.Mutex = std.Io.Mutex.init,
 
     pub fn init(allocator: std.mem.Allocator, config: OtlpExporterConfig) OtlpMetricExporter {
         return .{
@@ -55,8 +55,8 @@ pub const OtlpMetricExporter = struct {
     }
 
     pub fn exportMetrics(self: *OtlpMetricExporter, metrics: []const MetricData) ExportResult {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         if (self.is_shutdown) {
             return .failure;
@@ -100,8 +100,8 @@ pub const OtlpMetricExporter = struct {
     }
 
     pub fn shutdown(self: *OtlpMetricExporter, timeout_ms: ?u64) ExportResult {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         _ = timeout_ms;
         self.is_shutdown = true;
@@ -115,11 +115,11 @@ pub const OtlpMetricExporter = struct {
     }
 
     fn sendRequest(self: *OtlpMetricExporter, allocator: std.mem.Allocator, metrics_data: metrics_v1.MetricsData) !void {
-        var client = std.http.Client{ .allocator = allocator };
+        var client = std.http.Client{ .allocator = allocator, .io = io };
         defer client.deinit();
 
         // Serialize to binary protobuf
-        var buffer = std.io.Writer.Allocating.init(allocator);
+        var buffer = std.Io.Writer.Allocating.init(allocator);
         defer buffer.deinit();
         try metrics_data.encode(&buffer.writer, allocator);
         const protobuf_bytes = try buffer.toOwnedSlice();

@@ -1,4 +1,5 @@
 const std = @import("std");
+const io = std.Options.debug_io;
 const api = @import("otel-api");
 
 const sdk = struct {
@@ -416,7 +417,7 @@ test "PeriodicReader with multiple instruments" {
     }
 
     // Wait for periodic collection to happen (simulate time passing)
-    std.Thread.sleep(200 * std.time.ns_per_ms);
+    io.sleep(.{ .nanoseconds = 200 * std.time.ns_per_ms }, .real) catch {};
 
     // Force a final collection
     reader.collect();

@@ -9,7 +9,7 @@
 //! See: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/logs/api.md#logger
 
 const std = @import("std");
-const api = struct {
+const io = std.Options.debug_io;const api = struct {
     const AttributeKeyValue = @import("../common/root.zig").AttributeKeyValue;
     const AttributeValue = @import("../common/root.zig").AttributeValue;
     const ContextKeyValue = @import("../context/context.zig").ContextKeyValue;
@@ -47,7 +47,7 @@ pub const Logger = union(enum) {
         flags: ?u8,
     ) void {
         switch (self.*) {
-            .noop => |_| {},
+            .noop => {},
             .bridge => |bridge| bridge.emitLogRecordFn(
                 bridge.logger_ptr,
                 ctx,
@@ -68,7 +68,7 @@ pub const Logger = union(enum) {
     /// Check if logging is enabled for a given severity
     pub inline fn enabled(self: *const Logger, ctx: []const api.ContextKeyValue, severity: ?api.logs.Severity) bool {
         return switch (self.*) {
-            .noop => |_| return false,
+            .noop => return false,
             .bridge => |bridge| bridge.enabledFn(bridge.logger_ptr, ctx, severity),
         };
     }
@@ -81,7 +81,7 @@ pub const Logger = union(enum) {
         event_name: []const u8,
     ) bool {
         return switch (self.*) {
-            .noop => |_| return false,
+            .noop => return false,
             .bridge => |bridge| bridge.enabledWithEventFn(bridge.logger_ptr, ctx, severity, event_name),
         };
     }
@@ -179,7 +179,7 @@ pub const Logger = union(enum) {
             severity,
             .{ .string = message },
             null, // attributes
-            @as(i64, @intCast(std.time.nanoTimestamp())), // timestamp_ns
+            @as(i64, @intCast(std.Io.Timestamp.now(io, .real).nanoseconds)), // timestamp_ns
             null, // observed_timestamp_ns
             null, // event_name
             null, // severity_text

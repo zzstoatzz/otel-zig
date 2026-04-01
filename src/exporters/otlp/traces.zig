@@ -4,7 +4,7 @@
 //! data to OTLP-compatible backends using HTTP/JSON transport.
 
 const std = @import("std");
-const otel_api = @import("otel-api");
+const io = std.Options.debug_io;const otel_api = @import("otel-api");
 const otel_sdk = @import("otel-sdk");
 const protobuf = @import("protobuf");
 
@@ -41,14 +41,14 @@ pub const OtlpTraceExporter = struct {
     config: OtlpExporterConfig,
     allocator: std.mem.Allocator,
     is_shutdown: bool,
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
 
     pub fn init(allocator: std.mem.Allocator, config: OtlpExporterConfig) OtlpTraceExporter {
         return .{
             .config = config,
             .allocator = allocator,
             .is_shutdown = false,
-            .mutex = .{},
+            .mutex = std.Io.Mutex.init,
         };
     }
 
@@ -61,8 +61,8 @@ pub const OtlpTraceExporter = struct {
     }
 
     pub fn exportSpans(self: *OtlpTraceExporter, spans: []const otel_sdk.trace.SpanData, resource: Resource) ExportResult {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         if (self.is_shutdown) {
             return .failure;
@@ -113,8 +113,8 @@ pub const OtlpTraceExporter = struct {
     }
 
     pub fn shutdown(self: *OtlpTraceExporter, timeout_ms: ?u64) ExportResult {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         if (self.is_shutdown) {
             return .success;
@@ -131,11 +131,11 @@ pub const OtlpTraceExporter = struct {
     }
 
     fn sendRequest(self: *OtlpTraceExporter, allocator: std.mem.Allocator, traces_data: trace_v1.TracesData) !ExportResult {
-        var client = std.http.Client{ .allocator = self.allocator };
+        var client = std.http.Client{ .allocator = self.allocator, .io = io };
         defer client.deinit();
 
         // Serialize to binary protobuf
-        var buffer = std.io.Writer.Allocating.init(allocator);
+        var buffer = std.Io.Writer.Allocating.init(allocator);
         defer buffer.deinit();
         try traces_data.encode(&buffer.writer, allocator); // protobuf encoding.
         // _ = try buffer.writer.write(try traces_data.jsonEncode(.{}, allocator)); // Json encoding.

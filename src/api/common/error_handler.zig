@@ -6,7 +6,7 @@
 //! allow end users to change the library's default error handling behavior.
 
 const std = @import("std");
-const builtin = @import("builtin");
+const io = std.Options.debug_io;const builtin = @import("builtin");
 
 /// Function signature for custom error handlers
 /// The allocator parameter is optional and can be used for detailed message formatting
@@ -104,7 +104,7 @@ pub const ErrorType = enum {
 
 /// Global error handler state
 var global_error_handler: ?ErrorHandler = null;
-var handler_mutex: std.Thread.Mutex = .{};
+var handler_mutex: std.Io.Mutex = std.Io.Mutex.init;
 
 /// Returns true if input validation should be performed throughout the OpenTelemetry API.
 ///
@@ -183,7 +183,8 @@ pub inline fn isValidatingMode() bool {
 /// Default error handler that logs to stderr
 fn defaultErrorHandler(info: ErrorInfo, allocator: ?std.mem.Allocator) void {
     _ = allocator; // Not used in default handler for simplicity
-    var stderr_writer = std.fs.File.stderr().writer(&.{});
+    var stderr_buf: [512]u8 = undefined;
+    var stderr_writer = std.Io.File.stderr().writer(io, &stderr_buf);
     const stderr = &stderr_writer.interface;
 
     stderr.print("[OpenTelemetry Error] Component: {t}, Operation: {s}, Type: {t}, Message: {s}", .{
@@ -209,16 +210,16 @@ fn defaultErrorHandler(info: ErrorInfo, allocator: ?std.mem.Allocator) void {
 /// This function allows applications to customize how OpenTelemetry errors
 /// are handled. Pass null to reset to the default handler.
 pub fn setGlobalErrorHandler(handler: ?ErrorHandler) void {
-    handler_mutex.lock();
-    defer handler_mutex.unlock();
+    handler_mutex.lockUncancelable(io);
+    defer handler_mutex.unlock(io);
 
     global_error_handler = handler;
 }
 
 /// Get the current global error handler
 pub fn getGlobalErrorHandler() ?ErrorHandler {
-    handler_mutex.lock();
-    defer handler_mutex.unlock();
+    handler_mutex.lockUncancelable(io);
+    defer handler_mutex.unlock(io);
 
     return global_error_handler;
 }
@@ -229,9 +230,9 @@ pub fn getGlobalErrorHandler() ?ErrorHandler {
 /// errors that would otherwise be suppressed. The error will be handled
 /// by the currently configured error handler.
 pub fn reportError(info: ErrorInfo) void {
-    handler_mutex.lock();
+    handler_mutex.lockUncancelable(io);
     const handler = global_error_handler orelse defaultErrorHandler;
-    handler_mutex.unlock();
+    handler_mutex.unlock(io);
 
     // Call the handler outside the mutex to avoid potential deadlocks
     // if the handler tries to change the error handler
@@ -243,9 +244,9 @@ pub fn reportError(info: ErrorInfo) void {
 /// This variant allows the error handler to perform detailed message formatting
 /// if an allocator is provided.
 pub fn reportErrorWithAllocator(info: ErrorInfo, allocator: std.mem.Allocator) void {
-    handler_mutex.lock();
+    handler_mutex.lockUncancelable(io);
     const handler = global_error_handler orelse defaultErrorHandler;
-    handler_mutex.unlock();
+    handler_mutex.unlock(io);
 
     // Call the handler outside the mutex to avoid potential deadlocks
     // if the handler tries to change the error handler
@@ -523,12 +524,12 @@ pub const MockErrorHandler = struct {
 
 /// Global mock error handler instance for testing
 var global_mock_handler: ?*MockErrorHandler = null;
-var mock_handler_mutex: std.Thread.Mutex = .{};
+var mock_handler_mutex: std.Io.Mutex = std.Io.Mutex.init;
 
 /// Set a mock error handler for testing
 pub fn setMockErrorHandler(mock_handler: *MockErrorHandler) void {
-    mock_handler_mutex.lock();
-    defer mock_handler_mutex.unlock();
+    mock_handler_mutex.lockUncancelable(io);
+    defer mock_handler_mutex.unlock(io);
 
     global_mock_handler = mock_handler;
     setGlobalErrorHandler(mockErrorHandlerDispatch);
@@ -536,8 +537,8 @@ pub fn setMockErrorHandler(mock_handler: *MockErrorHandler) void {
 
 /// Clear the mock error handler and restore default behavior
 pub fn clearMockErrorHandler() void {
-    mock_handler_mutex.lock();
-    defer mock_handler_mutex.unlock();
+    mock_handler_mutex.lockUncancelable(io);
+    defer mock_handler_mutex.unlock(io);
 
     global_mock_handler = null;
     setGlobalErrorHandler(null);
@@ -547,8 +548,8 @@ pub fn clearMockErrorHandler() void {
 fn mockErrorHandlerDispatch(info: ErrorInfo, allocator: ?std.mem.Allocator) void {
     _ = allocator;
 
-    mock_handler_mutex.lock();
-    defer mock_handler_mutex.unlock();
+    mock_handler_mutex.lockUncancelable(io);
+    defer mock_handler_mutex.unlock(io);
 
     if (global_mock_handler) |mock_handler| {
         mock_handler.handleError(info);

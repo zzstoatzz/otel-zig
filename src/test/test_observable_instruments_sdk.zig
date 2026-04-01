@@ -68,7 +68,7 @@ fn testCallbackF64(result: *ObservableResult(f64), state: *TestState) void {
 }
 
 test "SdkObservableCounter basic functionality" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -105,7 +105,7 @@ test "SdkObservableCounter basic functionality" {
 }
 
 test "SdkObservableGauge basic functionality" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -135,7 +135,7 @@ test "SdkObservableGauge basic functionality" {
 }
 
 test "SdkObservableUpDownCounter basic functionality" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -165,7 +165,7 @@ test "SdkObservableUpDownCounter basic functionality" {
 }
 
 test "multiple callback registration and execution" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -207,7 +207,7 @@ test "multiple callback registration and execution" {
 }
 
 test "callback unregistration" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -246,7 +246,7 @@ test "callback unregistration" {
 }
 
 test "multiple measurements from single callback" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -275,7 +275,7 @@ test "multiple measurements from single callback" {
 }
 
 test "callback error handling policies" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -344,7 +344,7 @@ test "callback error handling policies" {
 }
 
 test "callback metrics tracking" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -415,7 +415,7 @@ test "async instrument configuration variants" {
 }
 
 test "callback metrics functionality" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -443,7 +443,7 @@ test "callback metrics functionality" {
 }
 
 test "empty callback collection" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -465,7 +465,7 @@ test "empty callback collection" {
 }
 
 test "concurrent callback registration" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 

@@ -9,7 +9,7 @@
 //! and exported in batches to improve performance.
 
 const std = @import("std");
-const otel_api = @import("otel-api");
+const io = std.Options.debug_io;const otel_api = @import("otel-api");
 const sdk = struct {
     const Resource = @import("../resource/resource.zig").Resource;
     const trace = struct {
@@ -55,14 +55,14 @@ pub const BatchSpanProcessor = struct {
 
     allocator: std.mem.Allocator,
     exporter: ?SpanExporter,
-    mutex: std.Thread.Mutex,
-    condition: std.Thread.Condition,
+    mutex: std.Io.Mutex,
+    condition: std.Io.Condition = std.Io.Condition.init,
     is_shutdown: std.atomic.Value(bool),
     is_running: std.atomic.Value(bool),
     flush_in_progress: std.atomic.Value(bool),
     export_in_progress: std.atomic.Value(bool),
-    flush_complete: std.Thread.Condition,
-    export_complete: std.Thread.Condition,
+    flush_complete: std.Io.Condition = std.Io.Condition.init,
+    export_complete: std.Io.Condition = std.Io.Condition.init,
     thread: ?std.Thread,
     export_interval_ms: u32,
     max_queue_size: usize,
@@ -81,14 +81,14 @@ pub const BatchSpanProcessor = struct {
         return .{
             .allocator = allocator,
             .exporter = exporter,
-            .mutex = .{},
-            .condition = .{},
+            .mutex = std.Io.Mutex.init,
+            .condition = std.Io.Condition.init,
             .is_shutdown = .init(false),
             .is_running = .init(false),
             .flush_in_progress = .init(false),
             .export_in_progress = .init(false),
-            .flush_complete = .{},
-            .export_complete = .{},
+            .flush_complete = std.Io.Condition.init,
+            .export_complete = std.Io.Condition.init,
             .thread = null,
             .export_interval_ms = config.export_interval_ms orelse 5000,
             .max_queue_size = config.max_queue_size orelse 2048,
@@ -97,8 +97,8 @@ pub const BatchSpanProcessor = struct {
     }
 
     pub fn setExporter(self: *BatchSpanProcessor, exporter: ?SpanExporter) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         if (exporter) |exp| {
             self.exporter = exp;
@@ -107,8 +107,8 @@ pub const BatchSpanProcessor = struct {
 
     /// Start the background export thread
     pub fn start(self: *BatchSpanProcessor) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         if (self.is_running.load(.acquire) or self.thread != null) {
             return;
@@ -124,9 +124,9 @@ pub const BatchSpanProcessor = struct {
         self.is_shutdown.store(true, .release);
         self.is_running.store(false, .release);
 
-        self.mutex.lock();
-        self.condition.signal();
-        self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        self.condition.signal(io);
+        self.mutex.unlock(io);
 
         // Wait for thread to exit
         if (self.thread) |thread| {
@@ -134,8 +134,8 @@ pub const BatchSpanProcessor = struct {
         }
 
         // Clean up remaining spans
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         for (self.span_queue.items) |span| {
             span.data.deinitOwned(self.allocator);
         }
@@ -159,8 +159,8 @@ pub const BatchSpanProcessor = struct {
 
     /// Called when a span ends - adds span to batch queue
     pub fn onEnd(self: *BatchSpanProcessor, span: sdk.trace.SpanData, resource: sdk.Resource) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         if (self.is_shutdown.load(.acquire)) {
             return;
@@ -208,17 +208,17 @@ pub const BatchSpanProcessor = struct {
             return .failure;
         }
 
-        const start_time = std.time.milliTimestamp();
+        const start_time = @as(i64, @intCast(@divFloor(std.Io.Timestamp.now(io, .real).nanoseconds, std.time.ns_per_ms)));
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         // Try to set flush_in_progress atomically
         const was_flushing = self.flush_in_progress.swap(true, .seq_cst);
         if (was_flushing) {
             // Another flush is in progress, wait for it
             const remaining_ms = if (timeout_ms) |ms|
-                ms -| @as(u64, @intCast(std.time.milliTimestamp() - start_time))
+                ms -| @as(u64, @intCast(@as(i64, @intCast(@divFloor(std.Io.Timestamp.now(io, .real).nanoseconds, std.time.ns_per_ms))) - start_time))
             else
                 null;
 
@@ -226,46 +226,25 @@ pub const BatchSpanProcessor = struct {
                 return .timeout;
             }
 
-            if (remaining_ms) |ms| {
-                self.flush_complete.timedWait(&self.mutex, ms * std.time.ns_per_ms) catch {
-                    return .timeout;
-                };
-            } else {
-                self.flush_complete.wait(&self.mutex);
-            }
+            self.flush_complete.waitUncancelable(io, &self.mutex);
             return .success;
         }
 
         defer {
             self.flush_in_progress.store(false, .release);
-            self.flush_complete.broadcast();
+            self.flush_complete.broadcast(io);
         }
 
         // Wait for any export in progress
         while (self.export_in_progress.load(.acquire)) {
-            const remaining_ms = if (timeout_ms) |ms|
-                ms -| @as(u64, @intCast(std.time.milliTimestamp() - start_time))
-            else
-                null;
-
-            if (remaining_ms == 0) {
-                return .timeout;
-            }
-
-            if (remaining_ms) |ms| {
-                self.export_complete.timedWait(&self.mutex, ms * std.time.ns_per_ms) catch {
-                    return .timeout;
-                };
-            } else {
-                self.export_complete.wait(&self.mutex);
-            }
+            self.export_complete.waitUncancelable(io, &self.mutex);
         }
 
         // Now do the export with atomic flag
         self.export_in_progress.store(true, .release);
         defer {
             self.export_in_progress.store(false, .release);
-            self.export_complete.broadcast();
+            self.export_complete.broadcast(io);
         }
 
         // Export spans (mutex is held)
@@ -282,7 +261,7 @@ pub const BatchSpanProcessor = struct {
             };
 
             // Temporarily release mutex for export
-            self.mutex.unlock();
+            self.mutex.unlock(io);
             if (self.exporter) |exporter| {
                 for (spans_to_export) |data_pair| {
                     _ = exporter.exportSpans(&.{data_pair.data}, data_pair.resource);
@@ -292,28 +271,28 @@ pub const BatchSpanProcessor = struct {
                 data_pair.data.deinitOwned(self.allocator);
             }
             self.allocator.free(spans_to_export);
-            self.mutex.lock();
+            self.mutex.lockUncancelable(io);
         }
 
         // Flush the exporter
-        self.mutex.unlock();
+        self.mutex.unlock(io);
         const flush_result = if (self.exporter) |exporter| exporter.forceFlush(timeout_ms) else ExportResult.success;
-        self.mutex.lock();
+        self.mutex.lockUncancelable(io);
 
         return flush_result.asFlushResult();
     }
 
     /// Shutdown the processor
     pub fn shutdown(self: *BatchSpanProcessor, timeout_ms: ?u64) ProcessResult {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         if (self.is_shutdown.swap(true, .seq_cst)) {
             return .success;
         }
 
         self.is_running.store(false, .release);
-        self.condition.signal();
+        self.condition.signal(io);
 
         // Shutdown the exporter
         const result = if (self.exporter) |exporter| exporter.shutdown(timeout_ms) else ExportResult.success;
@@ -331,7 +310,7 @@ pub const BatchSpanProcessor = struct {
         const spans_to_export = self.span_queue.toOwnedSlice(self.allocator) catch return;
 
         // Release mutex during export — HTTP calls can take seconds
-        self.mutex.unlock();
+        self.mutex.unlock(io);
 
         if (self.exporter) |exporter| {
             for (spans_to_export) |item| {
@@ -345,13 +324,13 @@ pub const BatchSpanProcessor = struct {
         self.allocator.free(spans_to_export);
 
         // Re-acquire mutex before returning
-        self.mutex.lock();
+        self.mutex.lockUncancelable(io);
     }
 
     /// Export all queued spans (acquires mutex)
     fn exportBatch(self: *BatchSpanProcessor) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         self.exportBatchUnlocked();
     }
 
@@ -363,32 +342,30 @@ pub const BatchSpanProcessor = struct {
                 break;
             }
 
-            self.mutex.lock();
+            self.mutex.lockUncancelable(io);
 
             // Double-check under mutex
             if (self.is_shutdown.load(.acquire)) {
-                self.mutex.unlock();
+                self.mutex.unlock(io);
                 break;
             }
 
-            // Calculate wait time in nanoseconds
-            const wait_ns = @as(u64, self.export_interval_ms) * std.time.ns_per_ms;
-
-            // Wait for the specified interval or until signaled
-            self.condition.timedWait(&self.mutex, wait_ns) catch {
-                // Timeout - normal export cycle
-            };
+            // Sleep for the export interval, releasing the mutex
+            const wait_ns: i96 = @intCast(@as(u64, self.export_interval_ms) * std.time.ns_per_ms);
+            self.mutex.unlock(io);
+            io.sleep(.{ .nanoseconds = wait_ns }, .real) catch {};
+            self.mutex.lockUncancelable(io);
 
             // Skip if flush is in progress
             if (self.flush_in_progress.load(.acquire)) {
-                self.mutex.unlock();
+                self.mutex.unlock(io);
                 continue;
             }
 
             // Try to acquire export lock
             if (self.export_in_progress.swap(true, .seq_cst)) {
                 // Already exporting, skip this cycle
-                self.mutex.unlock();
+                self.mutex.unlock(io);
                 continue;
             }
 
@@ -399,7 +376,7 @@ pub const BatchSpanProcessor = struct {
             else
                 null;
 
-            self.mutex.unlock();
+            self.mutex.unlock(io);
 
             // Export outside the lock — HTTP calls can take seconds
             if (spans_to_export) |spans| {
@@ -415,7 +392,7 @@ pub const BatchSpanProcessor = struct {
             }
 
             self.export_in_progress.store(false, .release);
-            self.export_complete.broadcast();
+            self.export_complete.broadcast(io);
         }
     }
 
@@ -498,17 +475,17 @@ test "BatchSpanProcessor - span queuing and export" {
     // Test adding span to queue
     recording_span.end(null);
 
-    processor.mutex.lock();
+    processor.mutex.lockUncancelable(io);
     try testing.expectEqual(@as(usize, 1), processor.span_queue.items.len);
-    processor.mutex.unlock();
+    processor.mutex.unlock(io);
 
     // Test force flush
     try testing.expectEqual(otel_api.common.FlushResult.success, processor.forceFlush(null));
     try testing.expectEqual(@as(usize, 1), mock_exporter.spanCount());
 
-    processor.mutex.lock();
+    processor.mutex.lockUncancelable(io);
     try testing.expectEqual(@as(usize, 0), processor.span_queue.items.len);
-    processor.mutex.unlock();
+    processor.mutex.unlock(io);
 }
 
 test "BatchSpanProcessor - queue overflow drops newest" {
@@ -581,16 +558,16 @@ test "BatchSpanProcessor - queue overflow drops newest" {
     span1.end(null);
     span2.end(null);
 
-    processor.mutex.lock();
+    processor.mutex.lockUncancelable(io);
     try testing.expectEqual(@as(usize, 2), processor.span_queue.items.len);
-    processor.mutex.unlock();
+    processor.mutex.unlock(io);
 
     // This should be dropped (newest dropped policy)
     span3.end(null);
 
-    processor.mutex.lock();
+    processor.mutex.lockUncancelable(io);
     try testing.expectEqual(@as(usize, 2), processor.span_queue.items.len); // Still 2
-    processor.mutex.unlock();
+    processor.mutex.unlock(io);
 }
 
 test "BatchSpanProcessor - shutdown behavior" {

@@ -21,7 +21,7 @@ const otel_sdk = @import("otel-sdk");
 const otel_exporters = @import("otel-exporters");
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 

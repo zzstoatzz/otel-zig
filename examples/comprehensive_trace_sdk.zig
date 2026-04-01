@@ -8,6 +8,7 @@ const std = @import("std");
 const otel_api = @import("otel-api");
 const otel_sdk = @import("otel-sdk");
 const otel_exporters = @import("otel-exporters");
+const io = std.Options.debug_io;
 
 const print = std.debug.print;
 
@@ -22,7 +23,7 @@ const ServiceComponent = enum {
 };
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -33,8 +34,8 @@ pub fn main() !void {
     // Note: setupGlobalProvider uses automatic resource detection
     // The custom resource above demonstrates resource building but won't be used
     var stderr_buffer = [_]u8{0} ** 1024;
-    const stderr_fh = std.fs.File.stderr();
-    var stderr = stderr_fh.writer(&stderr_buffer);
+    const stderr_fh = std.Io.File.stderr();
+    var stderr = stderr_fh.writer(io, &stderr_buffer);
     const concrete_provider = try otel_sdk.trace.setupGlobalProvider(
         allocator,
         .{otel_sdk.trace.BasicSpanProcessor.PipelineStep.init({})
@@ -147,7 +148,7 @@ fn runHttpRequestScenario(setup: *TraceSetup) !void {
     defer db_span.deinit();
 
     // Simulate database work
-    std.Thread.sleep(5 * std.time.ns_per_ms);
+    io.sleep(.{ .nanoseconds = 5 * std.time.ns_per_ms }, .real) catch {};
     db_span.setAttribute(.{ .key = "db.rows_affected", .value = .{ .int = 1 } });
     db_span.end(null);
 
@@ -288,7 +289,7 @@ fn runMessageQueueScenario(setup: *TraceSetup) !void {
     producer_span.end(null);
 
     // Simulate message transmission delay
-    std.Thread.sleep(2 * std.time.ns_per_ms);
+    io.sleep(.{ .nanoseconds = 2 * std.time.ns_per_ms }, .real) catch {};
 
     // Consumer: Process message from queue
     const consumer_result = try mq_tracer.startSpan("order.created", .{
@@ -374,7 +375,7 @@ fn runConcurrentOperationsScenario(allocator: std.mem.Allocator, setup: *TraceSe
 
         // Simulate varying query times
         const sleep_time = (i + 1) * 2 * std.time.ns_per_ms;
-        std.Thread.sleep(sleep_time);
+        io.sleep(.{ .nanoseconds = @intCast(sleep_time) }, .real) catch {};
 
         db_span.setAttribute(.{ .key = "db.rows_affected", .value = .{ .int = 1 } });
         db_span.setAttribute(.{ .key = "query.duration_ms", .value = .{ .int = @intCast((i + 1) * 2) } });
@@ -405,7 +406,7 @@ fn runPerformanceTestScenario(setup: *TraceSetup) !void {
     var perf_span = perf_result;
     defer perf_span.deinit();
 
-    const start_time = std.time.milliTimestamp();
+    const start_time = @as(i64, @intCast(@divFloor(std.Io.Timestamp.now(io, .real).nanoseconds, std.time.ns_per_ms)));
 
     // Create many short-lived spans to test overhead
     var i: i32 = 0;
@@ -428,7 +429,7 @@ fn runPerformanceTestScenario(setup: *TraceSetup) !void {
         fast_span.end(null);
     }
 
-    const end_time = std.time.nanoTimestamp();
+    const end_time = std.Io.Timestamp.now(io, .real).nanoseconds;
     const duration_ns = end_time - start_time;
     const duration_ms = @as(f64, @floatFromInt(duration_ns)) / 1_000_000.0;
 

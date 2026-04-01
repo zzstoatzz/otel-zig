@@ -4,7 +4,7 @@
 //! concurrent callback registration, concurrent collection, and race conditions.
 
 const std = @import("std");
-const testing = std.testing;
+const io = std.Options.debug_io;const testing = std.testing;
 const otel_api = @import("otel-api");
 const otel_sdk = @import("otel-sdk");
 
@@ -19,15 +19,15 @@ const SdkObservableGauge = otel_sdk.metrics.SdkObservableGauge;
 
 // Thread-safe test state
 const ThreadSafeState = struct {
-    mutex: std.Thread.Mutex = .{},
+    mutex: std.Io.Mutex = std.Io.Mutex.init,
     counter: u32 = 0,
     thread_id: std.atomic.Value(u32) = .init(0),
     operations: std.atomic.Value(u32) = .init(0),
     errors: std.atomic.Value(u32) = .init(0),
 
     fn incrementCounter(self: *ThreadSafeState) u32 {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         self.counter += 1;
         return self.counter;
     }
@@ -89,7 +89,7 @@ fn heavyThreadSafeCallback(result: *ObservableResult(i64), state: *ThreadSafeSta
 }
 
 test "concurrent callback registration" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -161,7 +161,7 @@ test "concurrent callback registration" {
 }
 
 test "concurrent collection" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -258,7 +258,7 @@ test "concurrent collection" {
 }
 
 test "race conditions during registration and collection" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -349,7 +349,7 @@ test "race conditions during registration and collection" {
 }
 
 test "thread safety of callback metrics" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -416,7 +416,7 @@ test "thread safety of callback metrics" {
 }
 
 test "stress test with many concurrent operations" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -503,7 +503,7 @@ test "stress test with many concurrent operations" {
         }
     };
 
-    const start_time = std.time.nanoTimestamp();
+    const start_time = std.Io.Timestamp.now(io, .real).nanoseconds;
 
     // Start stress test threads
     for (0..num_worker_threads) |i| {
@@ -522,7 +522,7 @@ test "stress test with many concurrent operations" {
         thread.join();
     }
 
-    const end_time = std.time.nanoTimestamp();
+    const end_time = std.Io.Timestamp.now(io, .real).nanoseconds;
     const duration_ms = @as(f64, @floatFromInt(end_time - start_time)) / 1_000_000.0;
 
     // Final verification

@@ -4,7 +4,7 @@
 //! for the SDK. MeterProvider manages meters and their lifecycle.
 
 const std = @import("std");
-const api = @import("otel-api");
+const io = std.Options.debug_io;const api = @import("otel-api");
 
 const sdk = struct {
     const Resource = @import("../resource/resource.zig").Resource;
@@ -29,7 +29,7 @@ pub const MeterProvider = struct {
     cache: std.HashMapUnmanaged(api.InstrumentationScope, *sdk.metrics.Meter, sdk.common.InstrumentationScopeMapContext, 80),
     readers: std.ArrayListUnmanaged(sdk.metrics.Reader),
     views: std.ArrayListUnmanaged(sdk.metrics.View),
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
     is_shutdown: std.atomic.Value(bool),
 
     pub fn init(
@@ -42,7 +42,7 @@ pub const MeterProvider = struct {
             .cache = .empty,
             .readers = .empty,
             .views = .empty,
-            .mutex = .{},
+            .mutex = std.Io.Mutex.init,
             .is_shutdown = .init(false),
         };
     }
@@ -59,8 +59,8 @@ pub const MeterProvider = struct {
 
         // Clean up the local lists.
         {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(io);
+            defer self.mutex.unlock(io);
 
             // Clean up the meters.
             var iter = self.cache.iterator();
@@ -97,8 +97,8 @@ pub const MeterProvider = struct {
         // The mutex block is distinct because the mutex must be released before
         // forceFlush can be called.
         {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(io);
+            defer self.mutex.unlock(io);
 
             // Flag each meter as shutdown to stop collection and instrument creation
             var iter = self.cache.iterator();
@@ -119,8 +119,8 @@ pub const MeterProvider = struct {
 
         const timeout = sdk.common.Timeout.init(timeout_ms);
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         for (self.readers.items) |*reader| {
             reader.collect();
             const flush_result = reader.forceFlush(timeout.remaining() catch return .timeout);
@@ -136,8 +136,8 @@ pub const MeterProvider = struct {
     ///
     /// The provided scope is copied internally.
     pub fn getMeterWithScope(self: *MeterProvider, scope: api.InstrumentationScope) !api.metrics.Meter {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         // Check cache first
         if (self.cache.get(scope)) |meter| {
@@ -168,8 +168,8 @@ pub const MeterProvider = struct {
     /// Add a view to this provider
     /// Views are immutable after setupGlobalProvider is called
     pub fn addView(self: *MeterProvider, view: sdk.metrics.View) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         try self.views.append(self.allocator, view);
     }
@@ -188,8 +188,8 @@ pub const MeterProvider = struct {
         allocator: std.mem.Allocator,
     ) ![]sdk.metrics.View.Application {
         _ = instrument_description; // TODO: Use in view validation
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         var applications = std.ArrayList(sdk.metrics.View.Application).empty;
         defer applications.deinit(allocator);

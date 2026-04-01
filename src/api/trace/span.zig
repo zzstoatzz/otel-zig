@@ -3,7 +3,7 @@
 //! See: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/api.md#span
 
 const std = @import("std");
-const api = struct {
+const io = std.Options.debug_io;const api = struct {
     const AttributeKeyValue = @import("../common/attributes.zig").AttributeKeyValue;
     const ContextBuilder = @import("../context/context.zig").ContextBuilder;
     const ContextKeyValue = @import("../context/context.zig").ContextKeyValue;
@@ -24,7 +24,7 @@ pub const Span = union(enum) {
     /// Clean up span resources
     pub inline fn deinit(self: *const Span) void {
         switch (self.*) {
-            .noop => |_| {},
+            .noop => {},
             .bridge => |bridge| bridge.deinitFn(bridge.span_ptr),
         }
     }
@@ -135,7 +135,7 @@ pub const Span = union(enum) {
             .noop => {},
             .bridge => |*bridge| {
                 if (bridge.end_ns == null) {
-                    const default_ts: i64 = @intCast(std.time.nanoTimestamp());
+                    const default_ts: i64 = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds);
                     bridge.end_ns = if (options) |opts| opts.end_time_ns orelse default_ts else default_ts;
                     bridge.endFn(bridge.span_ptr, bridge.*, options);
                 }

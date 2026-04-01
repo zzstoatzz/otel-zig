@@ -7,9 +7,10 @@ const std = @import("std");
 const otel_api = @import("otel-api");
 const otel_sdk = @import("otel-sdk");
 const otel_exporters = @import("otel-exporters");
+const io = std.Options.debug_io;
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -85,7 +86,7 @@ pub fn main() !void {
     defer child_span.deinit();
 
     // Simulate some work
-    std.Thread.sleep(10 * std.time.ns_per_ms);
+    io.sleep(.{ .nanoseconds = 10 * std.time.ns_per_ms }, .real) catch {};
 
     // Add result attribute to child span
     child_span.setAttribute(.{ .key = "db.rows_affected", .value = otel_api.common.AttributeValue{ .int = 1 } });

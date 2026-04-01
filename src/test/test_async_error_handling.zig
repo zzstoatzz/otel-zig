@@ -5,7 +5,7 @@
 //! policy enforcement, and performance monitoring.
 
 const std = @import("std");
-const testing = std.testing;
+const io = std.Options.debug_io;const testing = std.testing;
 const otel_api = @import("otel-api");
 const otel_sdk = @import("otel-sdk");
 
@@ -26,7 +26,7 @@ const SdkObservableCounter = otel_sdk.metrics.SdkObservableCounter;
 const ErrorCapture = struct {
     var captured_errors: std.ArrayList(ErrorInfo) = undefined;
     var allocator: std.mem.Allocator = undefined;
-    var mutex: std.Thread.Mutex = .{};
+    var mutex: std.Io.Mutex = std.Io.Mutex.init;
 
     fn init(alloc: std.mem.Allocator) void {
         allocator = alloc;
@@ -38,15 +38,15 @@ const ErrorCapture = struct {
     }
 
     fn reset() void {
-        mutex.lock();
-        defer mutex.unlock();
+        mutex.lockUncancelable(io);
+        defer mutex.unlock(io);
         captured_errors.clearRetainingCapacity();
     }
 
     fn captureError(info: ErrorInfo, alloc: ?std.mem.Allocator) void {
         _ = alloc;
-        mutex.lock();
-        defer mutex.unlock();
+        mutex.lockUncancelable(io);
+        defer mutex.unlock(io);
 
         // Clone the error info for our test
         const cloned_info = ErrorInfo{
@@ -61,14 +61,14 @@ const ErrorCapture = struct {
     }
 
     fn getErrorCount() usize {
-        mutex.lock();
-        defer mutex.unlock();
+        mutex.lockUncancelable(io);
+        defer mutex.unlock(io);
         return captured_errors.items.len;
     }
 
     fn getLastError() ?ErrorInfo {
-        mutex.lock();
-        defer mutex.unlock();
+        mutex.lockUncancelable(io);
+        defer mutex.unlock(io);
         if (captured_errors.items.len == 0) return null;
         return captured_errors.items[captured_errors.items.len - 1];
     }
@@ -105,7 +105,7 @@ fn tooManyMeasurementsCallback(result: *ObservableResult(i64), state: *TestState
 }
 
 test "callback error reporting integration" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -179,7 +179,7 @@ test "callback error reporting integration" {
 }
 
 test "callback error policy enforcement" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -234,7 +234,7 @@ test "callback error policy enforcement" {
 }
 
 test "callback metrics tracking with error reporting" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -290,7 +290,7 @@ test "callback metrics tracking with error reporting" {
 }
 
 test "error context information" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -337,7 +337,7 @@ test "error context information" {
 }
 
 test "callback performance monitoring" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -385,7 +385,7 @@ test "callback performance monitoring" {
 }
 
 test "multiple callbacks with different error behaviors" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 

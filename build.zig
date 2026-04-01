@@ -42,29 +42,12 @@ pub fn build(b: *std.Build) void {
     });
 
     // ========================================================================
-    // OpenTelemetry protobuf generator
+    // OpenTelemetry protobuf dependency (proto files pre-generated)
     // ========================================================================
-    // Generate the otlp proto outputs
     const protobuf_dep = b.dependency("protobuf", .{
         .target = target,
         .optimize = optimize,
     });
-
-    const gen_proto = b.step("gen-proto", "generates zig files for OTLP.");
-    const protoc_step = @import("protobuf").RunProtocStep.create(b, protobuf_dep.builder, target, .{
-        // out directory for the generated zig files
-        .destination_directory = b.path("src/exporters/otlp/proto"),
-        .source_files = &.{
-            "opentelemetry-proto/opentelemetry/proto/logs/v1/logs.proto",
-            "opentelemetry-proto/opentelemetry/proto/metrics/v1/metrics.proto",
-            "opentelemetry-proto/opentelemetry/proto/trace/v1/trace.proto",
-        },
-        .include_directories = &.{
-            "opentelemetry-proto/",
-        },
-    });
-
-    gen_proto.dependOn(&protoc_step.step);
 
     // ========================================================================
     // OpenTelemetry SDK Exporters Module
@@ -428,27 +411,15 @@ pub fn build(b: *std.Build) void {
     const force_flush_test_step = b.step("example-force-flush-test", "Run force flush test example");
     force_flush_test_step.dependOn(&run_force_flush_test.step);
 
-    // Multithreaded HTTP Telemetry Example
-    const multithreaded_http_example = b.addExecutable(.{
-        .name = "multithreaded_http_telemetry",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("examples/multithreaded_http_telemetry.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    multithreaded_http_example.root_module.addImport("otel-api", otel_api_mod);
-    multithreaded_http_example.root_module.addImport("otel-sdk", otel_sdk_mod);
-    multithreaded_http_example.root_module.addImport("otel-exporters", otel_exporters_mod);
-    multithreaded_http_example.root_module.addImport("otel-semconv", otel_semconv_mod);
-    b.installArtifact(multithreaded_http_example);
-
-    const run_multithreaded_http = b.addRunArtifact(multithreaded_http_example);
-    if (b.args) |args| {
-        run_multithreaded_http.addArgs(args);
-    }
-    const multithreaded_http_step = b.step("example-multithreaded-http", "Run multithreaded HTTP telemetry example");
-    multithreaded_http_step.dependOn(&run_multithreaded_http.step);
+    // Multithreaded HTTP Telemetry Example (disabled: needs std.net port to std.Io.net)
+    // const multithreaded_http_example = b.addExecutable(.{
+    //     .name = "multithreaded_http_telemetry",
+    //     .root_module = b.createModule(.{
+    //         .root_source_file = b.path("examples/multithreaded_http_telemetry.zig"),
+    //         .target = target,
+    //         .optimize = optimize,
+    //     }),
+    // });
 
     // All examples step
     const examples_step = b.step("examples", "Run all examples");
@@ -465,5 +436,4 @@ pub fn build(b: *std.Build) void {
     examples_step.dependOn(&run_error_handling_demo.step);
     examples_step.dependOn(&run_validation_test.step);
     examples_step.dependOn(&run_force_flush_test.step);
-    examples_step.dependOn(&run_multithreaded_http.step);
 }

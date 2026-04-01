@@ -3,7 +3,7 @@
 //! Provides the common entry point for seting up providers.
 
 const std = @import("std");
-const logs = @import("logs/root.zig");
+const io = std.Options.debug_io;const logs = @import("logs/root.zig");
 const trace = @import("trace/root.zig");
 const metrics = @import("metrics/root.zig");
 const config = @import("config/root.zig");
@@ -19,10 +19,10 @@ var global_logger_provider: std.atomic.Value(?*logs.LoggerProvider) = std.atomic
 var global_tracer_provider: std.atomic.Value(?*trace.TracerProvider) = std.atomic.Value(?*trace.TracerProvider).init(null);
 var global_meter_provider: std.atomic.Value(?*metrics.MeterProvider) = std.atomic.Value(?*metrics.MeterProvider).init(null);
 var global_config_provider: std.atomic.Value(?*config.ConfigProvider) = std.atomic.Value(?*config.ConfigProvider).init(null);
-var logger_mutex = std.Thread.Mutex{};
-var tracer_mutex = std.Thread.Mutex{};
-var meter_mutex = std.Thread.Mutex{};
-var config_mutex = std.Thread.Mutex{};
+var logger_mutex = std.Io.Mutex.init;
+var tracer_mutex = std.Io.Mutex.init;
+var meter_mutex = std.Io.Mutex.init;
+var config_mutex = std.Io.Mutex.init;
 
 /// Get the global logger provider. Fatal if a provider is not setup.
 pub fn getGlobalLoggerProvider() *const logs.LoggerProvider {
@@ -34,8 +34,8 @@ pub fn getGlobalLoggerProvider() *const logs.LoggerProvider {
 /// Uses page allocator to manage the interface wrapper memory.
 /// Returns error if allocation fails.
 pub fn setGlobalLoggerProvider(provider: ?logs.LoggerProvider) !void {
-    logger_mutex.lock();
-    defer logger_mutex.unlock();
+    logger_mutex.lockUncancelable(io);
+    defer logger_mutex.unlock(io);
 
     // Get old value atomically
     const old_provider = global_logger_provider.load(.acquire);
@@ -68,8 +68,8 @@ pub fn getGlobalTracerProvider() *const trace.TracerProvider {
 /// Uses page allocator to manage the interface wrapper memory.
 /// Returns error if allocation fails.
 pub fn setGlobalTracerProvider(provider: ?trace.TracerProvider) !void {
-    tracer_mutex.lock();
-    defer tracer_mutex.unlock();
+    tracer_mutex.lockUncancelable(io);
+    defer tracer_mutex.unlock(io);
 
     // Get old value atomically
     const old_provider = global_tracer_provider.load(.acquire);
@@ -102,8 +102,8 @@ pub fn getGlobalMeterProvider() *const metrics.MeterProvider {
 ///
 /// Callers responsiblitiy to manage the lifecycle of the returned, old provider.
 pub fn setGlobalMeterProvider(provider: ?metrics.MeterProvider) !void {
-    meter_mutex.lock();
-    defer meter_mutex.unlock();
+    meter_mutex.lockUncancelable(io);
+    defer meter_mutex.unlock(io);
 
     // Get old value atomically
     const old_provider = global_meter_provider.load(.acquire);
@@ -136,8 +136,8 @@ pub fn getGlobalConfigProvider() *const config.ConfigProvider {
 /// Uses page allocator to manage the interface wrapper memory.
 /// Returns error if allocation fails.
 pub fn setGlobalConfigProvider(provider: ?config.ConfigProvider) !void {
-    config_mutex.lock();
-    defer config_mutex.unlock();
+    config_mutex.lockUncancelable(io);
+    defer config_mutex.unlock(io);
 
     // Get old value atomically
     const old_provider = global_config_provider.load(.acquire);

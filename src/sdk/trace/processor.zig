@@ -7,7 +7,7 @@
 //! See: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/sdk.md#span-processor
 
 const std = @import("std");
-const otel_api = @import("otel-api");
+const io = std.Options.debug_io;const otel_api = @import("otel-api");
 const sdk = struct {
     const Resource = @import("../resource/resource.zig").Resource;
     const trace = struct {
@@ -88,7 +88,7 @@ pub const SpanProcessor = union(enum) {
 pub const SimpleSpanProcessor = struct {
     allocator: std.mem.Allocator,
     exporter: SpanExporter,
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
     is_shutdown: bool,
 
     pub fn init(allocator: std.mem.Allocator, exporter: SpanExporter) !*SimpleSpanProcessor {
@@ -96,7 +96,7 @@ pub const SimpleSpanProcessor = struct {
         self.* = .{
             .allocator = allocator,
             .exporter = exporter,
-            .mutex = .{},
+            .mutex = std.Io.Mutex.init,
             .is_shutdown = false,
         };
         return self;
@@ -116,8 +116,8 @@ pub const SimpleSpanProcessor = struct {
     }
 
     pub inline fn onEnd(self: *SimpleSpanProcessor, span: sdk.trace.SpanData, resource: sdk.Resource) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         if (self.is_shutdown) {
             return;
@@ -129,8 +129,8 @@ pub const SimpleSpanProcessor = struct {
     }
 
     pub inline fn forceFlush(self: *SimpleSpanProcessor, timeout_ms: ?u64) otel_api.common.FlushResult {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         if (self.is_shutdown) {
             return .failure;
@@ -142,8 +142,8 @@ pub const SimpleSpanProcessor = struct {
     }
 
     pub fn shutdown(self: *SimpleSpanProcessor, timeout_ms: ?u64) ProcessResult {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         if (self.is_shutdown) {
             return .success;

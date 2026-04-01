@@ -1,7 +1,7 @@
 //! LogRecordDataSink that writes the log records to a configured *std.Io.Writer.
 
 const std = @import("std");
-const api = @import("otel-api");
+const io = std.Options.debug_io;const api = @import("otel-api");
 const sdk = @import("otel-sdk");
 
 const exporters = struct {
@@ -23,7 +23,7 @@ pub const PipelineStep = sdk.common.PipelineStepInstructions(
 allocator: std.mem.Allocator,
 config: exporters.stream.SinkConfig,
 is_shutdown: std.atomic.Value(bool),
-mutex: std.Thread.Mutex,
+mutex: std.Io.Mutex,
 
 pub fn _init(self: *LogRecordSink, config: exporters.stream.SinkConfig, allocator: std.mem.Allocator) !void {
     self.* = init(allocator, config);
@@ -34,7 +34,7 @@ pub fn init(allocator: std.mem.Allocator, config: exporters.stream.SinkConfig) L
         .allocator = allocator,
         .config = config,
         .is_shutdown = .init(false),
-        .mutex = .{},
+        .mutex = std.Io.Mutex.init,
     };
 }
 pub fn deinit(_: *LogRecordSink) void {}
@@ -45,8 +45,8 @@ pub fn destroy(self: *LogRecordSink) void {
 pub fn exportRecords(self: *LogRecordSink, records: []const sdk.logs.LogRecord, resource: sdk.resource.Resource) api.common.ExportResult {
     if (self.is_shutdown.load(.monotonic)) return .success;
 
-    self.mutex.lock();
-    defer self.mutex.unlock();
+    self.mutex.lockUncancelable(io);
+    defer self.mutex.unlock(io);
 
     var result = api.common.ExportResult.success;
     for (records) |rec| {
@@ -75,8 +75,8 @@ pub fn exportRecords(self: *LogRecordSink, records: []const sdk.logs.LogRecord, 
 pub fn forceFlush(self: *LogRecordSink, timeout_ms: ?u64) api.common.ExportResult {
     _ = timeout_ms;
 
-    self.mutex.lock();
-    defer self.mutex.unlock();
+    self.mutex.lockUncancelable(io);
+    defer self.mutex.unlock(io);
 
     self.config.writer.flush() catch return .failure;
     return .success;
@@ -92,7 +92,7 @@ pub fn logRecordExporter(self: *LogRecordSink) sdk.logs.LogRecordExporter {
 }
 
 fn outputLogRecord(resource: sdk.resource.Resource, cfg: exporters.stream.SinkConfig, record: sdk.logs.LogRecord) !void {
-    const timestamp_ns = record.timestamp_ns orelse @as(i64, @intCast(std.time.nanoTimestamp()));
+    const timestamp_ns = record.timestamp_ns orelse @as(i64, @intCast(std.Io.Timestamp.now(io, .real).nanoseconds));
     if (cfg.include_timestamp) {
         // Convert nanoseconds to seconds for display
         const timestamp_s = @divTrunc(timestamp_ns, 1_000_000_000);

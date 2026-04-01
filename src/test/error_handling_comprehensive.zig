@@ -10,7 +10,7 @@
 //! essential error handling behavior.
 
 const std = @import("std");
-const testing = std.testing;
+const io = std.Options.debug_io;const testing = std.testing;
 const otel_api = @import("otel-api");
 
 const AttributeKeyValue = otel_api.common.AttributeKeyValue;
@@ -26,13 +26,13 @@ const ErrorHandler = otel_api.common.ErrorHandler;
 
 /// Simple error capture for testing
 var test_errors: std.ArrayList(ErrorInfo) = undefined;
-var test_mutex: std.Thread.Mutex = std.Thread.Mutex{};
+var test_mutex: std.Io.Mutex = std.Io.Mutex.init;
 var test_allocator: std.mem.Allocator = undefined;
 
 fn testErrorHandler(info: ErrorInfo, allocator: ?std.mem.Allocator) void {
     _ = allocator;
-    test_mutex.lock();
-    defer test_mutex.unlock();
+    test_mutex.lockUncancelable(io);
+    defer test_mutex.unlock(io);
     test_errors.append(test_allocator, info) catch {};
 }
 
@@ -48,14 +48,14 @@ fn cleanupTestCapture() void {
 }
 
 fn getErrorCount() usize {
-    test_mutex.lock();
-    defer test_mutex.unlock();
+    test_mutex.lockUncancelable(io);
+    defer test_mutex.unlock(io);
     return test_errors.items.len;
 }
 
 fn clearErrors() void {
-    test_mutex.lock();
-    defer test_mutex.unlock();
+    test_mutex.lockUncancelable(io);
+    defer test_mutex.unlock(io);
     test_errors.clearRetainingCapacity();
 }
 
@@ -100,8 +100,8 @@ test "error handler preserves error information" {
     // Verify error details
     try testing.expectEqual(@as(usize, 1), getErrorCount());
 
-    test_mutex.lock();
-    defer test_mutex.unlock();
+    test_mutex.lockUncancelable(io);
+    defer test_mutex.unlock(io);
 
     const captured = test_errors.items[0];
     try testing.expectEqual(Component.exporter, captured.component);

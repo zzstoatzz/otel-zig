@@ -68,7 +68,7 @@ pub const TracesData = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json
@@ -143,7 +143,7 @@ pub const ResourceSpans = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json
@@ -218,7 +218,7 @@ pub const ScopeSpans = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json
@@ -342,7 +342,7 @@ pub const Span = struct {
             options: std.json.Stringify.Options,
             allocator: std.mem.Allocator,
         ) ![]const u8 {
-            return protobuf.json.encode(self, options, allocator);
+            return protobuf.json.encode(self, options, .{}, allocator);
         }
 
         /// This method is used by std.json
@@ -423,7 +423,7 @@ pub const Span = struct {
             options: std.json.Stringify.Options,
             allocator: std.mem.Allocator,
         ) ![]const u8 {
-            return protobuf.json.encode(self, options, allocator);
+            return protobuf.json.encode(self, options, .{}, allocator);
         }
 
         /// This method is used by std.json
@@ -487,7 +487,7 @@ pub const Span = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json
@@ -567,7 +567,7 @@ pub const Status = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json

@@ -7,7 +7,7 @@
 //! See: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/sdk.md#span-processor
 
 const std = @import("std");
-const otel_api = @import("otel-api");
+const io = std.Options.debug_io;const otel_api = @import("otel-api");
 const sdk = struct {
     const trace = struct {
         const SpanData = @import("data.zig").SpanData;
@@ -55,14 +55,14 @@ pub const BasicSpanProcessor = struct {
 
     allocator: std.mem.Allocator,
     exporter: ?SpanExporter,
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
     is_shutdown: bool,
 
     pub fn init(allocator: std.mem.Allocator, exporter: ?SpanExporter) BasicSpanProcessor {
         return .{
             .allocator = allocator,
             .exporter = exporter,
-            .mutex = .{},
+            .mutex = std.Io.Mutex.init,
             .is_shutdown = false,
         };
     }
@@ -92,8 +92,8 @@ pub const BasicSpanProcessor = struct {
     }
 
     pub fn onEnd(self: *BasicSpanProcessor, span: sdk.trace.SpanData, resource: Resource) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         if (self.is_shutdown) {
             return;
@@ -117,8 +117,8 @@ pub const BasicSpanProcessor = struct {
     }
 
     pub fn forceFlush(self: *BasicSpanProcessor, timeout_ms: ?u64) otel_api.common.FlushResult {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         if (self.is_shutdown) {
             return .failure;
@@ -130,8 +130,8 @@ pub const BasicSpanProcessor = struct {
     }
 
     pub fn shutdown(self: *BasicSpanProcessor, timeout_ms: ?u64) ProcessResult {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         if (self.is_shutdown) {
             return .success;

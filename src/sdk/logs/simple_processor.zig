@@ -7,7 +7,7 @@
 //! See: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/logs/sdk.md#logrecordprocessor
 
 const std = @import("std");
-const api = @import("otel-api");
+const io = std.Options.debug_io;const api = @import("otel-api");
 
 const sdk = struct {
     const Resource = @import("../resource/resource.zig").Resource;
@@ -35,14 +35,14 @@ pub const SimpleLogRecordProcessor = struct {
 
     allocator: std.mem.Allocator,
     exporter: ?sdk.LogRecordExporter,
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
     is_shutdown: bool,
 
     pub fn init(allocator: std.mem.Allocator, exporter: ?sdk.LogRecordExporter) SimpleLogRecordProcessor {
         return .{
             .allocator = allocator,
             .exporter = exporter,
-            .mutex = .{},
+            .mutex = std.Io.Mutex.init,
             .is_shutdown = false,
         };
     }
@@ -69,8 +69,8 @@ pub const SimpleLogRecordProcessor = struct {
     pub fn onEmit(self: *SimpleLogRecordProcessor, record: sdk.LogRecord, ctx: []const api.ContextKeyValue, resource: sdk.Resource) void {
         _ = ctx;
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         if (self.is_shutdown) {
             return;
@@ -95,8 +95,8 @@ pub const SimpleLogRecordProcessor = struct {
     }
 
     pub fn forceFlush(self: *SimpleLogRecordProcessor, timeout_ms: ?u64) api.common.FlushResult {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         if (self.is_shutdown) {
             return .failure;
@@ -108,8 +108,8 @@ pub const SimpleLogRecordProcessor = struct {
     }
 
     pub fn shutdown(self: *SimpleLogRecordProcessor, timeout_ms: ?u64) api.common.ProcessResult {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         if (self.is_shutdown) {
             return .success;

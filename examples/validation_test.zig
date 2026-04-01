@@ -10,6 +10,7 @@ const std = @import("std");
 const otel_api = @import("otel-api");
 const otel_sdk = @import("otel-sdk");
 const otel_exporters = @import("otel-exporters");
+const io = std.Options.debug_io;
 
 const print = std.debug.print;
 
@@ -26,7 +27,7 @@ fn validationErrorHandler(info: otel_api.common.ErrorInfo, allocator: ?std.mem.A
 }
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -38,8 +39,8 @@ pub fn main() !void {
 
     // Set up logging provider
     var stderr_buffer = [_]u8{0} ** 1024;
-    const stderr_fh = std.fs.File.stderr();
-    var stderr = stderr_fh.writer(&stderr_buffer);
+    const stderr_fh = std.Io.File.stderr();
+    var stderr = stderr_fh.writer(io, &stderr_buffer);
     const log_provider = try otel_sdk.logs.setupGlobalProvider(
         allocator,
         .{otel_sdk.logs.SimpleLogRecordProcessor.PipelineStep.init({})

@@ -4,7 +4,7 @@
 //! for the SDK. TracerProvider manages tracers and their lifecycle.
 
 const std = @import("std");
-const api = @import("otel-api");
+const io = std.Options.debug_io;const api = @import("otel-api");
 
 const sdk = struct {
     const Resource = @import("../resource/resource.zig").Resource;
@@ -31,7 +31,7 @@ pub const TracerProvider = struct {
     id_generator: sdk.trace.IdGenerator,
     sampler: api.trace.Sampler,
     span_limits: api.trace.Span.Limits,
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
     is_shutdown: std.atomic.Value(bool),
 
     /// Create a new basic tracer provider
@@ -49,7 +49,7 @@ pub const TracerProvider = struct {
             .id_generator = id_generator,
             .sampler = sampler,
             .span_limits = api.trace.Span.Limits.default,
-            .mutex = .{},
+            .mutex = std.Io.Mutex.init,
             .is_shutdown = .init(false),
         };
     }
@@ -62,8 +62,8 @@ pub const TracerProvider = struct {
 
         // Clean up the local lists.
         {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(io);
+            defer self.mutex.unlock(io);
 
             // Clean up the tracers.
             var iter = self.cache.iterator();
@@ -98,8 +98,8 @@ pub const TracerProvider = struct {
         // The mutex block is distinct because the mutex must be released before
         // forceFlush can be called.
         {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(io);
+            defer self.mutex.unlock(io);
 
             // Flag each tracer as shutdown to stop collection and instrument creation
             var iter = self.cache.iterator();
@@ -119,8 +119,8 @@ pub const TracerProvider = struct {
 
         const timeout = sdk.common.Timeout.init(timeout_ms);
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         for (self.processors.items) |*processor| {
             const flush_result = processor.forceFlush(timeout.remaining() catch return .timeout);
             switch (flush_result) {
@@ -136,8 +136,8 @@ pub const TracerProvider = struct {
         // Short circuit if the provider is shutdown.
         if (self.is_shutdown.load(.monotonic)) return .{ .noop = {} };
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         // Return the existing tracer if it exists. Requires mutex for map scan.
         if (self.cache.get(scope)) |tracer| {
             return tracer.tracer();
@@ -163,8 +163,8 @@ pub const TracerProvider = struct {
     ///
     /// This method is not thread-safe and should only be called during initialization.
     pub fn registerProcessor(self: *TracerProvider, processor: sdk.trace.SpanDataProcessor) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         try self.processors.append(self.allocator, processor);
     }

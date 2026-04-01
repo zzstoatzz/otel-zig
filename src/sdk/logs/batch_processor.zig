@@ -7,7 +7,7 @@
 //! See: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/logs/sdk.md#logrecordprocessor
 
 const std = @import("std");
-const api = @import("otel-api");
+const io = std.Options.debug_io;const api = @import("otel-api");
 
 const sdk = struct {
     const Resource = @import("../resource/resource.zig").Resource;
@@ -38,14 +38,14 @@ pub const BatchLogRecordProcessor = struct {
         self.* = .{
             .allocator = allocator,
             .exporter = sdk.LogRecordExporter{ .noop = {} },
-            .mutex = .{},
-            .condition = .{},
+            .mutex = std.Io.Mutex.init,
+            .condition = std.Io.Condition.init,
             .is_shutdown = .init(false),
             .is_running = .init(false),
             .flush_in_progress = .init(false),
             .export_in_progress = .init(false),
-            .flush_complete = .{},
-            .export_complete = .{},
+            .flush_complete = std.Io.Condition.init,
+            .export_complete = std.Io.Condition.init,
             .thread = null,
             .export_interval_ms = config.export_interval_ms orelse 5000,
             .max_queue_size = config.max_queue_size orelse 2048,
@@ -56,14 +56,14 @@ pub const BatchLogRecordProcessor = struct {
 
     allocator: std.mem.Allocator,
     exporter: sdk.LogRecordExporter,
-    mutex: std.Thread.Mutex,
-    condition: std.Thread.Condition,
+    mutex: std.Io.Mutex,
+    condition: std.Io.Condition = std.Io.Condition.init,
     is_shutdown: std.atomic.Value(bool),
     is_running: std.atomic.Value(bool),
     flush_in_progress: std.atomic.Value(bool),
     export_in_progress: std.atomic.Value(bool),
-    flush_complete: std.Thread.Condition,
-    export_complete: std.Thread.Condition,
+    flush_complete: std.Io.Condition = std.Io.Condition.init,
+    export_complete: std.Io.Condition = std.Io.Condition.init,
     thread: ?std.Thread,
     export_interval_ms: u32,
     max_queue_size: usize,
@@ -86,14 +86,14 @@ pub const BatchLogRecordProcessor = struct {
         self.* = .{
             .allocator = allocator,
             .exporter = exporter,
-            .mutex = .{},
-            .condition = .{},
+            .mutex = std.Io.Mutex.init,
+            .condition = std.Io.Condition.init,
             .is_shutdown = .init(false),
             .is_running = .init(false),
             .flush_in_progress = .init(false),
             .export_in_progress = .init(false),
-            .flush_complete = .{},
-            .export_complete = .{},
+            .flush_complete = std.Io.Condition.init,
+            .export_complete = std.Io.Condition.init,
             .thread = null,
             .export_interval_ms = export_interval_ms orelse 5000,
             .max_queue_size = max_queue_size orelse 2048,
@@ -124,9 +124,9 @@ pub const BatchLogRecordProcessor = struct {
         self.is_shutdown.store(true, .release);
 
         // Wake up the export thread
-        self.mutex.lock();
-        self.condition.broadcast();
-        self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        self.condition.broadcast(io);
+        self.mutex.unlock(io);
 
         // Wait for thread to finish
         if (self.thread) |thread| {
@@ -134,7 +134,7 @@ pub const BatchLogRecordProcessor = struct {
         }
 
         // Export any remaining log records
-        self.mutex.lock();
+        self.mutex.lockUncancelable(io);
         _ = self.exportBatchLocked();
 
         // Clean up remaining log records
@@ -142,7 +142,7 @@ pub const BatchLogRecordProcessor = struct {
             record.deinitOwned(self.allocator);
         }
         self.log_queue.deinit(self.allocator);
-        self.mutex.unlock();
+        self.mutex.unlock(io);
 
         // Clean up exporter
         self.exporter.deinit();
@@ -157,8 +157,8 @@ pub const BatchLogRecordProcessor = struct {
         _ = ctx;
         _ = resource;
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         if (self.is_shutdown.load(.acquire)) {
             return;
@@ -215,17 +215,17 @@ pub const BatchLogRecordProcessor = struct {
             return .failure;
         }
 
-        const start_time = std.time.milliTimestamp();
+        const start_time = @as(i64, @intCast(@divFloor(std.Io.Timestamp.now(io, .real).nanoseconds, std.time.ns_per_ms)));
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         // Try to set flush_in_progress atomically
         const was_flushing = self.flush_in_progress.swap(true, .seq_cst);
         if (was_flushing) {
             // Another flush is in progress, wait for it
             const remaining_ms = if (timeout_ms) |ms|
-                ms -| @as(u64, @intCast(std.time.milliTimestamp() - start_time))
+                ms -| @as(u64, @intCast(@as(i64, @intCast(@divFloor(std.Io.Timestamp.now(io, .real).nanoseconds, std.time.ns_per_ms))) - start_time))
             else
                 null;
 
@@ -233,46 +233,25 @@ pub const BatchLogRecordProcessor = struct {
                 return .timeout;
             }
 
-            if (remaining_ms) |ms| {
-                self.flush_complete.timedWait(&self.mutex, ms * std.time.ns_per_ms) catch {
-                    return .timeout;
-                };
-            } else {
-                self.flush_complete.wait(&self.mutex);
-            }
+            self.flush_complete.waitUncancelable(io, &self.mutex);
             return .success;
         }
 
         defer {
             self.flush_in_progress.store(false, .release);
-            self.flush_complete.broadcast();
+            self.flush_complete.broadcast(io);
         }
 
         // Wait for any export in progress
         while (self.export_in_progress.load(.acquire)) {
-            const remaining_ms = if (timeout_ms) |ms|
-                ms -| @as(u64, @intCast(std.time.milliTimestamp() - start_time))
-            else
-                null;
-
-            if (remaining_ms == 0) {
-                return .timeout;
-            }
-
-            if (remaining_ms) |ms| {
-                self.export_complete.timedWait(&self.mutex, ms * std.time.ns_per_ms) catch {
-                    return .timeout;
-                };
-            } else {
-                self.export_complete.wait(&self.mutex);
-            }
+            self.export_complete.waitUncancelable(io, &self.mutex);
         }
 
         // Now do the export with atomic flag
         self.export_in_progress.store(true, .release);
         defer {
             self.export_in_progress.store(false, .release);
-            self.export_complete.broadcast();
+            self.export_complete.broadcast(io);
         }
 
         // Export log records (mutex is held)
@@ -284,9 +263,9 @@ pub const BatchLogRecordProcessor = struct {
         }
 
         // Flush the exporter
-        self.mutex.unlock();
+        self.mutex.unlock(io);
         const flush_result = self.exporter.forceFlush(timeout_ms);
-        self.mutex.lock();
+        self.mutex.lockUncancelable(io);
 
         return flush_result.asFlushResult();
     }
@@ -315,9 +294,9 @@ pub const BatchLogRecordProcessor = struct {
 
         // Export log records directly from queue
         // Temporarily release mutex for export
-        self.mutex.unlock();
+        self.mutex.unlock(io);
         const result = self.exporter.exportRecords(self.log_queue.items, @import("../resource/resource.zig").Resource.empty);
-        self.mutex.lock();
+        self.mutex.lockUncancelable(io);
 
         // Clean up exported records
         for (self.log_queue.items) |record| {
@@ -336,21 +315,19 @@ pub const BatchLogRecordProcessor = struct {
                 break;
             }
 
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(io);
+            defer self.mutex.unlock(io);
 
             // Double-check under mutex
             if (self.is_shutdown.load(.acquire)) {
                 break;
             }
 
-            // Calculate wait time in nanoseconds
-            const wait_ns = @as(u64, self.export_interval_ms) * std.time.ns_per_ms;
-
-            // Wait for the specified interval or until signaled
-            self.condition.timedWait(&self.mutex, wait_ns) catch {
-                // Timeout - normal export cycle
-            };
+            // Sleep for the export interval, releasing the mutex
+            const wait_ns: i96 = @intCast(@as(u64, self.export_interval_ms) * std.time.ns_per_ms);
+            self.mutex.unlock(io);
+            io.sleep(.{ .nanoseconds = wait_ns }, .real) catch {};
+            self.mutex.lockUncancelable(io);
 
             // Skip if flush is in progress
             if (self.flush_in_progress.load(.acquire)) {
@@ -365,7 +342,7 @@ pub const BatchLogRecordProcessor = struct {
 
             defer {
                 self.export_in_progress.store(false, .release);
-                self.export_complete.broadcast();
+                self.export_complete.broadcast(io);
             }
 
             // Do the export

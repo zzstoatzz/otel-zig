@@ -95,7 +95,7 @@ pub const LogsData = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json
@@ -170,7 +170,7 @@ pub const ResourceLogs = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json
@@ -245,7 +245,7 @@ pub const ScopeLogs = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json
@@ -336,7 +336,7 @@ pub const LogRecord = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json

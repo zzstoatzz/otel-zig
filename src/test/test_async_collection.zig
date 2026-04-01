@@ -4,7 +4,7 @@
 //! including periodic processors, concurrent callback execution, and memory management.
 
 const std = @import("std");
-const testing = std.testing;
+const io = std.Options.debug_io;const testing = std.testing;
 const otel_api = @import("otel-api");
 const otel_sdk = @import("otel-sdk");
 
@@ -23,29 +23,29 @@ const Resource = otel_sdk.resource.Resource;
 
 // Test state for concurrent access
 const ConcurrentState = struct {
-    mutex: std.Thread.Mutex = .{},
+    mutex: std.Io.Mutex = std.Io.Mutex.init,
     counter: u32 = 0,
     values: [10]i64 = undefined,
     collection_count: std.atomic.Value(u32) = .init(0),
 
     fn increment(self: *ConcurrentState) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         self.counter += 1;
     }
 
     fn setValue(self: *ConcurrentState, index: usize, value: i64) void {
         if (index < self.values.len) {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(io);
+            defer self.mutex.unlock(io);
             self.values[index] = value;
         }
     }
 
     fn getValue(self: *ConcurrentState, index: usize) i64 {
         if (index >= self.values.len) return 0;
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         return self.values[index];
     }
 
@@ -93,12 +93,12 @@ fn heavyCallback(result: *ObservableResult(i64), state: *ConcurrentState) void {
 
 // Stateless callback for testing
 fn statelessCallback(result: *ObservableResult(i64)) void {
-    const timestamp = std.time.milliTimestamp();
+    const timestamp = @as(i64, @intCast(@divFloor(std.Io.Timestamp.now(io, .real).nanoseconds, std.time.ns_per_ms)));
     result.observeValue(@mod(timestamp, 1000)) catch {};
 }
 
 test "basic integration with metric collection" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -143,7 +143,7 @@ test "basic integration with metric collection" {
 }
 
 test "concurrent callback execution" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -200,7 +200,7 @@ test "concurrent callback execution" {
 }
 
 test "memory management during collection" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -237,7 +237,7 @@ test "memory management during collection" {
 }
 
 test "collection with mixed callback types" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -301,7 +301,7 @@ test "collection with mixed callback types" {
 }
 
 test "callback registration and unregistration during collection" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -360,7 +360,7 @@ test "callback registration and unregistration during collection" {
 }
 
 test "large scale collection performance" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -393,9 +393,9 @@ test "large scale collection performance" {
     }
 
     // Time the collection
-    const start_time = std.time.nanoTimestamp();
+    const start_time = std.Io.Timestamp.now(io, .real).nanoseconds;
     const metrics = try gauge.collect(allocator);
-    const end_time = std.time.nanoTimestamp();
+    const end_time = std.Io.Timestamp.now(io, .real).nanoseconds;
     defer allocator.free(metrics);
 
     const collection_time_ns = @as(u64, @intCast(end_time - start_time));

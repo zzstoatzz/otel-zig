@@ -55,7 +55,7 @@ fn simpleCallback(result: *ObservableResult(i64)) void {
 }
 
 test "observable counter API to SDK integration" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -110,7 +110,7 @@ test "observable counter API to SDK integration" {
 }
 
 test "observable gauge API to SDK integration" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -162,7 +162,7 @@ test "observable gauge API to SDK integration" {
 }
 
 test "observable updown counter API to SDK integration" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -214,7 +214,7 @@ test "observable updown counter API to SDK integration" {
 }
 
 test "stateless callback API integration" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -264,7 +264,7 @@ test "stateless callback API integration" {
 }
 
 test "multiple observable instruments on same meter" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -329,7 +329,7 @@ test "multiple observable instruments on same meter" {
 }
 
 test "observable instruments with attributes" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 

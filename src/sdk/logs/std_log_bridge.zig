@@ -23,7 +23,7 @@
 //! ```
 
 const std = @import("std");
-const api = @import("otel-api");
+const io = std.Options.debug_io;const api = @import("otel-api");
 
 /// Configuration for the std.log bridge
 pub const BridgeConfig = struct {
@@ -50,12 +50,12 @@ const BridgeState = struct {
 
 /// Global bridge state
 var bridge_state: BridgeState = undefined;
-var bridge_mutex = std.Thread.Mutex{};
+var bridge_mutex = std.Io.Mutex.init;
 
 /// Initialize the std.log bridge
 pub fn init(config: BridgeConfig) !void {
-    bridge_mutex.lock();
-    defer bridge_mutex.unlock();
+    bridge_mutex.lockUncancelable(io);
+    defer bridge_mutex.unlock(io);
 
     if (bridge_state.initialized.load(.acquire)) return;
 
@@ -81,8 +81,8 @@ pub fn init(config: BridgeConfig) !void {
 
 /// Deinitialize the std.log bridge
 pub fn deinit() void {
-    bridge_mutex.lock();
-    defer bridge_mutex.unlock();
+    bridge_mutex.lockUncancelable(io);
+    defer bridge_mutex.unlock(io);
 
     if (!bridge_state.initialized.load(.acquire)) return;
 
@@ -92,8 +92,8 @@ pub fn deinit() void {
 
 /// Update bridge configuration at runtime
 pub fn updateConfig(config: BridgeConfig) void {
-    bridge_mutex.lock();
-    defer bridge_mutex.unlock();
+    bridge_mutex.lockUncancelable(io);
+    defer bridge_mutex.unlock(io);
 
     if (bridge_state.initialized.load(.acquire)) {
         bridge_state.config = config;
@@ -113,7 +113,7 @@ fn mapLogLevelToSeverity(level: std.log.Level) api.logs.Severity {
 /// OpenTelemetry logFn implementation
 pub fn otelLogFn(
     comptime level: std.log.Level,
-    comptime scope: @Type(.enum_literal),
+    comptime scope: @EnumLiteral(),
     comptime format: []const u8,
     args: anytype,
 ) void {
@@ -132,7 +132,7 @@ pub fn otelLogFn(
 /// Internal OTel logging implementation
 fn otelLogImpl(
     comptime level: std.log.Level,
-    comptime scope: @Type(.enum_literal),
+    comptime scope: @EnumLiteral(),
     comptime format: []const u8,
     args: anytype,
 ) !void {
@@ -164,7 +164,7 @@ fn otelLogImpl(
         severity, // severity
         .{ .string = message }, // body
         attributes, // attributes
-        @as(i64, @intCast(std.time.nanoTimestamp())), // timestamp_ns
+        @as(i64, @intCast(std.Io.Timestamp.now(io, .real).nanoseconds)), // timestamp_ns
         null, // observed_timestamp_ns
         null, // event_name
         null, // severity_text

@@ -8,6 +8,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const io = std.Options.debug_io;
 
 /// ID generator interface for generating trace and span IDs
 pub const IdGenerator = union(enum) {
@@ -37,7 +38,7 @@ pub const RandomIdGenerator = struct {
 
     pub fn init() RandomIdGenerator {
         var seed: [32]u8 = undefined;
-        std.crypto.random.bytes(&seed);
+        io.random(&seed);
         return .{
             .prng = std.Random.ChaCha.init(seed),
         };

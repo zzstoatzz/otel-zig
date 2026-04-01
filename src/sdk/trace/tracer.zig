@@ -4,7 +4,7 @@
 //! for the SDK. StandardTracer creates spans and manages their lifecycle.
 
 const std = @import("std");
-const otel_api = @import("otel-api");
+const io = std.Options.debug_io;const otel_api = @import("otel-api");
 const sdk = struct {
     const trace = struct {
         const RecordingSpan = @import("data.zig").RecordingSpan;
@@ -58,7 +58,7 @@ pub const StandardTracer = struct {
         }
 
         // Get timestamp
-        const default_ts: i64 = @intCast(std.time.nanoTimestamp());
+        const default_ts: i64 = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds);
         const start_time = opts.start_time_ns orelse default_ts;
 
         // Extract parent context if present

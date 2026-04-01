@@ -4,7 +4,7 @@
 //! These include result types, error types, and common configuration structures.
 
 const std = @import("std");
-
+const io = std.Options.debug_io;
 /// Errors that can occur during export operations
 pub const ExportError = error{
     /// Export operation timed out
@@ -131,7 +131,7 @@ pub const ExportStats = struct {
     pub fn recordSuccess(self: *ExportStats, items: u64, duration_ms: u64) void {
         self.success_count += 1;
         self.exported_items += items;
-        self.last_export_time = std.time.milliTimestamp();
+        self.last_export_time = @as(i64, @intCast(@divFloor(std.Io.Timestamp.now(io, .real).nanoseconds, std.time.ns_per_ms)));
         self.last_export_duration_ms = duration_ms;
 
         // Update average duration
@@ -142,7 +142,7 @@ pub const ExportStats = struct {
     pub fn recordFailure(self: *ExportStats, items: u64) void {
         self.failure_count += 1;
         self.dropped_items += items;
-        self.last_export_time = std.time.milliTimestamp();
+        self.last_export_time = @as(i64, @intCast(@divFloor(std.Io.Timestamp.now(io, .real).nanoseconds, std.time.ns_per_ms)));
     }
 };
 

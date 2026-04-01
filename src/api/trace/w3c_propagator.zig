@@ -81,7 +81,6 @@ pub const W3cPropagator = struct {
         // Parse the traceparent header
         const span_context = parseTraceparent(traceparent_header) catch |err| switch (err) {
             error.InvalidTraceparent => return try ctx_builder.finish(allocator), // Return original context on parse failure
-            else => return err,
         };
 
         // Extract tracestate if present

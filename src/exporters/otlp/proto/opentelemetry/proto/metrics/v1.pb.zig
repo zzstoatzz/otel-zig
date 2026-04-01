@@ -73,7 +73,7 @@ pub const MetricsData = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json
@@ -148,7 +148,7 @@ pub const ResourceMetrics = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json
@@ -223,7 +223,7 @@ pub const ScopeMetrics = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json
@@ -324,7 +324,7 @@ pub const Metric = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json
@@ -395,7 +395,7 @@ pub const Gauge = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json
@@ -470,7 +470,7 @@ pub const Sum = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json
@@ -543,7 +543,7 @@ pub const Histogram = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json
@@ -616,7 +616,7 @@ pub const ExponentialHistogram = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json
@@ -687,7 +687,7 @@ pub const Summary = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json
@@ -781,7 +781,7 @@ pub const NumberDataPoint = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json
@@ -872,7 +872,7 @@ pub const HistogramDataPoint = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json
@@ -978,7 +978,7 @@ pub const ExponentialHistogramDataPoint = struct {
             options: std.json.Stringify.Options,
             allocator: std.mem.Allocator,
         ) ![]const u8 {
-            return protobuf.json.encode(self, options, allocator);
+            return protobuf.json.encode(self, options, .{}, allocator);
         }
 
         /// This method is used by std.json
@@ -1042,7 +1042,7 @@ pub const ExponentialHistogramDataPoint = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json
@@ -1134,7 +1134,7 @@ pub const SummaryDataPoint = struct {
             options: std.json.Stringify.Options,
             allocator: std.mem.Allocator,
         ) ![]const u8 {
-            return protobuf.json.encode(self, options, allocator);
+            return protobuf.json.encode(self, options, .{}, allocator);
         }
 
         /// This method is used by std.json
@@ -1198,7 +1198,7 @@ pub const SummaryDataPoint = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json
@@ -1290,7 +1290,7 @@ pub const Exemplar = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json

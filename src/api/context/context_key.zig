@@ -364,10 +364,7 @@ test "ContextKey formatting" {
     const TestKey = ContextKey([]const u8, "debug.test");
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try std.fmt.format(fbs.writer(), "{f}", .{TestKey{}});
-
-    const result = fbs.getWritten();
+    const result = try std.fmt.bufPrint(&buf, "{f}", .{TestKey{}});
     try testing.expect(std.mem.indexOf(u8, result, "debug.test") != null);
     try testing.expect(std.mem.indexOf(u8, result, "[]const u8") != null);
     try testing.expect(std.mem.indexOf(u8, result, "ContextKey{") != null);

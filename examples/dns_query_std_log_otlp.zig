@@ -8,6 +8,7 @@ const std = @import("std");
 const otel_api = @import("otel-api");
 const otel_sdk = @import("otel-sdk");
 const otel_exporters = @import("otel-exporters");
+const io = std.Options.debug_io;
 
 // Configure std.log to use OpenTelemetry bridge
 pub const std_options: std.Options = .{
@@ -16,7 +17,7 @@ pub const std_options: std.Options = .{
 };
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -55,7 +56,7 @@ pub fn main() !void {
     std.log.info("DNS Query Example application shutting down", .{});
 
     // Give OTLP exporter time to flush
-    std.Thread.sleep(1 * std.time.ns_per_s);
+    io.sleep(.{ .nanoseconds = 1 * std.time.ns_per_s }, .real) catch {};
 }
 
 fn performDnsQuery(allocator: std.mem.Allocator) !void {

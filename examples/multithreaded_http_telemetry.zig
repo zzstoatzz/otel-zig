@@ -28,6 +28,7 @@ const otel_sdk = @import("otel-sdk");
 const otel_exporters = @import("otel-exporters");
 const otel_semconv = @import("otel-semconv");
 
+const io = std.Options.debug_io;
 const print = std.debug.print;
 const Thread = std.Thread;
 const Allocator = std.mem.Allocator;
@@ -67,7 +68,7 @@ const SharedState = struct {
             .should_stop = std.atomic.Value(bool).init(false),
             .server_address = "127.0.0.1",
             .server_port = port,
-            .start_time_ns = std.time.nanoTimestamp(),
+            .start_time_ns = std.Io.Timestamp.now(io, .real).nanoseconds,
             .error_count = std.atomic.Value(u32).init(0),
         };
     }
@@ -81,7 +82,7 @@ const SharedState = struct {
     }
 
     pub fn getUptimeNs(self: *Self) i128 {
-        return std.time.nanoTimestamp() - self.start_time_ns;
+        return std.Io.Timestamp.now(io, .real).nanoseconds - self.start_time_ns;
     }
 
     pub fn incrementErrorCount(self: *Self) void {
@@ -218,16 +219,18 @@ fn numberReaderThread(shared_state: *SharedState, config: Config) !void {
         null, // event_name
     );
 
-    const start_time = std.time.milliTimestamp();
+    const start_time = @as(i64, @intCast(@divFloor(std.Io.Timestamp.now(io, .real).nanoseconds, std.time.ns_per_ms)));
     var iteration: u32 = 0;
     var previous_span_context: ?otel_api.trace.Span.Context = null;
 
-    while (!shared_state.shouldStop() and (std.time.milliTimestamp() - start_time) < (@as(i64, config.duration_seconds) * 1000)) {
+    while (!shared_state.shouldStop() and (@as(i64, @intCast(@divFloor(std.Io.Timestamp.now(io, .real).nanoseconds, std.time.ns_per_ms))) - start_time) < (@as(i64, config.duration_seconds) * 1000)) {
         iteration += 1;
 
         // Generate two random 16-bit numbers
-        const num1: u16 = std.crypto.random.int(u16);
-        const num2: u16 = std.crypto.random.int(u16);
+        var rand_buf: [4]u8 = undefined;
+        io.random(&rand_buf);
+        const num1: u16 = std.mem.readInt(u16, rand_buf[0..2], .little);
+        const num2: u16 = std.mem.readInt(u16, rand_buf[2..4], .little);
 
         // Record metrics - these will be processed by multiple views
         const ctx = &[_]otel_api.context.ContextKeyValue{};
@@ -272,7 +275,7 @@ fn numberReaderThread(shared_state: *SharedState, config: Config) !void {
         // Add event to mark number generation and link status
         try root_span.addEvent(.{
             .name = "numbers_generated",
-            .timestamp_ns = @intCast(std.time.nanoTimestamp()),
+            .timestamp_ns = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds),
             .attributes = &[_]otel_api.common.AttributeKeyValue{
                 .{ .key = "num1", .value = .{ .int = @intCast(num1) } },
                 .{ .key = "num2", .value = .{ .int = @intCast(num2) } },
@@ -310,7 +313,7 @@ fn numberReaderThread(shared_state: *SharedState, config: Config) !void {
         // Add event for request start
         try http_span.addEvent(.{
             .name = "request.start",
-            .timestamp_ns = @intCast(std.time.nanoTimestamp()),
+            .timestamp_ns = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds),
             .attributes = &[_]otel_api.common.AttributeKeyValue{
                 .{ .key = otel_semconv.trace.HTTP_TARGET, .value = .{ .string = url } },
             },
@@ -339,7 +342,7 @@ fn numberReaderThread(shared_state: *SharedState, config: Config) !void {
         // Add response event (status code will be set by server processing)
         try http_span.addEvent(.{
             .name = "response.received",
-            .timestamp_ns = @intCast(std.time.nanoTimestamp()),
+            .timestamp_ns = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds),
             .attributes = &[_]otel_api.common.AttributeKeyValue{
                 .{ .key = otel_semconv.trace.HTTP_STATUS_CODE, .value = .{ .int = @intCast(http_context.status_code) } },
                 .{ .key = "response.result", .value = .{ .int = @intCast(http_context.result) } },
@@ -355,7 +358,7 @@ fn numberReaderThread(shared_state: *SharedState, config: Config) !void {
             // Add error event
             try http_span.addEvent(.{
                 .name = "error",
-                .timestamp_ns = @intCast(std.time.nanoTimestamp()),
+                .timestamp_ns = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds),
                 .attributes = &[_]otel_api.common.AttributeKeyValue{
                     .{ .key = otel_semconv.exception.EXCEPTION_TYPE, .value = .{ .string = "server_error" } },
                     .{ .key = otel_semconv.exception.EXCEPTION_MESSAGE, .value = .{ .string = "Server returned 500: multiplication overflow" } },
@@ -551,7 +554,7 @@ fn httpServerThread(shared_state: *SharedState, config: Config) !void {
         // Set a timeout for accept to periodically check shouldStop
         const connection = server.accept() catch |err| switch (err) {
             error.WouldBlock => {
-                std.Thread.sleep(std.time.ns_per_ms * 10);
+                io.sleep(.{ .nanoseconds = std.time.ns_per_ms * 10 }, .real) catch {};
                 continue;
             },
             else => {
@@ -760,9 +763,9 @@ fn printUsage() void {
     print("\n", .{});
 }
 
-fn parseArgs(allocator: Allocator) !Config {
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+fn parseArgs(args_init: std.process.Args) !Config {
+    var iter = std.process.Args.Iterator.init(args_init);
+    defer iter.deinit();
 
     var config = Config{
         .exporter_type = .console, // Default to console
@@ -770,54 +773,50 @@ fn parseArgs(allocator: Allocator) !Config {
         .sampling_ratio = 1.0, // Default to 100% sampling
     };
 
-    if (args.len > 4) {
-        print("❌ Error: Too many arguments\n\n", .{});
-        printUsage();
-        std.process.exit(1);
-    }
-
-    // Handle help option
-    if (args.len >= 2 and (std.mem.eql(u8, args[1], "--help") or std.mem.eql(u8, args[1], "-h"))) {
-        printUsage();
-        std.process.exit(0);
-    }
+    // Skip program name
+    _ = iter.next();
 
     // Parse exporter type (first argument)
-    if (args.len >= 2) {
-        if (ExporterType.fromString(args[1])) |exporter_type| {
+    if (iter.next()) |arg1| {
+        if (std.mem.eql(u8, arg1, "--help") or std.mem.eql(u8, arg1, "-h")) {
+            printUsage();
+            std.process.exit(0);
+        }
+
+        if (ExporterType.fromString(arg1)) |exporter_type| {
             config.exporter_type = exporter_type;
         } else {
-            print("❌ Error: Invalid exporter type '{s}'. Use 'console' or 'otlp'\n\n", .{args[1]});
+            print("Error: Invalid exporter type '{s}'. Use 'console' or 'otlp'\n\n", .{arg1});
             printUsage();
             std.process.exit(1);
         }
     }
 
     // Parse duration (second argument)
-    if (args.len >= 3) {
-        config.duration_seconds = std.fmt.parseInt(u32, args[2], 10) catch {
-            print("❌ Error: Invalid duration '{s}'. Must be a positive integer\n\n", .{args[2]});
+    if (iter.next()) |arg2| {
+        config.duration_seconds = std.fmt.parseInt(u32, arg2, 10) catch {
+            print("Error: Invalid duration '{s}'. Must be a positive integer\n\n", .{arg2});
             printUsage();
             std.process.exit(1);
         };
 
         if (config.duration_seconds == 0) {
-            print("❌ Error: Duration must be greater than 0 seconds\n\n", .{});
+            print("Error: Duration must be greater than 0 seconds\n\n", .{});
             printUsage();
             std.process.exit(1);
         }
     }
 
     // Parse sampling ratio (third argument)
-    if (args.len >= 4) {
-        config.sampling_ratio = std.fmt.parseFloat(f64, args[3]) catch {
-            print("❌ Error: Invalid sampling ratio '{s}'. Must be a number between 0.0 and 1.0\n\n", .{args[3]});
+    if (iter.next()) |arg3| {
+        config.sampling_ratio = std.fmt.parseFloat(f64, arg3) catch {
+            print("Error: Invalid sampling ratio '{s}'. Must be a number between 0.0 and 1.0\n\n", .{arg3});
             printUsage();
             std.process.exit(1);
         };
 
         if (config.sampling_ratio < 0.0 or config.sampling_ratio > 1.0) {
-            print("❌ Error: Sampling ratio must be between 0.0 and 1.0, got {d}\n\n", .{config.sampling_ratio});
+            print("Error: Sampling ratio must be between 0.0 and 1.0, got {d}\n\n", .{config.sampling_ratio});
             printUsage();
             std.process.exit(1);
         }
@@ -826,13 +825,13 @@ fn parseArgs(allocator: Allocator) !Config {
     return config;
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+pub fn main(init: std.process.Init.Minimal) !void {
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
     // Parse command-line arguments
-    const config = try parseArgs(allocator);
+    const config = try parseArgs(init.args);
 
     print("🚀 Starting Comprehensive Multi-threaded OpenTelemetry Example\n", .{});
     print("=" ** 70 ++ "\n", .{});
@@ -896,8 +895,8 @@ pub fn main() !void {
     const metric_provider = switch (config.exporter_type) {
         .console => blk: {
             var stderr_buffer2 = [_]u8{0} ** 1024;
-            const stderr_fh2 = std.fs.File.stderr();
-            var stderr2 = stderr_fh2.writer(&stderr_buffer2);
+            const stderr_fh2 = std.Io.File.stderr();
+            var stderr2 = stderr_fh2.writer(io, &stderr_buffer2);
             break :blk try setupCustomMetricProvider(
                 allocator,
                 .{otel_sdk.metrics.PeriodicReader.PipelineStep.init(5000) // Export metrics every 5 seconds
@@ -921,8 +920,8 @@ pub fn main() !void {
     const trace_provider = switch (config.exporter_type) {
         .console => blk: {
             var stderr_buffer3 = [_]u8{0} ** 1024;
-            const stderr_fh3 = std.fs.File.stderr();
-            var stderr3 = stderr_fh3.writer(&stderr_buffer3);
+            const stderr_fh3 = std.Io.File.stderr();
+            var stderr3 = stderr_fh3.writer(io, &stderr_buffer3);
             break :blk try setupCustomTraceProvider(
                 allocator,
                 config.sampling_ratio,
@@ -1034,7 +1033,7 @@ pub fn main() !void {
 
 fn processHttpRequest(ctx: []otel_api.ContextKeyValue, http_context: *HttpContext, logger: *otel_api.logs.Logger, allocator: std.mem.Allocator) void {
     // Create HTTP client
-    var http_client = std.http.Client{ .allocator = allocator };
+    var http_client = std.http.Client{ .allocator = allocator, .io = io };
     defer http_client.deinit();
 
     // Build URL for the request

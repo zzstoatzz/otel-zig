@@ -84,7 +84,7 @@ pub const AnyValue = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json
@@ -155,7 +155,7 @@ pub const ArrayValue = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json
@@ -226,7 +226,7 @@ pub const KeyValueList = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json
@@ -299,7 +299,7 @@ pub const KeyValue = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json
@@ -376,7 +376,7 @@ pub const InstrumentationScope = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json
@@ -453,7 +453,7 @@ pub const EntityRef = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json

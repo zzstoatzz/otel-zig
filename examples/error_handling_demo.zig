@@ -14,6 +14,7 @@
 //!   zig build -Doptimize=Debug
 
 const std = @import("std");
+const io = std.Options.debug_io;
 const otel_api = @import("otel-api");
 const otel_sdk = @import("otel-sdk");
 const otel_exporters = @import("otel-exporters");
@@ -152,7 +153,7 @@ fn handleGenericError(info: otel_api.common.ErrorInfo) void {
 }
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -335,14 +336,14 @@ fn measurePerformanceImpact(allocator: std.mem.Allocator) !void {
     std.debug.print("Running {} setAttribute operations...\n", .{iterations});
 
     // Measure setAttribute performance
-    const start_time = std.time.nanoTimestamp();
+    const start_time = std.Io.Timestamp.now(io, .real).nanoseconds;
 
     for (0..iterations) |i| {
         const key = if (i % 100 == 0) "" else "test.key"; // 1% invalid keys
         span.setAttribute(.{ .key = key, .value = .{ .int = @intCast(i) } });
     }
 
-    const end_time = std.time.nanoTimestamp();
+    const end_time = std.Io.Timestamp.now(io, .real).nanoseconds;
     const duration_ns = end_time - start_time;
     const ns_per_op = @divTrunc(duration_ns, iterations);
 

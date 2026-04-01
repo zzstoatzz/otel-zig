@@ -4,7 +4,7 @@
 //! These aggregations handle the collection and computation of metric data points.
 
 const std = @import("std");
-
+const io = std.Options.debug_io;
 const InstrumentType = @import("metadata.zig").InstrumentType;
 
 /// Aggregation union type that supports all aggregation variants
@@ -73,7 +73,7 @@ pub fn SumAggregation(comptime T: type) type {
         pub fn init() @This() {
             return .{
                 .value = .init(0),
-                .start_timestamp_ns = @intCast(std.time.nanoTimestamp()),
+                .start_timestamp_ns = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds),
             };
         }
 
@@ -114,7 +114,7 @@ pub fn SumAggregation(comptime T: type) type {
 
         pub fn reset(self: *@This()) void {
             self.value.store(0, .monotonic);
-            self.start_timestamp_ns = @intCast(std.time.nanoTimestamp());
+            self.start_timestamp_ns = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds);
         }
     };
 }
@@ -176,7 +176,7 @@ pub fn HistogramAggregation(comptime T: type) type {
             return .{
                 .boundaries = config.boundaries,
                 .counts = counts,
-                .start_timestamp_ns = @intCast(std.time.nanoTimestamp()),
+                .start_timestamp_ns = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds),
                 .record_min_max = config.record_min_max,
             };
         }
@@ -306,7 +306,7 @@ pub fn HistogramAggregation(comptime T: type) type {
             self.count.store(0, .monotonic);
             self.min.store(0, .monotonic);
             self.max.store(0, .monotonic);
-            self.start_timestamp_ns = @intCast(std.time.nanoTimestamp());
+            self.start_timestamp_ns = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds);
         }
     };
 }
@@ -346,7 +346,7 @@ test "SumAggregation" {
     try testing.expectEqual(sum.getValue(), 30);
     try testing.expectEqual(sum.getStartTime(), sum.start_timestamp_ns);
     const old_ts = sum.getStartTime();
-    std.Thread.sleep(1000);
+    io.sleep(.{ .nanoseconds = 1000 }, .real) catch {};
 
     sum.reset();
     try testing.expectEqual(sum.getValue(), 0);
@@ -453,7 +453,7 @@ test "HistogramAggregation" {
     try testing.expectEqual(counts[2].load(.monotonic), 1);
     try testing.expectEqual(counts[3].load(.monotonic), 1);
     const old_ts = histogram.getStartTime();
-    std.Thread.sleep(1000);
+    io.sleep(.{ .nanoseconds = 1000 }, .real) catch {};
 
     histogram.reset();
     try testing.expectEqual(histogram.getSum(), 0);

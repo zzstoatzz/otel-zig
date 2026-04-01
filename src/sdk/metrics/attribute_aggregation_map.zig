@@ -4,7 +4,7 @@
 //! cardinality limits and overflow handling as per OpenTelemetry specification.
 
 const std = @import("std");
-const api = @import("otel-api");
+const io = std.Options.debug_io;const api = @import("otel-api");
 
 const sdk = struct {
     const MetricMetadata = @import("metadata.zig").MetricMetadata;
@@ -44,7 +44,7 @@ pub const AttributeAggregationMap = struct {
     allocator: std.mem.Allocator,
 
     // Lock to prevent map corruption
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
 
     /// Initialize the attribute aggregation map
     pub fn init(allocator: std.mem.Allocator) !AttributeAggregationMap {
@@ -72,14 +72,14 @@ pub const AttributeAggregationMap = struct {
                     },
                 },
             },
-            .mutex = .{},
+            .mutex = std.Io.Mutex.init,
         };
     }
 
     /// Clean up all resources
     pub fn deinit(self: *AttributeAggregationMap) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         // Clean up aggregation entries that need allocator cleanup
         for (0..self.next_free.load(.monotonic)) |i| {
@@ -102,8 +102,8 @@ pub const AttributeAggregationMap = struct {
         // This key is overkill, but designed for future expansion.
         const combined_hash = (@as(u128, metadata_hash) << 64) | attr_hash;
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         // Check if aggregation entry already exists
         if (self.aggregations.get(combined_hash)) |entry| {
@@ -203,8 +203,8 @@ pub const AttributeAggregationMap = struct {
         allocator: std.mem.Allocator,
         entry_list: *std.ArrayList(AttributeAggregationEntry),
     ) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         // append the points to the snapshot.
         const next_free = self.next_free.load(.monotonic);

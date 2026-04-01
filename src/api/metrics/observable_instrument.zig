@@ -267,7 +267,7 @@ pub fn AsyncInstrumentBridge(comptime T: type) type {
 
 test "ObservableResult basic functionality" {
     const testing = std.testing;
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 

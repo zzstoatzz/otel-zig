@@ -1,5 +1,5 @@
 const std = @import("std");
-const api = @import("otel-api");
+const io = std.Options.debug_io;const api = @import("otel-api");
 
 const sdk = struct {
     const MetricData = @import("data.zig").MetricData;
@@ -125,7 +125,7 @@ pub const MockMetricExporter = struct {
     export_result: api.common.ExportResult,
     flush_result: api.common.ExportResult,
     shutdown_result: api.common.ExportResult,
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
 
     pub fn init(allocator: std.mem.Allocator) MockMetricExporter {
         return .{
@@ -135,7 +135,7 @@ pub const MockMetricExporter = struct {
             .export_result = .success,
             .flush_result = .success,
             .shutdown_result = .success,
-            .mutex = .{},
+            .mutex = std.Io.Mutex.init,
         };
     }
 
@@ -159,8 +159,8 @@ pub const MockMetricExporter = struct {
     pub fn exportMetrics(self: *MockMetricExporter, metrics: []const sdk.MetricData) api.common.ExportResult {
         _ = self.export_count.fetchAdd(1, .acq_rel);
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         for (metrics) |metric| {
             self.internalExportMetric(metric) catch return .failure;
@@ -218,15 +218,15 @@ pub const MockMetricExporter = struct {
 
     // Test helpers
     pub fn clearMetrics(self: *MockMetricExporter) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         self.exported_metrics.clearRetainingCapacity();
     }
 
     pub fn metricCount(self: *MockMetricExporter) usize {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         return self.exported_metrics.items.len;
     }
@@ -240,8 +240,8 @@ pub const MockMetricExporter = struct {
     }
 
     pub fn getMetric(self: *MockMetricExporter, index: usize) ?sdk.MetricData {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         if (index >= self.exported_metrics.items.len) return null;
         return self.exported_metrics.items[index];
@@ -250,8 +250,8 @@ pub const MockMetricExporter = struct {
     /// Get metrics matching the provided name, writing them into the provided buffer.
     /// Returns a slice of the buffer containing the matching metrics.
     pub fn getMetricsNamed(self: *MockMetricExporter, buffer: []sdk.MetricData, name: []const u8) []sdk.MetricData {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         var count: usize = 0;
         for (self.exported_metrics.items) |metric| {

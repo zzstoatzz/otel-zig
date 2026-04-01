@@ -94,13 +94,12 @@ pub const ProcessDetector = struct {
                 const pid = std.c.getpid();
                 attrs = attrs.add(.{ .key = "process.pid", .value = .{ .int = @intCast(pid) } });
 
-                // Let the arena allocator clean up the memory.
-                var size: u32 = std.fs.max_path_bytes;
-                // const buf = try arena.allocator().alloc(u8, size);
-                const buf = try arena.allocator().allocSentinel(u8, size, 0);
+                // Use a stack buffer like the stdlib does.
+                var buf: [std.fs.max_path_bytes + 1]u8 = undefined;
+                var size: u32 = buf.len;
 
-                if (std.c._NSGetExecutablePath(buf, &size) == 0) {
-                    const path = std.mem.sliceTo(buf, 0);
+                if (std.c._NSGetExecutablePath(&buf, &size) == 0) {
+                    const path = std.mem.sliceTo(&buf, 0);
                     const basename = std.fs.path.basename(path);
                     attrs = attrs.add(.{ .key = "process.executable.path", .value = .{ .string = path } });
                     attrs = attrs.add(.{ .key = "process.executable.name", .value = .{ .string = basename } });
@@ -109,12 +108,8 @@ pub const ProcessDetector = struct {
             else => @compileError("unsupported OS."),
         }
 
-        // Command line args (if available)
-        if (std.process.argsAlloc(arena.allocator())) |args| {
-            if (args.len > 0) {
-                attrs = attrs.add(.{ .key = "process.command", .value = .{ .string = args[0] } });
-            }
-        } else |_| {}
+        // Command line args: in zig 0.16, process args require Init param
+        // which is not available in resource detectors. Skip for now.
 
         return try sdk.Resource.initOwnedFromBuilder(allocator, null, &attrs);
     }
@@ -184,7 +179,8 @@ pub const EnvironmentDetector = struct {
         var attrs = AttributeBuilder.init(arena.allocator());
 
         // Check OTEL_RESOURCE_ATTRIBUTES
-        if (std.process.getEnvVarOwned(arena.allocator(), "OTEL_RESOURCE_ATTRIBUTES")) |env_attrs| {
+        if (std.c.getenv("OTEL_RESOURCE_ATTRIBUTES")) |p| {
+            const env_attrs = std.mem.span(p);
 
             // Parse key=value pairs separated by commas
             var iter = std.mem.tokenizeScalar(u8, env_attrs, ',');
@@ -196,12 +192,12 @@ pub const EnvironmentDetector = struct {
                     attrs = attrs.add(.{ .key = key, .value = .{ .string = value } });
                 }
             }
-        } else |_| {}
+        }
 
         // Check OTEL_SERVICE_NAME
-        if (std.process.getEnvVarOwned(arena.allocator(), "OTEL_SERVICE_NAME")) |service_name| {
-            attrs = attrs.add(.{ .key = "service.name", .value = .{ .string = service_name } });
-        } else |_| {}
+        if (std.c.getenv("OTEL_SERVICE_NAME")) |p| {
+            attrs = attrs.add(.{ .key = "service.name", .value = .{ .string = std.mem.span(p) } });
+        }
 
         return try sdk.Resource.initOwnedFromBuilder(allocator, null, &attrs);
     }

@@ -7,6 +7,7 @@ const std = @import("std");
 const otel_api = @import("otel-api");
 const otel_sdk = @import("otel-sdk");
 const otel_exporters = @import("otel-exporters");
+const io = std.Options.debug_io;
 
 // Custom exporter to track flush and export calls
 const TrackingExporter = struct {
@@ -58,14 +59,14 @@ const TrackingExporter = struct {
         _ = resource;
         _ = self.export_count.fetchAdd(1, .monotonic);
         _ = global_export_count.fetchAdd(1, .monotonic);
-        const current_time = std.time.milliTimestamp();
+        const current_time = @as(i64, @intCast(@divFloor(std.Io.Timestamp.now(io, .real).nanoseconds, std.time.ns_per_ms)));
         self.last_export_time.store(current_time, .release);
         global_last_export_time.store(current_time, .release);
 
         std.debug.print("[EXPORTER] Exporting {} spans at time {}\n", .{ spans.len, current_time });
 
         // Simulate some export work
-        std.Thread.sleep(50 * std.time.ns_per_ms);
+        io.sleep(.{ .nanoseconds = 50 * std.time.ns_per_ms }, .real) catch {};
         return .success;
     }
 
@@ -73,7 +74,7 @@ const TrackingExporter = struct {
         _ = timeout_ms;
         _ = self.flush_count.fetchAdd(1, .monotonic);
         _ = global_flush_count.fetchAdd(1, .monotonic);
-        const current_time = std.time.milliTimestamp();
+        const current_time = @as(i64, @intCast(@divFloor(std.Io.Timestamp.now(io, .real).nanoseconds, std.time.ns_per_ms)));
         self.last_flush_time.store(current_time, .release);
         global_last_flush_time.store(current_time, .release);
 
@@ -94,7 +95,7 @@ const TrackingExporter = struct {
 };
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -117,7 +118,7 @@ pub fn main() !void {
     const scope = otel_api.InstrumentationScope{ .name = "force_flush_test", .version = "1.0.0" };
     var tracer = try otel_api.getGlobalTracerProvider().getTracerWithScope(scope);
 
-    const start_time = std.time.milliTimestamp();
+    const start_time = @as(i64, @intCast(@divFloor(std.Io.Timestamp.now(io, .real).nanoseconds, std.time.ns_per_ms)));
 
     // Create some spans
     std.debug.print("Creating spans...\n", .{});
@@ -130,17 +131,17 @@ pub fn main() !void {
         span.end(null);
         span.deinit();
         std.debug.print("  Created span {}\n", .{i});
-        std.Thread.sleep(100 * std.time.ns_per_ms);
+        io.sleep(.{ .nanoseconds = 100 * std.time.ns_per_ms }, .real) catch {};
     }
 
-    const after_spans_time = std.time.milliTimestamp();
+    const after_spans_time = @as(i64, @intCast(@divFloor(std.Io.Timestamp.now(io, .real).nanoseconds, std.time.ns_per_ms)));
     std.debug.print("\nTime after creating spans: {} ms from start\n", .{after_spans_time - start_time});
 
     // Test 1: Force flush should trigger immediate export
     std.debug.print("\n[TEST 1] Calling forceFlush - should trigger immediate export\n", .{});
-    const flush_start = std.time.milliTimestamp();
+    const flush_start = @as(i64, @intCast(@divFloor(std.Io.Timestamp.now(io, .real).nanoseconds, std.time.ns_per_ms)));
     const flush_result = concrete_provider.forceFlush(2000);
-    const flush_end = std.time.milliTimestamp();
+    const flush_end = @as(i64, @intCast(@divFloor(std.Io.Timestamp.now(io, .real).nanoseconds, std.time.ns_per_ms)));
 
     std.debug.print("ForceFlush result: {}\n", .{flush_result});
     std.debug.print("ForceFlush took {} ms\n", .{flush_end - flush_start});
@@ -185,7 +186,7 @@ pub fn main() !void {
     const thread = try std.Thread.spawn(.{}, FlushThread.run, .{concrete_provider});
 
     // Give thread time to start
-    std.Thread.sleep(10 * std.time.ns_per_ms);
+    io.sleep(.{ .nanoseconds = 10 * std.time.ns_per_ms }, .real) catch {};
 
     // Try to flush from main thread too
     std.debug.print("  [Main] Starting flush...\n", .{});
@@ -213,7 +214,7 @@ pub fn main() !void {
     std.debug.print("Flush with 1ms timeout result: {}\n", .{timeout_result});
 
     // Give time for background export to complete
-    std.Thread.sleep(200 * std.time.ns_per_ms);
+    io.sleep(.{ .nanoseconds = 200 * std.time.ns_per_ms }, .real) catch {};
 
     // Final stats
     std.debug.print("\n=== Final Statistics ===\n", .{});

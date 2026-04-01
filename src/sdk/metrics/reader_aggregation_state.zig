@@ -4,7 +4,7 @@
 //! to maintain independent aggregation states for the same instruments.
 
 const std = @import("std");
-const api = @import("otel-api");
+const io = std.Options.debug_io;const api = @import("otel-api");
 
 const sdk = struct {
     const AttributeAggregationMap = @import("attribute_aggregation_map.zig").AttributeAggregationMap;
@@ -38,7 +38,7 @@ pub const ReaderAggregationState = struct {
     // Phase 1b: Attribute-based aggregation map with cardinality limits
     aggregations: sdk.AttributeAggregationMap,
     allocator: std.mem.Allocator,
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
 
     // Reader's configured temporality
     temporality: AggregationTemporality,
@@ -58,17 +58,17 @@ pub const ReaderAggregationState = struct {
         return .{
             .aggregations = try sdk.AttributeAggregationMap.init(allocator),
             .allocator = allocator,
-            .mutex = .{},
+            .mutex = std.Io.Mutex.init,
             .temporality = temporality,
             .aggregation_selector = aggregation_selector,
-            .last_collection_time_ns = @intCast(std.time.nanoTimestamp()),
+            .last_collection_time_ns = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds),
         };
     }
 
     /// Clean up all aggregations and resources
     pub fn deinit(self: *@This()) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         // Clean up the attribute aggregation map
         self.aggregations.deinit();
@@ -84,8 +84,8 @@ pub const ReaderAggregationState = struct {
     ) void {
         // Lock only for map access
         const agg = blk: {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(io);
+            defer self.mutex.unlock(io);
             // Get or create aggregation for this instrument + attribute combination
             break :blk self.aggregations.getOrCreateAggregation(attributes, metadata, metadata_hash, value);
         };
@@ -115,7 +115,7 @@ pub const ReaderAggregationState = struct {
         var metrics_list = std.ArrayList(sdk.MetricData).empty;
         errdefer metrics_list.deinit(allocator);
 
-        const current_timestamp = @as(u64, @intCast(std.time.nanoTimestamp()));
+        const current_timestamp = @as(u64, @intCast(std.Io.Timestamp.now(io, .real).nanoseconds));
 
         // Process aggregation entries lock-free (atomic reads)
         for (entry_list.items) |*entry| {

@@ -62,7 +62,7 @@ pub const Resource = struct {
         options: std.json.Stringify.Options,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
-        return protobuf.json.encode(self, options, allocator);
+        return protobuf.json.encode(self, options, .{}, allocator);
     }
 
     /// This method is used by std.json

@@ -1,6 +1,6 @@
 //! SpanDataSink that writes the log records to a configured *std.Io.Writer.
 const std = @import("std");
-const api = @import("otel-api");
+const io = std.Options.debug_io;const api = @import("otel-api");
 const sdk = @import("otel-sdk");
 
 const exporters = struct {
@@ -22,7 +22,7 @@ pub const PipelineStep = sdk.common.PipelineStepInstructions(
 allocator: std.mem.Allocator,
 config: exporters.stream.SinkConfig,
 is_shutdown: std.atomic.Value(bool),
-mutex: std.Thread.Mutex,
+mutex: std.Io.Mutex,
 
 pub fn _init(self: *SpanDataSink, config: exporters.stream.SinkConfig, allocator: std.mem.Allocator) !void {
     self.* = init(allocator, config);
@@ -33,7 +33,7 @@ pub fn init(allocator: std.mem.Allocator, config: exporters.stream.SinkConfig) S
         .allocator = allocator,
         .config = config,
         .is_shutdown = .init(false),
-        .mutex = .{},
+        .mutex = std.Io.Mutex.init,
     };
 }
 pub fn deinit(_: *SpanDataSink) void {}
@@ -48,8 +48,8 @@ pub fn exportSpans(
 ) api.common.ExportResult {
     if (self.is_shutdown.load(.monotonic)) return .success;
 
-    self.mutex.lock();
-    defer self.mutex.unlock();
+    self.mutex.lockUncancelable(io);
+    defer self.mutex.unlock(io);
 
     var result = api.common.ExportResult.success;
     for (spans) |span| {
@@ -73,8 +73,8 @@ pub fn exportSpans(
 pub fn forceFlush(self: *SpanDataSink, timeout_ms: ?u64) api.common.ExportResult {
     _ = timeout_ms;
 
-    self.mutex.lock();
-    defer self.mutex.unlock();
+    self.mutex.lockUncancelable(io);
+    defer self.mutex.unlock(io);
 
     self.config.writer.flush() catch return .failure;
     return .success;
@@ -90,7 +90,7 @@ pub fn spanExporter(self: *SpanDataSink) sdk.trace.SpanExporter {
 }
 
 fn outputSpanData(resource: sdk.resource.Resource, cfg: exporters.stream.SinkConfig, span: sdk.trace.SpanData) !void {
-    const timestamp_ns: i64 = @intCast(std.time.nanoTimestamp());
+    const timestamp_ns: i64 = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds);
     if (cfg.include_timestamp) {
         // Convert nanoseconds to seconds for display
         const timestamp_s = @divTrunc(timestamp_ns, 1_000_000_000);

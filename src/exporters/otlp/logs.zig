@@ -1,5 +1,5 @@
 const std = @import("std");
-const api = @import("otel-api");
+const io = std.Options.debug_io;const api = @import("otel-api");
 const sdk = @import("otel-sdk");
 const protobuf = @import("protobuf");
 
@@ -30,7 +30,7 @@ pub const OtlpLogExporter = struct {
     config: OtlpExporterConfig,
     allocator: std.mem.Allocator,
     is_shutdown: bool,
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
 
     pub fn _init(self: *OtlpLogExporter, config: OtlpExporterConfig, allocator: std.mem.Allocator) !void {
         self.* = init(allocator, config);
@@ -41,7 +41,7 @@ pub const OtlpLogExporter = struct {
             .config = config,
             .allocator = allocator,
             .is_shutdown = false,
-            .mutex = .{},
+            .mutex = std.Io.Mutex.init,
         };
     }
 
@@ -54,8 +54,8 @@ pub const OtlpLogExporter = struct {
     }
 
     pub fn exportRecords(self: *OtlpLogExporter, records: []const LogRecord, resource: Resource) ExportResult {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         if (self.is_shutdown) {
             return .failure;
@@ -100,8 +100,8 @@ pub const OtlpLogExporter = struct {
 
     pub fn forceFlush(self: *OtlpLogExporter, timeout_ms: ?u64) ExportResult {
         _ = timeout_ms;
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         // No-op for OTLP exporter
         return .success;
@@ -109,8 +109,8 @@ pub const OtlpLogExporter = struct {
 
     pub fn shutdown(self: *OtlpLogExporter, timeout_ms: ?u64) ExportResult {
         _ = timeout_ms;
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         if (self.is_shutdown) {
             return .failure;
@@ -122,7 +122,7 @@ pub const OtlpLogExporter = struct {
 
     fn sendRequest(self: *OtlpLogExporter, allocator: std.mem.Allocator, data: []const u8) !ExportResult {
         // Create stack-based HTTP client
-        var client = std.http.Client{ .allocator = self.allocator };
+        var client = std.http.Client{ .allocator = self.allocator, .io = io };
         defer client.deinit();
 
         // Parse endpoint URL with detailed error context
@@ -207,7 +207,7 @@ pub const OtlpLogExporter = struct {
         var logs_data = try convertToProtoLogsData(allocator, records, resource);
 
         // Serialize to protobuf binary format
-        var proto_buffer = std.io.Writer.Allocating.init(allocator);
+        var proto_buffer = std.Io.Writer.Allocating.init(allocator);
         defer proto_buffer.deinit();
         try logs_data.encode(&proto_buffer.writer, allocator);
         return proto_buffer.toOwnedSlice();
@@ -261,7 +261,7 @@ fn convertToProtoLogsData(allocator: std.mem.Allocator, records: []const LogReco
 }
 
 fn convertLogRecordToProtobuf(allocator: std.mem.Allocator, record: LogRecord) !logs_v1.LogRecord {
-    const timestamp_ns = record.timestamp_ns orelse std.time.nanoTimestamp();
+    const timestamp_ns = record.timestamp_ns orelse std.Io.Timestamp.now(io, .real).nanoseconds;
     var pb_record = logs_v1.LogRecord{
         .time_unix_nano = @as(u64, @intCast(@max(0, timestamp_ns))),
         .observed_time_unix_nano = @as(u64, @intCast(@max(0, timestamp_ns))),
@@ -314,7 +314,7 @@ fn mapSeverityToProtobuf(severity: api.logs.Severity) logs_v1.SeverityNumber {
 
 test "OtlpLogExporter basic functionality" {
     const testing = std.testing;
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -349,7 +349,7 @@ test "OtlpLogExporter basic functionality" {
 
 test "OtlpLogExporter transport selection" {
     const testing = std.testing;
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -442,7 +442,7 @@ test "OtlpLogExporter severity mapping" {
 
 test "OtlpLogExporter protobuf format validation" {
     const testing = std.testing;
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 

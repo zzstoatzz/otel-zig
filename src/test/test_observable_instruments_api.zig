@@ -4,7 +4,7 @@
 //! including callback registration, type erasure, and ObservableResult interface.
 
 const std = @import("std");
-const testing = std.testing;
+const io = std.Options.debug_io;const testing = std.testing;
 const otel_api = @import("otel-api");
 
 const ObservableCounter = otel_api.metrics.ObservableCounter;
@@ -19,7 +19,7 @@ const createTypeErasedCallback = otel_api.metrics.createTypeErasedCallback;
 const AttributeKeyValue = otel_api.common.AttributeKeyValue;
 
 test "ObservableResult basic functionality" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -37,11 +37,11 @@ test "ObservableResult basic functionality" {
 }
 
 test "ObservableResult with attributes and timestamps" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const timestamp: i64 = @intCast(std.time.milliTimestamp());
+    const timestamp: i64 = @intCast(@as(i64, @intCast(@divFloor(std.Io.Timestamp.now(io, .real).nanoseconds, std.time.ns_per_ms))));
     var result = ObservableResult(f64).init(allocator, timestamp);
     defer result.deinit();
 
@@ -152,7 +152,7 @@ test "observable instrument compile-time type checking" {
 }
 
 test "observable result multiple observations" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -209,7 +209,7 @@ test "noop observable instruments callback registration" {
 }
 
 test "observable result empty measurements" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -220,7 +220,7 @@ test "observable result empty measurements" {
 }
 
 test "observable result with zero values" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -236,7 +236,7 @@ test "observable result with zero values" {
 }
 
 test "observable result with large values" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
