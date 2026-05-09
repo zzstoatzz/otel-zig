@@ -50,6 +50,7 @@ pub const BatchLogRecordProcessor = struct {
             .export_interval_ms = config.export_interval_ms orelse 5000,
             .max_queue_size = config.max_queue_size orelse 2048,
             .log_queue = .empty,
+            .resource = @import("../resource/resource.zig").Resource.empty,
         };
         try self.start();
     }
@@ -68,6 +69,13 @@ pub const BatchLogRecordProcessor = struct {
     export_interval_ms: u32,
     max_queue_size: usize,
     log_queue: std.ArrayList(sdk.LogRecord),
+    /// Resource captured from the LoggerProvider via `onEmit`. The OTEL spec
+    /// guarantees one resource per provider, so we store the most recently
+    /// seen value (cheap — just two pointers; ownership stays with the
+    /// provider). Without this the exporter receives `Resource.empty` and
+    /// records arrive at the collector without `service.name`, attributed
+    /// to `unknown_service`.
+    resource: sdk.Resource,
 
     /// Initialize a new batch log record processor
     /// export_interval_ms: How often to export log records (default: 5000ms = 5s)
@@ -98,6 +106,7 @@ pub const BatchLogRecordProcessor = struct {
             .export_interval_ms = export_interval_ms orelse 5000,
             .max_queue_size = max_queue_size orelse 2048,
             .log_queue = .empty,
+            .resource = @import("../resource/resource.zig").Resource.empty,
         };
 
         return self;
@@ -155,10 +164,15 @@ pub const BatchLogRecordProcessor = struct {
 
     pub fn onEmit(self: *BatchLogRecordProcessor, record: sdk.LogRecord, ctx: []const api.ContextKeyValue, resource: sdk.Resource) void {
         _ = ctx;
-        _ = resource;
 
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
+
+        // Capture the LoggerProvider's resource so it travels with the batch
+        // export. Each call from a given provider passes the same resource;
+        // we don't deep-copy because the provider owns the underlying
+        // attribute slice and outlives this processor.
+        self.resource = resource;
 
         if (self.is_shutdown.load(.acquire)) {
             return;
@@ -295,7 +309,7 @@ pub const BatchLogRecordProcessor = struct {
         // Export log records directly from queue
         // Temporarily release mutex for export
         self.mutex.unlock(io);
-        const result = self.exporter.exportRecords(self.log_queue.items, @import("../resource/resource.zig").Resource.empty);
+        const result = self.exporter.exportRecords(self.log_queue.items, self.resource);
         self.mutex.lockUncancelable(io);
 
         // Clean up exported records
