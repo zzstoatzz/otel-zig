@@ -160,6 +160,10 @@ pub const RecordingSpan = struct {
         self.tracer.provider.allocator.free(self.name);
         if (self.status.description) |desc| self.tracer.provider.allocator.free(desc);
         api.AttributeKeyValue.deinitOwnedSlice(self.tracer.provider.allocator, self.attributes);
+        for (self.events.items) |event| {
+            self.tracer.provider.allocator.free(event.name);
+            api.AttributeKeyValue.deinitOwnedSlice(self.tracer.provider.allocator, event.attributes);
+        }
         self.events.deinit(self.tracer.provider.allocator);
         self.links.deinit(self.tracer.provider.allocator);
         self.tracer.provider.allocator.destroy(self);
@@ -203,8 +207,25 @@ pub const RecordingSpan = struct {
     }
 
     pub fn addEvent(self: *RecordingSpan, event: api.trace.Span.Event) void {
-        // TODO: this should deep copy the event for memeory safety.
-        self.events.append(self.tracer.provider.allocator, event) catch {};
+        // Deep copy: the event must survive until end() exports it, but the
+        // caller's name/attributes may reference stack or soon-freed memory
+        // (recordException's merged attributes were exactly that — a
+        // use-after-free segfault at export time). Owned copies are freed in
+        // deinit(); SpanData.initOwned makes its own copy for the processor.
+        const allocator = self.tracer.provider.allocator;
+        const owned_name = allocator.dupe(u8, event.name) catch return;
+        const owned_attributes = api.AttributeKeyValue.initOwnedSlice(allocator, event.attributes) catch {
+            allocator.free(owned_name);
+            return;
+        };
+        self.events.append(allocator, .{
+            .timestamp_ns = event.timestamp_ns,
+            .name = owned_name,
+            .attributes = owned_attributes,
+        }) catch {
+            allocator.free(owned_name);
+            api.AttributeKeyValue.deinitOwnedSlice(allocator, owned_attributes);
+        };
     }
 
     pub fn addLink(self: *RecordingSpan, link: api.trace.Span.Link) anyerror!void {
@@ -249,19 +270,73 @@ pub const RecordingSpan = struct {
             .value = AttributeValue{ .string = @errorName(exception) },
         } };
 
-        const attrs_builder = api.AttributeBuilder.init(self.tracer.provider.allocator)
+        const allocator = self.tracer.provider.allocator;
+        const merged = try api.AttributeBuilder.init(allocator)
             .addMany(attributes orelse &.{})
-            .addMany(convention_attributes);
-        defer attrs_builder.deinit();
-
-        const exception_attrs: ?[]api.AttributeKeyValue = attrs_builder.build() catch null;
-        if (exception_attrs) |attrs| self.tracer.provider.allocator.free(attrs);
+            .addMany(convention_attributes)
+            .finish(allocator);
+        defer api.AttributeKeyValue.deinitOwnedSlice(allocator, merged);
 
         const default_ts: i64 = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds);
         self.addEvent(.{
             .name = "exception",
             .timestamp_ns = timestamp orelse default_ts,
-            .attributes = exception_attrs orelse convention_attributes,
+            .attributes = merged,
         });
     }
 };
+
+test "recordException deep-copies attributes that do not outlive the call" {
+    // regression: recordException used to free its merged attribute slice
+    // immediately and store the dangling pointer in the exception event
+    // (falling back to a stack-local on build failure). The exporter's deep
+    // copy at end() then read freed memory — a segfault on every recorded
+    // error whose span outlived the call.
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const TracerProvider = @import("tracer_provider.zig").TracerProvider;
+    const Resource = @import("../resource/resource.zig").Resource;
+    const createDefaultIdGenerator = @import("id_generator.zig").createDefaultIdGenerator;
+    const samplers = @import("samplers/root.zig");
+    const SpanProcessor = @import("processor.zig").SpanProcessor;
+
+    var provider_ptr = TracerProvider.init(
+        allocator,
+        Resource{ .attributes = &.{}, .schema_url = null },
+        createDefaultIdGenerator(),
+        samplers.always_on,
+    );
+    try provider_ptr.registerProcessor(SpanProcessor{ .noop = {} });
+    defer provider_ptr.deinit();
+
+    var tp = provider_ptr.tracerProvider();
+    const tracer = try tp.getTracerWithScope(.{
+        .name = "uaf-regression",
+        .version = null,
+        .schema_url = null,
+        .attributes = &.{},
+    });
+
+    var span = try tracer.startSpan("op", null, &.{});
+    defer span.deinit();
+
+    // the attribute value lives in caller memory that is mutated and freed
+    // right after the call — the span must have copied it by then
+    const transient = try allocator.dupe(u8, "request context detail");
+    try span.recordException(error.TestBoom, &[_]AttributeKeyValue{
+        .{ .key = "ctx", .value = .{ .string = transient } },
+    }, null);
+    @memset(transient, 'X');
+    allocator.free(transient);
+
+    span.end(null);
+
+    const rec: *RecordingSpan = @ptrCast(@alignCast(span.bridge.span_ptr));
+    try testing.expectEqual(@as(usize, 1), rec.events.items.len);
+    const ev = rec.events.items[0];
+    try testing.expectEqualStrings("exception", ev.name);
+    const ctx_attr = AttributeKeyValue.scanSlice(ev.attributes, "ctx") orelse return error.MissingAttribute;
+    try testing.expectEqualStrings("request context detail", ctx_attr.value.string);
+    const exc_type = AttributeKeyValue.scanSlice(ev.attributes, "exception.type") orelse return error.MissingAttribute;
+    try testing.expectEqualStrings("TestBoom", exc_type.value.string);
+}
