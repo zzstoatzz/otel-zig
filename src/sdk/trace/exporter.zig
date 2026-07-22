@@ -132,6 +132,7 @@ pub const MockSpanExporter = struct {
     export_result: ExportResult,
     flush_result: ExportResult,
     shutdown_result: ExportResult,
+    export_calls: std.atomic.Value(usize),
 
     pub fn init(allocator: std.mem.Allocator) MockSpanExporter {
         return .{
@@ -140,6 +141,7 @@ pub const MockSpanExporter = struct {
             .export_result = .success,
             .flush_result = .success,
             .shutdown_result = .success,
+            .export_calls = .init(0),
         };
     }
 
@@ -153,6 +155,7 @@ pub const MockSpanExporter = struct {
 
     pub fn exportSpans(self: *MockSpanExporter, spans: []const SpanData, resource: Resource) ExportResult {
         _ = resource;
+        _ = self.export_calls.fetchAdd(1, .monotonic);
         for (spans) |span| {
             // Store reference to span since the exporter needs to own the data
             self.exported_spans.append(self.allocator, span) catch return .failure;
@@ -181,6 +184,10 @@ pub const MockSpanExporter = struct {
 
     pub fn spanCount(self: *const MockSpanExporter) usize {
         return self.exported_spans.items.len;
+    }
+
+    pub fn exportCallCount(self: *const MockSpanExporter) usize {
+        return self.export_calls.load(.monotonic);
     }
 
     pub fn getSpan(self: *const MockSpanExporter, index: usize) ?SpanData {

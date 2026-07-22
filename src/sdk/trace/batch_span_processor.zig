@@ -9,7 +9,8 @@
 //! and exported in batches to improve performance.
 
 const std = @import("std");
-const io = std.Options.debug_io;const otel_api = @import("otel-api");
+const io = std.Options.debug_io;
+const otel_api = @import("otel-api");
 const sdk = struct {
     const Resource = @import("../resource/resource.zig").Resource;
     const trace = struct {
@@ -31,10 +32,13 @@ const processor_zig = @import("processor.zig");
 const SpanProcessor = processor_zig.SpanProcessor;
 const BridgeSpanProcessor = processor_zig.BridgeSpanProcessor;
 
+const QueuedSpan = struct { resource: sdk.Resource, data: sdk.trace.SpanData };
+
 /// Configuration for BatchSpanProcessor PipelineStep
 pub const BatchConfig = struct {
     export_interval_ms: ?u32 = null,
     max_queue_size: ?usize = null,
+    max_export_batch_size: ?usize = null,
 };
 
 /// Batch span processor that exports spans at regular intervals
@@ -63,10 +67,12 @@ pub const BatchSpanProcessor = struct {
     export_in_progress: std.atomic.Value(bool),
     flush_complete: std.Io.Condition = std.Io.Condition.init,
     export_complete: std.Io.Condition = std.Io.Condition.init,
+    wake: std.Io.Event,
     thread: ?std.Thread,
     export_interval_ms: u32,
     max_queue_size: usize,
-    span_queue: std.ArrayList(struct { resource: sdk.Resource, data: sdk.trace.SpanData }),
+    max_export_batch_size: usize,
+    span_queue: std.ArrayList(QueuedSpan),
 
     /// Initialize a new batch span processor
     /// export_interval_ms: How often to export spans (default: 5000ms = 5s)
@@ -89,9 +95,11 @@ pub const BatchSpanProcessor = struct {
             .export_in_progress = .init(false),
             .flush_complete = std.Io.Condition.init,
             .export_complete = std.Io.Condition.init,
+            .wake = .unset,
             .thread = null,
             .export_interval_ms = config.export_interval_ms orelse 5000,
             .max_queue_size = config.max_queue_size orelse 2048,
+            .max_export_batch_size = @max(1, @min(config.max_export_batch_size orelse 512, config.max_queue_size orelse 2048)),
             .span_queue = .empty,
         };
     }
@@ -126,6 +134,7 @@ pub const BatchSpanProcessor = struct {
 
         self.mutex.lockUncancelable(io);
         self.condition.signal(io);
+        self.wake.set(io);
         self.mutex.unlock(io);
 
         // Wait for thread to exit
@@ -208,6 +217,7 @@ pub const BatchSpanProcessor = struct {
             });
             return;
         };
+        if (self.span_queue.items.len >= self.max_export_batch_size) self.wake.set(io);
     }
 
     /// Force export all queued spans immediately
@@ -217,7 +227,7 @@ pub const BatchSpanProcessor = struct {
             return .failure;
         }
 
-        const start_time = @as(i64, @intCast(@divFloor(std.Io.Timestamp.now(io, .real).nanoseconds, std.time.ns_per_ms)));
+        const started_ns = std.Io.Timestamp.now(io, .awake).nanoseconds;
 
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
@@ -225,17 +235,12 @@ pub const BatchSpanProcessor = struct {
         // Try to set flush_in_progress atomically
         const was_flushing = self.flush_in_progress.swap(true, .seq_cst);
         if (was_flushing) {
-            // Another flush is in progress, wait for it
-            const remaining_ms = if (timeout_ms) |ms|
-                ms -| @as(u64, @intCast(@as(i64, @intCast(@divFloor(std.Io.Timestamp.now(io, .real).nanoseconds, std.time.ns_per_ms))) - start_time))
-            else
-                null;
-
-            if (remaining_ms == 0) {
-                return .timeout;
+            // Another flush is in progress. The caller's timeout applies to
+            // this wait too; an exporter wedged in the background must not
+            // make graceful shutdown wait forever.
+            while (self.flush_in_progress.load(.acquire)) {
+                if (!waitForProgress(&self.flush_complete, &self.mutex, remainingMs(started_ns, timeout_ms))) return .timeout;
             }
-
-            self.flush_complete.waitUncancelable(io, &self.mutex);
             return .success;
         }
 
@@ -246,7 +251,7 @@ pub const BatchSpanProcessor = struct {
 
         // Wait for any export in progress
         while (self.export_in_progress.load(.acquire)) {
-            self.export_complete.waitUncancelable(io, &self.mutex);
+            if (!waitForProgress(&self.export_complete, &self.mutex, remainingMs(started_ns, timeout_ms))) return .timeout;
         }
 
         // Now do the export with atomic flag
@@ -271,24 +276,45 @@ pub const BatchSpanProcessor = struct {
 
             // Temporarily release mutex for export
             self.mutex.unlock(io);
-            if (self.exporter) |exporter| {
-                for (spans_to_export) |data_pair| {
-                    _ = exporter.exportSpans(&.{data_pair.data}, data_pair.resource);
-                }
-            }
-            for (spans_to_export) |data_pair| {
-                data_pair.data.deinitOwned(self.allocator);
-            }
-            self.allocator.free(spans_to_export);
+            const export_result = self.exportOwned(spans_to_export);
             self.mutex.lockUncancelable(io);
+            if (!export_result.isSuccess()) return export_result.asFlushResult();
         }
 
-        // Flush the exporter
+        // Flush the exporter with whatever remains of the caller's budget.
+        const remaining_ms = remainingMs(started_ns, timeout_ms);
+        if (remaining_ms == 0) return .timeout;
         self.mutex.unlock(io);
-        const flush_result = if (self.exporter) |exporter| exporter.forceFlush(timeout_ms) else ExportResult.success;
+        const flush_result = if (self.exporter) |exporter| exporter.forceFlush(remaining_ms) else ExportResult.success;
         self.mutex.lockUncancelable(io);
 
         return flush_result.asFlushResult();
+    }
+
+    fn remainingMs(started_ns: i96, timeout_ms: ?u64) ?u64 {
+        const limit = timeout_ms orelse return null;
+        const now_ns = std.Io.Timestamp.now(io, .awake).nanoseconds;
+        const elapsed_ns = @max(0, now_ns - started_ns);
+        const elapsed_ms: u64 = @intCast(@divFloor(elapsed_ns, std.time.ns_per_ms));
+        return limit -| elapsed_ms;
+    }
+
+    /// Wait for shared state to change while preserving the mutex contract and
+    /// enforcing the supplied deadline. Zig 0.16 conditions do not expose a
+    /// timed wait, so finite shutdown waits use a short monotonic sleep and let
+    /// the caller re-check its atomic predicate. This path is cold (explicit
+    /// force-flush/shutdown), bounded, and does not spin.
+    fn waitForProgress(condition: *std.Io.Condition, mutex: *std.Io.Mutex, timeout_ms: ?u64) bool {
+        const limit = timeout_ms orelse {
+            condition.waitUncancelable(io, mutex);
+            return true;
+        };
+        if (limit == 0) return false;
+        const sleep_ms: u64 = @min(limit, 5);
+        mutex.unlock(io);
+        io.sleep(.{ .nanoseconds = @intCast(sleep_ms * std.time.ns_per_ms) }, .awake) catch {};
+        mutex.lockUncancelable(io);
+        return true;
     }
 
     /// Shutdown the processor
@@ -302,6 +328,7 @@ pub const BatchSpanProcessor = struct {
 
         self.is_running.store(false, .release);
         self.condition.signal(io);
+        self.wake.set(io);
 
         // Shutdown the exporter
         const result = if (self.exporter) |exporter| exporter.shutdown(timeout_ms) else ExportResult.success;
@@ -321,16 +348,7 @@ pub const BatchSpanProcessor = struct {
         // Release mutex during export — HTTP calls can take seconds
         self.mutex.unlock(io);
 
-        if (self.exporter) |exporter| {
-            for (spans_to_export) |item| {
-                _ = exporter.exportSpans(&.{item.data}, item.resource);
-            }
-        }
-
-        for (spans_to_export) |span| {
-            span.data.deinitOwned(self.allocator);
-        }
-        self.allocator.free(spans_to_export);
+        _ = self.exportOwned(spans_to_export);
 
         // Re-acquire mutex before returning
         self.mutex.lockUncancelable(io);
@@ -341,6 +359,26 @@ pub const BatchSpanProcessor = struct {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
         self.exportBatchUnlocked();
+    }
+
+    fn exportOwned(self: *BatchSpanProcessor, items: []QueuedSpan) ExportResult {
+        defer {
+            for (items) |item| item.data.deinitOwned(self.allocator);
+            self.allocator.free(items);
+        }
+        const exporter = self.exporter orelse return .success;
+        const batch = self.allocator.alloc(sdk.trace.SpanData, @min(items.len, self.max_export_batch_size)) catch return .failure;
+        defer self.allocator.free(batch);
+        var result: ExportResult = .success;
+        var offset: usize = 0;
+        while (offset < items.len) {
+            const count = @min(batch.len, items.len - offset);
+            for (items[offset .. offset + count], 0..) |item, i| batch[i] = item.data;
+            const current = exporter.exportSpans(batch[0..count], items[offset].resource);
+            if (!current.isSuccess()) result = current;
+            offset += count;
+        }
+        return result;
     }
 
     /// Background thread function that periodically exports spans
@@ -359,10 +397,21 @@ pub const BatchSpanProcessor = struct {
                 break;
             }
 
-            // Sleep for the export interval, releasing the mutex
-            const wait_ns: i96 = @intCast(@as(u64, self.export_interval_ms) * std.time.ns_per_ms);
+            // Reset under the same mutex onEnd uses to set the event. That
+            // closes the otherwise-lost wake race between wait returning and
+            // reset clearing a newly queued threshold batch.
+            const ready = self.span_queue.items.len >= self.max_export_batch_size;
+            if (!ready) self.wake.reset();
             self.mutex.unlock(io);
-            io.sleep(.{ .nanoseconds = wait_ns }, .real) catch {};
+            if (!ready) {
+                self.wake.waitTimeout(io, .{ .duration = .{
+                    .raw = std.Io.Duration.fromMilliseconds(self.export_interval_ms),
+                    .clock = .awake,
+                } }) catch |err| switch (err) {
+                    error.Timeout => {},
+                    error.Canceled => return,
+                };
+            }
             self.mutex.lockUncancelable(io);
 
             // Skip if flush is in progress
@@ -389,19 +438,15 @@ pub const BatchSpanProcessor = struct {
 
             // Export outside the lock — HTTP calls can take seconds
             if (spans_to_export) |spans| {
-                if (self.exporter) |exporter| {
-                    for (spans) |item| {
-                        _ = exporter.exportSpans(&.{item.data}, item.resource);
-                    }
-                }
-                for (spans) |span| {
-                    span.data.deinitOwned(self.allocator);
-                }
-                self.allocator.free(spans);
+                _ = self.exportOwned(spans);
             }
 
+            // Change the predicate while holding the condition's mutex so an
+            // unbounded forceFlush cannot miss the completion broadcast.
+            self.mutex.lockUncancelable(io);
             self.export_in_progress.store(false, .release);
             self.export_complete.broadcast(io);
+            self.mutex.unlock(io);
         }
     }
 
@@ -495,6 +540,88 @@ test "BatchSpanProcessor - span queuing and export" {
     processor.mutex.lockUncancelable(io);
     try testing.expectEqual(@as(usize, 0), processor.span_queue.items.len);
     processor.mutex.unlock(io);
+}
+
+test "BatchSpanProcessor exports bounded batches" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const mock_exporter = try allocator.create(MockSpanExporter);
+    mock_exporter.* = MockSpanExporter.init(allocator);
+    const processor = try allocator.create(BatchSpanProcessor);
+    processor.* = BatchSpanProcessor.init(allocator, mock_exporter.spanExporter(), .{
+        .export_interval_ms = 1_000_000,
+        .max_queue_size = 10,
+        .max_export_batch_size = 2,
+    });
+
+    const resource = try sdk.Resource.initOwned(allocator, .{ .attributes = &.{} });
+    var provider = @import("tracer_provider.zig").TracerProvider.init(allocator, resource, .{ .random = .init() }, .keep);
+    defer provider.deinit();
+    try provider.registerProcessor(processor.spanProcessor());
+    const tracer = try provider.getTracerWithScope(.empty);
+
+    for (0..5) |_| {
+        var span = try tracer.startSpan("batched-span", .{}, &.{});
+        span.end(null);
+        span.deinit();
+    }
+    try testing.expectEqual(otel_api.common.FlushResult.success, processor.forceFlush(null));
+    try testing.expectEqual(@as(usize, 5), mock_exporter.spanCount());
+    try testing.expectEqual(@as(usize, 3), mock_exporter.exportCallCount());
+}
+
+test "BatchSpanProcessor threshold wakes exporter before schedule" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const mock_exporter = try allocator.create(MockSpanExporter);
+    mock_exporter.* = MockSpanExporter.init(allocator);
+    const processor = try allocator.create(BatchSpanProcessor);
+    processor.* = BatchSpanProcessor.init(allocator, mock_exporter.spanExporter(), .{
+        .export_interval_ms = 60_000,
+        .max_queue_size = 10,
+        .max_export_batch_size = 2,
+    });
+
+    const resource = try sdk.Resource.initOwned(allocator, .{ .attributes = &.{} });
+    var provider = @import("tracer_provider.zig").TracerProvider.init(allocator, resource, .{ .random = .init() }, .keep);
+    defer provider.deinit();
+    try provider.registerProcessor(processor.spanProcessor());
+    try processor.start();
+    const tracer = try provider.getTracerWithScope(.empty);
+
+    for (0..2) |_| {
+        var span = try tracer.startSpan("threshold-span", .{}, &.{});
+        span.end(null);
+        span.deinit();
+    }
+    const deadline = std.Io.Timestamp.now(io, .real).nanoseconds + 500 * std.time.ns_per_ms;
+    while (mock_exporter.exportCallCount() == 0 and std.Io.Timestamp.now(io, .real).nanoseconds < deadline) {
+        io.sleep(.{ .nanoseconds = std.time.ns_per_ms }, .real) catch {};
+    }
+    try testing.expect(mock_exporter.exportCallCount() > 0);
+    try testing.expectEqual(otel_api.common.FlushResult.success, processor.forceFlush(1000));
+    try testing.expectEqual(@as(usize, 2), mock_exporter.spanCount());
+}
+
+test "BatchSpanProcessor force flush timeout bounds an in-progress export wait" {
+    const testing = std.testing;
+    const processor = try testing.allocator.create(BatchSpanProcessor);
+    processor.* = BatchSpanProcessor.init(testing.allocator, null, .{});
+    defer {
+        processor.export_in_progress.store(false, .release);
+        processor.export_complete.broadcast(io);
+        processor.deinit();
+        processor.destroy();
+    }
+
+    processor.export_in_progress.store(true, .release);
+    const started = std.Io.Timestamp.now(io, .awake).nanoseconds;
+    try testing.expectEqual(otel_api.common.FlushResult.timeout, processor.forceFlush(30));
+    const elapsed = std.Io.Timestamp.now(io, .awake).nanoseconds - started;
+    try testing.expect(elapsed >= 20 * std.time.ns_per_ms);
+    try testing.expect(elapsed < 200 * std.time.ns_per_ms);
 }
 
 test "BatchSpanProcessor - queue overflow drops newest" {

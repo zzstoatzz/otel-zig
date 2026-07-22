@@ -1,6 +1,6 @@
 # Zig Otel
 
-This is a zig implementation of the OTel API and SDK. It was build for zig 0.15.1.
+This is a Zig implementation of the OpenTelemetry API and SDK for Zig 0.16.
 
 ## Quickstart
 
@@ -126,6 +126,14 @@ Traces is similar to metrics. This example uses the stream exporter to output to
 
 These examples show the setup of the SDK, but most usages should focus on the APIs exposed from `otel_api.getGlobalTracerProvider()` and similar methods.
 
+### OTLP traces
+
+The trace exporter supports OTLP over HTTP with either protobuf or JSON payloads. Generic collector endpoints preserve any configured base path and append `/v1/traces`; traces-specific endpoints can disable that suffix with `append_signal_path = false`. Custom headers, gzip compression, and request timeouts are applied to real HTTP requests.
+
+`BatchSpanProcessor` exports bounded batches, wakes as soon as `max_export_batch_size` is reached, and otherwise follows `export_interval_ms`. `forceFlush` observes its timeout while waiting for another export or flush to finish.
+
+OTLP/gRPC transport is not implemented.
+
 ## The API
 
 The API part provides methods for getting and setting Global Providers and the necessary interfaces for using them.
@@ -182,4 +190,4 @@ The flow is: Provider → Processor/Reader → Exporter, with each component bei
 - **`trace_state` isn't really handled** -- while the type has room for it, the memory implications of using the trace state have not been worked out; it will leak.
 - **No real integration** -- While it is relatively trival to do some context propagation, no integration or simplication with the default zig sdk has been done yet. But an [example is available](examples/multithreaded_http_telemetry.zig) that shows what it would look like right now.
 - **A couple of things diverge from the specification** --  That is taken from [a thread from nodejs about OTel](https://github.com/nodejs/node/issues/57992#issuecomment-2844248550). In summary, the spec is to make it easy to rationalize, but it is not the only way to implement the model.
-- **Depends on protobuf** -- This sdk depends on [Arwalk's zig-protobuf](https://github.com/Arwalk/zig-protobuf/) for the exporter. Luckily they've recently done a bunch of zig 0.15 upgrades as well.
+- **Depends on protobuf** -- This SDK depends on [Arwalk's zig-protobuf](https://github.com/Arwalk/zig-protobuf/) for protobuf OTLP payloads.
