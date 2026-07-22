@@ -128,7 +128,11 @@ These examples show the setup of the SDK, but most usages should focus on the AP
 
 ### OTLP traces
 
-The trace exporter supports OTLP over HTTP with either protobuf or JSON payloads. Generic collector endpoints preserve any configured base path and append `/v1/traces`; traces-specific endpoints can disable that suffix with `append_signal_path = false`. Custom headers, gzip compression, and request timeouts are applied to real HTTP requests.
+The trace exporter supports OTLP over HTTP with either protobuf or JSON payloads. Generic collector endpoints preserve any configured base path and append `/v1/traces`; traces-specific endpoints can disable that suffix with `append_signal_path = false`. Custom headers, gzip compression, request timeouts, retry policy, custom certificate authorities, and mutual TLS are applied to real HTTP requests.
+
+Ordinary HTTPS and custom-CA connections use Zig's native TLS client. Zig 0.16's TLS client cannot present client certificates, so configuring both `TlsConfig.cert_file` and `TlsConfig.key_file` selects a dynamically loaded libcurl transport. Applications using mutual TLS therefore need a libcurl 4 runtime; applications that do not configure client credentials have no libcurl link-time or runtime dependency.
+
+Run `scripts/test-mtls.sh` to generate an ephemeral CA and certificates and exercise both transports against real local HTTPS servers, including a server that rejects clients without the generated certificate.
 
 `BatchSpanProcessor` exports bounded batches, wakes as soon as `max_export_batch_size` is reached, and otherwise follows `export_interval_ms`. `forceFlush` observes its timeout while waiting for another export or flush to finish.
 

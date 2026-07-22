@@ -17,6 +17,7 @@ const SpanContext = otel_api.trace.SpanContext;
 const error_handler = otel_api.common;
 const SpanExporter = otel_sdk.trace.SpanExporter;
 const convert = @import("convert.zig");
+const curl_transport = @import("curl_transport.zig");
 
 const common_v1 = @import("proto/opentelemetry/proto/common/v1.pb.zig");
 const resource_v1 = @import("proto/opentelemetry/proto/resource/v1.pb.zig");
@@ -209,6 +210,7 @@ pub const OtlpTraceExporter = struct {
             const response = performWithTimeout(
                 self,
                 allocator,
+                full_url,
                 full_uri,
                 content_type,
                 extra_headers,
@@ -257,6 +259,7 @@ const AttemptResponse = struct {
 fn performWithTimeout(
     exporter: *OtlpTraceExporter,
     allocator: std.mem.Allocator,
+    url: []const u8,
     uri: std.Uri,
     content_type: []const u8,
     extra_headers: []const std.http.Header,
@@ -267,13 +270,43 @@ fn performWithTimeout(
         fn run(
             self: *OtlpTraceExporter,
             alloc: std.mem.Allocator,
+            request_url: []const u8,
             request_uri: std.Uri,
             request_content_type: []const u8,
             request_headers: []const std.http.Header,
             request_payload: []const u8,
+            request_timeout_ms: u64,
         ) !AttemptResponse {
+            if (self.config.tls_config) |tls| {
+                if (tls.cert_file != null and tls.key_file != null) {
+                    const response = try curl_transport.perform(
+                        alloc,
+                        self.config.io,
+                        request_url,
+                        request_content_type,
+                        request_headers,
+                        request_payload,
+                        request_timeout_ms,
+                        tls,
+                    );
+                    return .{
+                        .status = response.status,
+                        .body = response.body,
+                        .retry_after_millis = response.retry_after_millis,
+                    };
+                }
+            }
             var client = std.http.Client{ .allocator = self.allocator, .io = self.config.io };
             defer client.deinit();
+            if (self.config.tls_config) |tls| {
+                if (tls.ca_file) |ca_file| {
+                    const absolute = try std.Io.Dir.cwd().realPathFileAlloc(self.config.io, ca_file, alloc);
+                    defer alloc.free(absolute);
+                    const now = std.Io.Clock.real.now(self.config.io);
+                    try client.ca_bundle.addCertsFromFilePathAbsolute(self.allocator, self.config.io, now, absolute);
+                    client.now = now;
+                }
+            }
             var request = try client.request(.POST, request_uri, .{
                 .headers = .{
                     .content_type = .{ .override = request_content_type },
@@ -316,7 +349,7 @@ fn performWithTimeout(
     };
     var outcomes: [2]Outcome = undefined;
     var pending = std.Io.Select(Outcome).init(exporter.config.io, &outcomes);
-    pending.async(.request, Run.run, .{ exporter, allocator, uri, content_type, extra_headers, payload });
+    pending.async(.request, Run.run, .{ exporter, allocator, url, uri, content_type, extra_headers, payload, timeout_ms });
     pending.async(.timeout, std.Io.sleep, .{
         exporter.config.io,
         .{ .nanoseconds = @intCast(timeout_ms *| std.time.ns_per_ms) },
@@ -695,6 +728,23 @@ test "OTLP BSP export timeout caps Retry-After and the complete retry lifecycle"
     const elapsed = std.Io.Timestamp.now(io, .awake).nanoseconds - started;
     try testing.expect(elapsed < 200 * std.time.ns_per_ms);
     try collector.await(io);
+}
+
+test "native OTLP HTTPS trusts an explicit CA when the contract environment is present" {
+    const endpoint_ptr = std.c.getenv("OTEL_ZIG_CA_TEST_ENDPOINT") orelse return;
+    const ca_ptr = std.c.getenv("OTEL_ZIG_CA_TEST_CA") orelse return;
+    const endpoint = std.mem.span(endpoint_ptr);
+    const ca_file = std.mem.span(ca_ptr);
+    var exporter = OtlpTraceExporter.init(std.testing.allocator, .{
+        .endpoint = endpoint,
+        .transport = .http_json,
+        .append_signal_path = false,
+        .timeout_millis = 2_000,
+        .retry_config = .{ .enabled = false },
+        .tls_config = .{ .ca_file = ca_file },
+    });
+    const spans = [_]otel_sdk.trace.SpanData{testSpan("custom-ca-span")};
+    try std.testing.expectEqual(ExportResult.success, exporter.exportSpans(&spans, .empty));
 }
 
 fn convertToOtlpFormat(allocator: std.mem.Allocator, spans: []const otel_sdk.trace.SpanData, resource: Resource) !trace_v1.TracesData {
