@@ -76,36 +76,37 @@ pub const DefaultDetector = struct {
 
 /// Process resource detector
 pub const ProcessDetector = struct {
+    io: std.Io = std.Options.debug_io,
+
     pub fn init() ProcessDetector {
         return .{};
     }
 
     pub fn detect(self: *ProcessDetector, allocator: std.mem.Allocator) anyerror!sdk.Resource {
-        _ = self;
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
 
         var attrs = AttributeBuilder.init(arena.allocator());
 
-        // Get executable path
+        // Process IDs are available from libc on the Unix targets supported
+        // by the SDK. Keep unsupported targets useful by omitting this one
+        // optional resource attribute instead of failing compilation.
         switch (builtin.os.tag) {
-            .macos => {
-                // Detect process attributes
-                const pid = std.c.getpid();
-                attrs = attrs.add(.{ .key = "process.pid", .value = .{ .int = @intCast(pid) } });
+            .linux, .macos, .freebsd, .openbsd, .netbsd, .dragonfly => attrs = attrs.add(.{ .key = "process.pid", .value = .{ .int = @intCast(std.c.getpid()) } }),
+            else => {},
+        }
 
-                // Use a stack buffer like the stdlib does.
-                var buf: [std.fs.max_path_bytes + 1]u8 = undefined;
-                var size: u32 = buf.len;
-
-                if (std.c._NSGetExecutablePath(&buf, &size) == 0) {
-                    const path = std.mem.sliceTo(&buf, 0);
-                    const basename = std.fs.path.basename(path);
-                    attrs = attrs.add(.{ .key = "process.executable.path", .value = .{ .string = path } });
-                    attrs = attrs.add(.{ .key = "process.executable.name", .value = .{ .string = basename } });
-                }
-            },
-            else => @compileError("unsupported OS."),
+        // Zig's executablePath implementation already handles Linux's
+        // /proc/self/exe, macOS's _NSGetExecutablePath, and the equivalent on
+        // other supported platforms. Resource detection is best-effort, so a
+        // restricted procfs or sandbox simply omits these attributes.
+        var executable_buffer: [std.fs.max_path_bytes]u8 = undefined;
+        if (std.process.executablePath(self.io, &executable_buffer)) |path_len| {
+            const path = executable_buffer[0..path_len];
+            attrs = attrs.add(.{ .key = "process.executable.path", .value = .{ .string = path } });
+            attrs = attrs.add(.{ .key = "process.executable.name", .value = .{ .string = std.fs.path.basename(path) } });
+        } else |_| {
+            // Optional resource metadata must not prevent tracing startup.
         }
 
         // Command line args: in zig 0.16, process args require Init param
@@ -248,4 +249,20 @@ test "HostDetector" {
     try testing.expect(resource.attributes.len >= 2);
     try testing.expectEqualStrings("host.type", resource.attributes[0].key);
     try testing.expectEqualStrings("host.arch", resource.attributes[1].key);
+}
+
+test "ProcessDetector reports the running executable without host-specific code" {
+    const testing = std.testing;
+    var detector = ProcessDetector.init();
+    var resource = try detector.detect(testing.allocator);
+    defer resource.deinitOwned(testing.allocator);
+
+    var saw_path = false;
+    var saw_name = false;
+    for (resource.attributes) |attribute| {
+        if (std.mem.eql(u8, attribute.key, "process.executable.path")) saw_path = attribute.value.string.len > 0;
+        if (std.mem.eql(u8, attribute.key, "process.executable.name")) saw_name = attribute.value.string.len > 0;
+    }
+    try testing.expect(saw_path);
+    try testing.expect(saw_name);
 }
