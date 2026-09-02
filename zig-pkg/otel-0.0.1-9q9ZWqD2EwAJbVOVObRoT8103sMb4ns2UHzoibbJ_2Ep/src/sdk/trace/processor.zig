@@ -1,17 +1,13 @@
 //! OpenTelemetry Span Processor Interface
 //!
 //! This module defines the SpanProcessor interface for processing spans
-//! in the OpenTelemetry SDK. Processors are told when a span starts (a
-//! snapshot with end_time == start_time) and receive the finished span when it
-//! ends; they are responsible for batching, filtering, and forwarding spans to
-//! exporters. `onStart` is what lets a processor publish in-flight spans (the
-//! logfire "pending span" convention) before the real span closes.
+//! in the OpenTelemetry SDK. Processors receive spans when they end
+//! and are responsible for batching, filtering, and forwarding them to exporters.
 //!
 //! See: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/sdk.md#span-processor
 
 const std = @import("std");
-const io = std.Options.debug_io;
-const otel_api = @import("otel-api");
+const io = std.Options.debug_io;const otel_api = @import("otel-api");
 const sdk = struct {
     const Resource = @import("../resource/resource.zig").Resource;
     const trace = struct {
@@ -38,16 +34,6 @@ pub const SpanProcessor = union(enum) {
             .simple => |processor| processor.spanLimits(),
             .bridge => |processor| processor.spanLimitsFn(processor.processor_ptr),
         };
-    }
-
-    /// Called when a span starts. `span` is a snapshot of the span at start
-    /// time (end_time == start_time, no events); it must be copied if kept.
-    pub fn onStart(self: *SpanProcessor, span: sdk.trace.SpanData, resource: sdk.Resource) void {
-        switch (self.*) {
-            .noop => {},
-            .simple => {},
-            .bridge => |processor| processor.onStartFn(processor.processor_ptr, span, resource),
-        }
     }
 
     /// Called when a span ends
@@ -179,7 +165,6 @@ pub const SimpleSpanProcessor = struct {
 pub const BridgeSpanProcessor = struct {
     processor_ptr: *anyopaque,
     spanLimitsFn: *const fn (processor_ptr: *anyopaque) otel_api.trace.Span.Limits,
-    onStartFn: *const fn (processor_ptr: *anyopaque, span: sdk.trace.SpanData, resource: sdk.Resource) void,
     onEndFn: *const fn (processor_ptr: *anyopaque, span: sdk.trace.SpanData, resource: sdk.Resource) void,
     forceFlushFn: *const fn (processor_ptr: *anyopaque, timeout_ms: ?u64) otel_api.common.FlushResult,
     shutdownFn: *const fn (processor_ptr: *anyopaque, timeout_ms: ?u64) ProcessResult,
@@ -194,14 +179,6 @@ pub const BridgeSpanProcessor = struct {
             pub fn spanLimits(pointer: *anyopaque) otel_api.trace.Span.Limits {
                 const self: T = @ptrCast(@alignCast(pointer));
                 return ptr_info.pointer.child.spanLimits(self);
-            }
-            // onStart is optional on the concrete processor: most processors
-            // only care about finished spans, so an absent decl is a no-op.
-            pub fn onStart(pointer: *anyopaque, span: sdk.trace.SpanData, resource: sdk.Resource) void {
-                if (comptime @hasDecl(ptr_info.pointer.child, "onStart")) {
-                    const self: T = @ptrCast(@alignCast(pointer));
-                    return ptr_info.pointer.child.onStart(self, span, resource);
-                }
             }
             pub fn onEnd(pointer: *anyopaque, span: sdk.trace.SpanData, resource: sdk.Resource) void {
                 const self: T = @ptrCast(@alignCast(pointer));
@@ -228,7 +205,6 @@ pub const BridgeSpanProcessor = struct {
         return .{
             .processor_ptr = ptr,
             .spanLimitsFn = VTable.spanLimits,
-            .onStartFn = VTable.onStart,
             .onEndFn = VTable.onEnd,
             .forceFlushFn = VTable.forceFlush,
             .shutdownFn = VTable.shutdown,

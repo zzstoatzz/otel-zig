@@ -4,8 +4,7 @@
 //! for the SDK. StandardTracer creates spans and manages their lifecycle.
 
 const std = @import("std");
-const io = std.Options.debug_io;
-const otel_api = @import("otel-api");
+const io = std.Options.debug_io;const otel_api = @import("otel-api");
 const sdk = struct {
     const trace = struct {
         const RecordingSpan = @import("data.zig").RecordingSpan;
@@ -147,25 +146,6 @@ pub const StandardTracer = struct {
                 );
                 var span = otel_api.trace.Span{ .bridge = bridge };
                 span.setStatus(opts.status);
-
-                // Tell processors the span exists. The snapshot is only valid
-                // for the duration of the call; a processor that keeps it
-                // must copy (BatchSpanProcessor.onEnd already does).
-                for (self.provider.processors.items) |*processor| {
-                    processor.onStart(sdk.trace.SpanData{
-                        .scope = self.scope,
-                        .ctx = span_context,
-                        .parent_ctx = parent_span_context,
-                        .name = recording.name,
-                        .kind = opts.kind,
-                        .status = recording.status,
-                        .start_time = start_time,
-                        .end_time = start_time,
-                        .attributes = recording.attributes,
-                        .events = &.{},
-                        .links = recording.links.items,
-                    }, self.provider.resource);
-                }
                 return span;
             },
         }

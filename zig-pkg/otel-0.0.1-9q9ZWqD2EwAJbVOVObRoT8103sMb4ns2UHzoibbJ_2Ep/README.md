@@ -128,19 +128,9 @@ These examples show the setup of the SDK, but most usages should focus on the AP
 
 ### OTLP traces
 
-The trace exporter supports OTLP over HTTP with either protobuf or JSON payloads. Generic collector endpoints preserve any configured base path and append `/v1/traces`; traces-specific endpoints can disable that suffix with `append_signal_path = false`. Custom headers, gzip compression, request timeouts, retry policy, custom certificate authorities, and mutual TLS are applied to real HTTP requests.
-
-Ordinary HTTPS and custom-CA connections use Zig's native TLS client. Zig 0.16's TLS client cannot present client certificates, so configuring both `TlsConfig.cert_file` and `TlsConfig.key_file` selects a dynamically loaded libcurl transport. Applications using mutual TLS therefore need a libcurl 4 runtime; applications that do not configure client credentials have no libcurl link-time or runtime dependency.
-
-Run `scripts/test-mtls.sh` to generate an ephemeral CA and certificates and exercise both transports against real local HTTPS servers, including a server that rejects clients without the generated certificate.
+The trace exporter supports OTLP over HTTP with either protobuf or JSON payloads. Generic collector endpoints preserve any configured base path and append `/v1/traces`; traces-specific endpoints can disable that suffix with `append_signal_path = false`. Custom headers, gzip compression, and request timeouts are applied to real HTTP requests.
 
 `BatchSpanProcessor` exports bounded batches, wakes as soon as `max_export_batch_size` is reached, and otherwise follows `export_interval_ms`. `forceFlush` observes its timeout while waiting for another export or flush to finish.
-
-Span processors are told about both ends of a span's life: `onStart` receives a snapshot at start time (`end_time == start_time`, no events) and `onEnd` the finished span. A processor bridged through `BridgeSpanProcessor` may omit `onStart`; the bridge treats an absent decl as a no-op. `onStart` exists so a processor can publish in-flight spans (logfire's "pending span" convention) while the real span is still open.
-
-### std.log bridge
-
-`sdk.logs.std_log_bridge.otelLogFn` is a drop-in `std.options.logFn`. Its `BridgeConfig` has two options that matter in production: `also_default_log` keeps writing through `std.log.defaultLog` (stderr) alongside the OTEL record, since otherwise the bridge *replaces* stderr output the moment it initializes; and `span_context_fn` lets the client SDK that tracks the current span hand it over, so every record carries `trace_id`/`span_id` and renders under its span. Records carry `code.module.name` = the std.log scope and `severity_text` = the level name.
 
 OTLP/gRPC transport is not implemented.
 

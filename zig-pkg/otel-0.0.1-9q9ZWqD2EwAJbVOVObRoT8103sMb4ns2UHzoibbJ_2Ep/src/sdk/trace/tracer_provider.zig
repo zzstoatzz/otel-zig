@@ -4,8 +4,7 @@
 //! for the SDK. TracerProvider manages tracers and their lifecycle.
 
 const std = @import("std");
-const io = std.Options.debug_io;
-const api = @import("otel-api");
+const io = std.Options.debug_io;const api = @import("otel-api");
 
 const sdk = struct {
     const Resource = @import("../resource/resource.zig").Resource;
@@ -17,8 +16,6 @@ const sdk = struct {
     const trace = struct {
         const IdGenerator = @import("id_generator.zig").IdGenerator;
         const SpanDataProcessor = @import("processor.zig").SpanProcessor;
-        const BridgeSpanProcessor = @import("processor.zig").BridgeSpanProcessor;
-        const SpanData = @import("data.zig").SpanData;
         const Tracer = @import("tracer.zig").StandardTracer;
         const samplers = @import("samplers/root.zig");
         const createDefaultIdGenerator = @import("id_generator.zig").createDefaultIdGenerator;
@@ -225,79 +222,4 @@ test "TracerProvider basic operations" {
 
     // Force flush
     try testing.expectEqual(api.common.FlushResult.success, provider_ptr.forceFlush(null));
-}
-
-/// A processor that only counts lifecycle calls, bridged through the same
-/// vtable a real external processor uses.
-const CountingProcessor = struct {
-    started: usize = 0,
-    ended: usize = 0,
-    start_had_end_eq_start: bool = false,
-
-    pub fn spanLimits(_: *CountingProcessor) api.trace.Span.Limits {
-        return .default;
-    }
-    pub fn onStart(self: *CountingProcessor, span: sdk.trace.SpanData, _: sdk.Resource) void {
-        self.started += 1;
-        self.start_had_end_eq_start = span.end_time == span.start_time;
-    }
-    pub fn onEnd(self: *CountingProcessor, _: sdk.trace.SpanData, _: sdk.Resource) void {
-        self.ended += 1;
-    }
-    pub fn forceFlush(_: *CountingProcessor, _: ?u64) api.common.FlushResult {
-        return .success;
-    }
-    pub fn shutdown(_: *CountingProcessor, _: ?u64) api.common.ProcessResult {
-        return .success;
-    }
-    pub fn deinit(_: *CountingProcessor) void {}
-    pub fn destroy(_: *CountingProcessor) void {}
-};
-
-/// Same shape, but without an `onStart` decl: the bridge must treat that as
-/// a no-op rather than fail to compile, so existing processors keep working.
-const EndOnlyProcessor = struct {
-    ended: usize = 0,
-
-    pub fn spanLimits(_: *EndOnlyProcessor) api.trace.Span.Limits {
-        return .default;
-    }
-    pub fn onEnd(self: *EndOnlyProcessor, _: sdk.trace.SpanData, _: sdk.Resource) void {
-        self.ended += 1;
-    }
-    pub fn forceFlush(_: *EndOnlyProcessor, _: ?u64) api.common.FlushResult {
-        return .success;
-    }
-    pub fn shutdown(_: *EndOnlyProcessor, _: ?u64) api.common.ProcessResult {
-        return .success;
-    }
-    pub fn deinit(_: *EndOnlyProcessor) void {}
-    pub fn destroy(_: *EndOnlyProcessor) void {}
-};
-
-test "processors see onStart before onEnd, with a start-time snapshot" {
-    const testing = std.testing;
-    var counting = CountingProcessor{};
-    var end_only = EndOnlyProcessor{};
-
-    var provider = TracerProvider.init(
-        testing.allocator,
-        sdk.Resource{ .attributes = &.{}, .schema_url = null },
-        sdk.trace.createDefaultIdGenerator(),
-        sdk.trace.samplers.always_on,
-    );
-    defer provider.deinit();
-    try provider.registerProcessor(.{ .bridge = sdk.trace.BridgeSpanProcessor.init(&counting) });
-    try provider.registerProcessor(.{ .bridge = sdk.trace.BridgeSpanProcessor.init(&end_only) });
-
-    var tp = provider.tracerProvider();
-    var tracer = try tp.getTracerWithScope(.{ .name = "t", .version = null, .schema_url = null, .attributes = &.{} });
-    var span = try tracer.startSpan("work", null, &.{});
-    try testing.expectEqual(@as(usize, 1), counting.started);
-    try testing.expect(counting.start_had_end_eq_start);
-    try testing.expectEqual(@as(usize, 0), counting.ended);
-    span.end(null);
-    span.deinit();
-    try testing.expectEqual(@as(usize, 1), counting.ended);
-    try testing.expectEqual(@as(usize, 1), end_only.ended);
 }

@@ -23,8 +23,7 @@
 //! ```
 
 const std = @import("std");
-const io = std.Options.debug_io;
-const api = @import("otel-api");
+const io = std.Options.debug_io;const api = @import("otel-api");
 
 /// Configuration for the std.log bridge
 pub const BridgeConfig = struct {
@@ -39,17 +38,6 @@ pub const BridgeConfig = struct {
 
     /// Instrumentation scope version
     instrumentation_scope_version: ?[]const u8 = null,
-
-    /// Also write every record through `std.log.defaultLog` (stderr). Without
-    /// this the bridge REPLACES stderr output once initialized, which turns
-    /// `fly logs` / journald / a terminal silent the moment export comes up.
-    also_default_log: bool = false,
-
-    /// Source of the active span for trace correlation. The bridge has no
-    /// notion of "current span" of its own; a client SDK that tracks one
-    /// (thread-local or otherwise) hands it over here so each record carries
-    /// trace_id/span_id and renders under its span in the backend.
-    span_context_fn: ?*const fn () ?api.trace.Span.Context = null,
 };
 
 /// Bridge state - kept minimal for performance
@@ -135,11 +123,9 @@ pub fn otelLogFn(
         return;
     }
 
-    if (bridge_state.config.also_default_log) std.log.defaultLog(level, scope, format, args);
-
     // Try to perform OTel logging, fall back to default on any error
     otelLogImpl(level, scope, format, args) catch {
-        if (!bridge_state.config.also_default_log) std.log.defaultLog(level, scope, format, args);
+        std.log.defaultLog(level, scope, format, args);
     };
 }
 
@@ -168,29 +154,23 @@ fn otelLogImpl(
         error.NoSpaceLeft => message_buf[0 .. message_buf.len - 12] ++ " [truncated]",
     };
 
-    // The std.log scope is the closest thing zig has to a module name;
-    // `code.module.name` is the semconv key the logfire rust/python clients
-    // use for the same idea, so records group the same way across languages.
-    const scope_attrs = [_]api.common.AttributeKeyValue{
-        .{ .key = "code.module.name", .value = .{ .string = @tagName(scope) } },
-    };
-    const attributes: ?[]const api.common.AttributeKeyValue =
-        if (bridge_state.config.include_scope_attribute) &scope_attrs else null;
+    // TODO: Add scope attributes - simplified for now to avoid type issues
+    _ = scope; // Suppress unused parameter warning
+    const attributes: ?[]const api.common.AttributeKeyValue = null;
 
-    const span_ctx: ?api.trace.Span.Context = if (bridge_state.config.span_context_fn) |f| f() else null;
-
+    // Emit log record
     logger.emitLogRecord(
         bridge_state.context,
-        severity,
-        .{ .string = message },
-        attributes,
-        @as(i64, @intCast(std.Io.Timestamp.now(io, .real).nanoseconds)),
+        severity, // severity
+        .{ .string = message }, // body
+        attributes, // attributes
+        @as(i64, @intCast(std.Io.Timestamp.now(io, .real).nanoseconds)), // timestamp_ns
         null, // observed_timestamp_ns
         null, // event_name
-        @tagName(level), // severity_text
-        if (span_ctx) |c| c.trace_id else null,
-        if (span_ctx) |c| c.span_id else null,
-        if (span_ctx) |c| c.trace_flags else null,
+        null, // severity_text
+        null, // trace_id
+        null, // span_id
+        null, // flags
     );
 }
 
@@ -258,71 +238,4 @@ test "fallback behavior" {
     defer deinit();
 
     otelLogFn(.info, .testing, "Test message {}", .{42});
-}
-
-test "scope attribute, severity text and span context reach the record" {
-    const testing = std.testing;
-    const Capture = struct {
-        var records: usize = 0;
-        var saw_scope = false;
-        var saw_trace = false;
-        var severity_text: ?[]const u8 = null;
-
-        fn spanCtx() ?api.trace.Span.Context {
-            return .{
-                .trace_id = api.common.TraceId.fromBytes([_]u8{7} ** 16),
-                .span_id = api.common.SpanId.fromBytes([_]u8{9} ** 8),
-                .trace_flags = api.trace.Span.Context.SAMPLED_FLAG,
-                .trace_state = null,
-                .is_remote = false,
-            };
-        }
-
-        pub fn enabled(_: *@This(), _: []const api.ContextKeyValue, _: ?api.logs.Severity) bool {
-            return true;
-        }
-        pub fn enabledWithEvent(_: *@This(), _: []const api.ContextKeyValue, _: ?api.logs.Severity, _: []const u8) bool {
-            return true;
-        }
-        pub fn emitLogRecord(
-            _: *@This(),
-            _: []const api.ContextKeyValue,
-            _: ?api.logs.Severity,
-            _: ?api.common.AttributeValue,
-            attributes: ?[]const api.common.AttributeKeyValue,
-            _: ?i64,
-            _: ?i64,
-            _: ?[]const u8,
-            sev_text: ?[]const u8,
-            trace_id: ?api.common.TraceId,
-            _: ?api.common.SpanId,
-            _: ?u8,
-        ) void {
-            records += 1;
-            severity_text = sev_text;
-            if (attributes) |attrs| for (attrs) |kv| {
-                if (std.mem.eql(u8, kv.key, "code.module.name") and std.mem.eql(u8, kv.value.string, "bridge_test")) saw_scope = true;
-            };
-            if (trace_id) |t| saw_trace = std.mem.eql(u8, &t.bytes, &([_]u8{7} ** 16));
-        }
-    };
-    var capture = Capture{};
-    const CaptureProvider = struct {
-        logger_ptr: *Capture,
-        pub fn getLoggerWithScope(self: *@This(), _: api.InstrumentationScope) !api.logs.Logger {
-            return .{ .bridge = api.logs.LoggerBridge.init(self.logger_ptr) };
-        }
-    };
-    var provider = CaptureProvider{ .logger_ptr = &capture };
-    try api.provider_registry.setGlobalLoggerProvider(.{ .bridge = api.logs.LoggerProviderBridge.init(&provider) });
-    defer api.provider_registry.unsetAllProviders();
-
-    try init(.{ .span_context_fn = Capture.spanCtx });
-    defer deinit();
-
-    otelLogFn(.warn, .bridge_test, "hello {d}", .{1});
-    try testing.expectEqual(@as(usize, 1), Capture.records);
-    try testing.expect(Capture.saw_scope);
-    try testing.expect(Capture.saw_trace);
-    try testing.expectEqualStrings("warn", Capture.severity_text.?);
 }
