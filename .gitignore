@@ -31,3 +31,6 @@ Thumbs.db
 # Coverage reports
 *.gcov
 *.profdata
+
+# Fetched dependencies
+zig-pkg/
