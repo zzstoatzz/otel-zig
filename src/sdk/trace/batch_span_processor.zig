@@ -514,8 +514,8 @@ test "BatchSpanProcessor - span queuing and export" {
 
     // Create proper RecordingSpan for testing
     const span_context = otel_api.trace.Span.Context{
-        .trace_id = otel_api.common.TraceId{ .bytes = [_]u8{1} ** 16 },
-        .span_id = otel_api.common.SpanId{ .bytes = [_]u8{1} ** 8 },
+        .trace_id = otel_api.common.TraceId{ .bytes = @as([16]u8, @splat(1)) },
+        .span_id = otel_api.common.SpanId{ .bytes = @as([8]u8, @splat(1)) },
         .trace_flags = 0,
         .trace_state = null,
         .is_remote = false,
@@ -654,22 +654,22 @@ test "BatchSpanProcessor - queue overflow drops newest" {
 
     // Create proper RecordingSpans for testing
     const span_context1 = otel_api.trace.Span.Context{
-        .trace_id = otel_api.common.TraceId{ .bytes = [_]u8{1} ** 16 },
-        .span_id = otel_api.common.SpanId{ .bytes = [_]u8{1} ** 8 },
+        .trace_id = otel_api.common.TraceId{ .bytes = @as([16]u8, @splat(1)) },
+        .span_id = otel_api.common.SpanId{ .bytes = @as([8]u8, @splat(1)) },
         .trace_flags = 0,
         .trace_state = null,
         .is_remote = false,
     };
     const span_context2 = otel_api.trace.Span.Context{
-        .trace_id = otel_api.common.TraceId{ .bytes = [_]u8{2} ** 16 },
-        .span_id = otel_api.common.SpanId{ .bytes = [_]u8{2} ** 8 },
+        .trace_id = otel_api.common.TraceId{ .bytes = @as([16]u8, @splat(2)) },
+        .span_id = otel_api.common.SpanId{ .bytes = @as([8]u8, @splat(2)) },
         .trace_flags = 0,
         .trace_state = null,
         .is_remote = false,
     };
     const span_context3 = otel_api.trace.Span.Context{
-        .trace_id = otel_api.common.TraceId{ .bytes = [_]u8{3} ** 16 },
-        .span_id = otel_api.common.SpanId{ .bytes = [_]u8{3} ** 8 },
+        .trace_id = otel_api.common.TraceId{ .bytes = @as([16]u8, @splat(3)) },
+        .span_id = otel_api.common.SpanId{ .bytes = @as([8]u8, @splat(3)) },
         .trace_flags = 0,
         .trace_state = null,
         .is_remote = false,
@@ -738,8 +738,8 @@ test "BatchSpanProcessor - shutdown behavior" {
 
     // Operations after shutdown should handle gracefully
     const span_context = otel_api.trace.Span.Context{
-        .trace_id = otel_api.common.TraceId{ .bytes = [_]u8{1} ** 16 },
-        .span_id = otel_api.common.SpanId{ .bytes = [_]u8{1} ** 8 },
+        .trace_id = otel_api.common.TraceId{ .bytes = @as([16]u8, @splat(1)) },
+        .span_id = otel_api.common.SpanId{ .bytes = @as([8]u8, @splat(1)) },
         .trace_flags = 0,
         .trace_state = null,
         .is_remote = false,
@@ -793,8 +793,8 @@ test "BatchSpanProcessor - concurrent onEnd from many threads queues every span"
         fn run(prov: *TracerProvider, alloc: std.mem.Allocator, ok: *std.atomic.Value(u32)) void {
             const tracer = prov.getTracerWithScope(.empty) catch return;
             const sc = otel_api.trace.Span.Context{
-                .trace_id = otel_api.common.TraceId{ .bytes = [_]u8{7} ** 16 },
-                .span_id = otel_api.common.SpanId{ .bytes = [_]u8{7} ** 8 },
+                .trace_id = otel_api.common.TraceId{ .bytes = @as([16]u8, @splat(7)) },
+                .span_id = otel_api.common.SpanId{ .bytes = @as([8]u8, @splat(7)) },
                 .trace_flags = 0,
                 .trace_state = null,
                 .is_remote = false,

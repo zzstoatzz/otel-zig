@@ -116,7 +116,7 @@ pub const NetworkProtocol = struct {
     pub const SPDY_2 = "SPDY/2";
     pub const SPDY_3 = "SPDY/3";
     pub const QUIC = "quic";
-    
+
     // TLS versions
     pub const SSL_3_0 = "ssl_3.0";
     pub const TLS_1_0 = "tls_1.0";

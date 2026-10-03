@@ -4,7 +4,8 @@
 //! for the SDK. MeterProvider manages meters and their lifecycle.
 
 const std = @import("std");
-const io = std.Options.debug_io;const api = @import("otel-api");
+const io = std.Options.debug_io;
+const api = @import("otel-api");
 
 const sdk = struct {
     const Resource = @import("../resource/resource.zig").Resource;
@@ -40,7 +41,7 @@ pub const LoggerProvider = struct {
             .processors = .empty,
             .mutex = std.Io.Mutex.init,
             .is_shutdown = .init(false),
-            .default_min_severity = if (@import("builtin").mode == .Debug) .debug else .warn,
+            .default_min_severity = if (@import("builtin").mode == .debug) .debug else .warn,
         };
     }
 

@@ -587,9 +587,9 @@ fn httpServerThread(shared_state: *SharedState, config: Config) !void {
         );
 
         // Read and parse the HTTP request
-        var read_buffer = [_]u8{0} ** 4096;
+        var read_buffer = @as([4096]u8, @splat(0));
         var reader = connection.stream.reader(&read_buffer);
-        var write_buffer = [_]u8{0} ** 512;
+        var write_buffer = @as([512]u8, @splat(0));
         var writer = connection.stream.writer(&write_buffer);
         var http_server = std.http.Server.init(
             reader.interface(),
@@ -834,14 +834,14 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const config = try parseArgs(init.args);
 
     print("🚀 Starting Comprehensive Multi-threaded OpenTelemetry Example\n", .{});
-    print("=" ** 70 ++ "\n", .{});
+    print("======================================================================" ++ "\n", .{});
     print("📊 Features: Views, Observable Gauges, Events, Links, Batch Processing\n", .{});
     print("🔧 Configuration: {s} exporter, {} seconds duration\n", .{ @tagName(config.exporter_type), config.duration_seconds });
     print("🎯 Sampling: TraceIdRatioBasedSampler with {d:.1} sampling ratio\n", .{config.sampling_ratio});
-    print("=" ** 70 ++ "\n", .{});
+    print("======================================================================" ++ "\n", .{});
 
     // Setup logs provider with batch processor and custom resource
-    var stderr_buffer = [_]u8{0} ** 1024;
+    var stderr_buffer = @as([1024]u8, @splat(0));
     const log_provider = switch (config.exporter_type) {
         .console => blk: {
             var stderr = otel_exporters.console.initStream(true, &stderr_buffer);
@@ -894,7 +894,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     // Setup metrics provider with periodic reader, views, and custom resource
     const metric_provider = switch (config.exporter_type) {
         .console => blk: {
-            var stderr_buffer2 = [_]u8{0} ** 1024;
+            var stderr_buffer2 = @as([1024]u8, @splat(0));
             const stderr_fh2 = std.Io.File.stderr();
             var stderr2 = stderr_fh2.writer(io, &stderr_buffer2);
             break :blk try setupCustomMetricProvider(
@@ -919,7 +919,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     // Setup traces provider with batch processor and custom sampling
     const trace_provider = switch (config.exporter_type) {
         .console => blk: {
-            var stderr_buffer3 = [_]u8{0} ** 1024;
+            var stderr_buffer3 = @as([1024]u8, @splat(0));
             const stderr_fh3 = std.Io.File.stderr();
             var stderr3 = stderr_fh3.writer(io, &stderr_buffer3);
             break :blk try setupCustomTraceProvider(
@@ -1058,7 +1058,7 @@ fn processHttpRequest(ctx: []otel_api.ContextKeyValue, http_context: *HttpContex
         .response_writer = &resp_writer.writer,
     }) catch return;
 
-    http_context.status_code = @intCast(@intFromEnum(result.status));
+    http_context.status_code = @intCast(@backingInt(result.status));
 
     const product = resp_writer.toOwnedSlice() catch return;
     defer allocator.free(product);

@@ -61,7 +61,7 @@ pub const ConfigPropertiesBridge = struct {
         };
 
         return .{
-            .ctx = @constCast(@ptrCast(ptr)),
+            .ctx = @ptrCast(@constCast(ptr)),
             .getFn = VTable.get,
         };
     }

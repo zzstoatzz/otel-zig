@@ -1,9 +1,11 @@
 const std = @import("std");
-const io = std.Options.debug_io;const api = @import("otel-api");
+const io = std.Options.debug_io;
+const api = @import("otel-api");
 
 const sdk = struct {
     const MetricData = @import("data.zig").MetricData;
     const MetricDataPoint = @import("data.zig").MetricDataPoint;
+    const MetricValue = @import("data.zig").MetricValue;
 };
 
 /// Metric exporter interface
@@ -143,6 +145,7 @@ pub const MockMetricExporter = struct {
         for (self.exported_metrics.items) |data| {
             for (data.data_points) |point| {
                 api.AttributeKeyValue.deinitOwnedSlice(self.allocator, point.attributes);
+                freeValue(self.allocator, point.value);
             }
             self.allocator.free(data.name);
             if (data.description) |d| self.allocator.free(d);
@@ -172,13 +175,18 @@ pub const MockMetricExporter = struct {
         // Deep copy the metric since the exporter needs to own the data
         var data_points = std.ArrayList(sdk.MetricDataPoint).empty;
         errdefer {
-            for (data_points.items) |data_point| api.AttributeKeyValue.deinitOwnedSlice(self.allocator, data_point.attributes);
+            for (data_points.items) |data_point| {
+                api.AttributeKeyValue.deinitOwnedSlice(self.allocator, data_point.attributes);
+                freeValue(self.allocator, data_point.value);
+            }
             data_points.deinit(self.allocator);
         }
         for (metric_data.data_points) |point| {
             var new_point = point;
             new_point.attributes = try api.AttributeKeyValue.initOwnedSlice(self.allocator, point.attributes);
             errdefer api.AttributeKeyValue.deinitOwnedSlice(self.allocator, new_point.attributes);
+            new_point.value = try dupeValue(self.allocator, point.value);
+            errdefer freeValue(self.allocator, new_point.value);
             try data_points.append(self.allocator, new_point);
         }
         const points = try data_points.toOwnedSlice(self.allocator);
@@ -200,6 +208,29 @@ pub const MockMetricExporter = struct {
             .scope = metric_data.scope,
             .resource = metric_data.resource,
         });
+    }
+
+    fn dupeValue(allocator: std.mem.Allocator, value: sdk.MetricValue) !sdk.MetricValue {
+        switch (value) {
+            inline .i64_histogram, .f64_histogram => |hist, tag| {
+                var copy = hist;
+                copy.boundaries = try allocator.dupe(f64, hist.boundaries);
+                errdefer allocator.free(copy.boundaries);
+                copy.bucket_counts = try allocator.dupe(u64, hist.bucket_counts);
+                return @unionInit(sdk.MetricValue, @tagName(tag), copy);
+            },
+            else => return value,
+        }
+    }
+
+    fn freeValue(allocator: std.mem.Allocator, value: sdk.MetricValue) void {
+        switch (value) {
+            inline .i64_histogram, .f64_histogram => |hist| {
+                allocator.free(hist.boundaries);
+                allocator.free(hist.bucket_counts);
+            },
+            else => {},
+        }
     }
 
     pub fn forceFlush(self: *MockMetricExporter, timeout_ms: ?u64) api.common.ExportResult {

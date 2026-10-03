@@ -39,8 +39,8 @@ pub const SAMPLED_FLAG: u8 = 0x01;
 
 /// Create an invalid span context (all zeros)
 pub const invalid: Context = .{
-    .trace_id = api.common.TraceId.fromBytes([_]u8{0} ** api.common.TraceId.length),
-    .span_id = api.common.SpanId.fromBytes([_]u8{0} ** api.common.SpanId.length),
+    .trace_id = api.common.TraceId.fromBytes(@as([api.common.TraceId.length]u8, @splat(0))),
+    .span_id = api.common.SpanId.fromBytes(@as([api.common.SpanId.length]u8, @splat(0))),
     .trace_flags = 0,
     .trace_state = null,
     .is_remote = false,

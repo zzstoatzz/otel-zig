@@ -1,5 +1,6 @@
 const std = @import("std");
-const io = std.Options.debug_io;const otel_api = @import("otel-api");
+const io = std.Options.debug_io;
+const otel_api = @import("otel-api");
 const otel_sdk = @import("otel-sdk");
 const protobuf = @import("protobuf");
 

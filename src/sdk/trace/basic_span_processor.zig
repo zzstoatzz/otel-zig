@@ -7,7 +7,8 @@
 //! See: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/sdk.md#span-processor
 
 const std = @import("std");
-const io = std.Options.debug_io;const otel_api = @import("otel-api");
+const io = std.Options.debug_io;
+const otel_api = @import("otel-api");
 const sdk = struct {
     const trace = struct {
         const SpanData = @import("data.zig").SpanData;

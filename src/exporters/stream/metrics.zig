@@ -1,7 +1,8 @@
 //! MetricDataSink that writes the log records to a configured *std.Io.Writer.
 
 const std = @import("std");
-const io = std.Options.debug_io;const api = @import("otel-api");
+const io = std.Options.debug_io;
+const api = @import("otel-api");
 const sdk = @import("otel-sdk");
 
 const exporters = struct {

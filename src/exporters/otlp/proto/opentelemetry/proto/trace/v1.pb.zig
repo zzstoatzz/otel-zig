@@ -245,7 +245,7 @@ pub const Span = struct {
     parent_span_id: []const u8 = &.{},
     flags: u32 = 0,
     name: []const u8 = &.{},
-    kind: Span.SpanKind = @enumFromInt(0),
+    kind: Span.SpanKind = @fromBackingInt(@intCast(0)),
     start_time_unix_nano: u64 = 0,
     end_time_unix_nano: u64 = 0,
     attributes: std.ArrayListUnmanaged(opentelemetry_proto_common_v1.KeyValue) = .empty,
@@ -509,7 +509,7 @@ pub const Span = struct {
 
 pub const Status = struct {
     message: []const u8 = &.{},
-    code: Status.StatusCode = @enumFromInt(0),
+    code: Status.StatusCode = @fromBackingInt(@intCast(0)),
 
     pub const _desc_table = .{
         .message = fd(2, .{ .scalar = .string }),

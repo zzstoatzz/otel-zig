@@ -71,7 +71,7 @@ test "ParentBasedSampler - no parent delegates to root sampler" {
     const params = SampleParams{
         .allocator = testing.allocator,
         .context = &.{}, // Empty context (no parent)
-        .trace_id = TraceId.fromBytes([_]u8{1} ** 16),
+        .trace_id = TraceId.fromBytes(@as([16]u8, @splat(1))),
         .span_name = "root-span",
         .span_kind = .server,
     };
@@ -89,8 +89,8 @@ test "ParentBasedSampler - sampled parent produces sampled child" {
     defer otel_api.ContextKeyValue.deinitOwnedSlice(testing.allocator, ctx);
 
     const parent_span_context = otel_api.trace.Span.Context{
-        .trace_id = TraceId.fromBytes([_]u8{1} ** 16),
-        .span_id = SpanId.fromBytes([_]u8{2} ** 8),
+        .trace_id = TraceId.fromBytes(@as([16]u8, @splat(1))),
+        .span_id = SpanId.fromBytes(@as([8]u8, @splat(2))),
         .trace_flags = otel_api.trace.Span.Context.SAMPLED_FLAG, // Parent is sampled
         .trace_state = "parent=sampled",
         .is_remote = false,
@@ -102,7 +102,7 @@ test "ParentBasedSampler - sampled parent produces sampled child" {
     const params = SampleParams{
         .allocator = testing.allocator,
         .context = ctx_with_parent,
-        .trace_id = TraceId.fromBytes([_]u8{1} ** 16), // Same trace as parent
+        .trace_id = TraceId.fromBytes(@as([16]u8, @splat(1))), // Same trace as parent
         .span_name = "child-span",
         .span_kind = .internal,
     };
@@ -122,8 +122,8 @@ test "ParentBasedSampler - unsampled parent produces unsampled child" {
     defer otel_api.ContextKeyValue.deinitOwnedSlice(testing.allocator, &.{});
 
     const parent_span_context = otel_api.trace.Span.Context{
-        .trace_id = TraceId.fromBytes([_]u8{1} ** 16),
-        .span_id = SpanId.fromBytes([_]u8{2} ** 8),
+        .trace_id = TraceId.fromBytes(@as([16]u8, @splat(1))),
+        .span_id = SpanId.fromBytes(@as([8]u8, @splat(2))),
         .trace_flags = 0, // Parent is NOT sampled
         .trace_state = "parent=not_sampled",
         .is_remote = true,
@@ -135,7 +135,7 @@ test "ParentBasedSampler - unsampled parent produces unsampled child" {
     const params = SampleParams{
         .allocator = testing.allocator,
         .context = ctx_with_parent,
-        .trace_id = TraceId.fromBytes([_]u8{1} ** 16), // Same trace as parent
+        .trace_id = TraceId.fromBytes(@as([16]u8, @splat(1))), // Same trace as parent
         .span_name = "child-span",
         .span_kind = .client,
     };

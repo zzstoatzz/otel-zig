@@ -52,7 +52,7 @@ pub const Severity = enum(u8) {
 
     /// Convert severity to its numeric value
     pub fn toNumber(self: Severity) u8 {
-        return @intFromEnum(self);
+        return @backingInt(self);
     }
 
     /// Convert severity to standard text representation (uppercase)
@@ -147,7 +147,7 @@ pub fn fromNumber(value: u8) SeverityError!Severity {
     if (value > 24) {
         return error.InvalidSeverityNumber;
     }
-    return @enumFromInt(value);
+    return @fromBackingInt(@intCast(value));
 }
 
 /// Create a Severity from text (case-insensitive)
@@ -161,8 +161,7 @@ pub fn fromText(text: []const u8) SeverityError!Severity {
     const upper = std.ascii.upperString(&buf, text);
 
     // Check all severity values
-    inline for (@typeInfo(Severity).@"enum".fields) |field| {
-        const severity: Severity = @enumFromInt(field.value);
+    inline for (comptime std.enums.values(Severity)) |severity| {
         if (std.mem.eql(u8, upper, severity.toText())) {
             return severity;
         }

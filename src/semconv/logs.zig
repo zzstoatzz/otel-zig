@@ -24,17 +24,17 @@ pub const EVENT_DOMAIN = "event.domain";
 pub const EventName = struct {
     // Device events
     pub const DEVICE_APP_LIFECYCLE = "device.app.lifecycle";
-    
+
     // Browser events
     pub const BROWSER_NAVIGATE = "browser.navigate";
-    
+
     // Feature flag events
     pub const FEATURE_FLAG = "feature_flag";
-    
+
     // Error events
     pub const ERROR = "error";
     pub const EXCEPTION = "exception";
-    
+
     // Metric events
     pub const METRIC = "metric";
 };

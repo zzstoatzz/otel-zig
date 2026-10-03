@@ -7,7 +7,8 @@
 //! See: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/logs/sdk.md#logrecordprocessor
 
 const std = @import("std");
-const io = std.Options.debug_io;const api = @import("otel-api");
+const io = std.Options.debug_io;
+const api = @import("otel-api");
 
 const sdk = struct {
     const Resource = @import("../resource/resource.zig").Resource;

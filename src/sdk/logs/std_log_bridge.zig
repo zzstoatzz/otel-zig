@@ -270,8 +270,8 @@ test "scope attribute, severity text and span context reach the record" {
 
         fn spanCtx() ?api.trace.Span.Context {
             return .{
-                .trace_id = api.common.TraceId.fromBytes([_]u8{7} ** 16),
-                .span_id = api.common.SpanId.fromBytes([_]u8{9} ** 8),
+                .trace_id = api.common.TraceId.fromBytes(@as([16]u8, @splat(7))),
+                .span_id = api.common.SpanId.fromBytes(@as([8]u8, @splat(9))),
                 .trace_flags = api.trace.Span.Context.SAMPLED_FLAG,
                 .trace_state = null,
                 .is_remote = false,
@@ -303,7 +303,7 @@ test "scope attribute, severity text and span context reach the record" {
             if (attributes) |attrs| for (attrs) |kv| {
                 if (std.mem.eql(u8, kv.key, "code.module.name") and std.mem.eql(u8, kv.value.string, "bridge_test")) saw_scope = true;
             };
-            if (trace_id) |t| saw_trace = std.mem.eql(u8, &t.bytes, &([_]u8{7} ** 16));
+            if (trace_id) |t| saw_trace = std.mem.eql(u8, &t.bytes, &(@as([16]u8, @splat(7))));
         }
     };
     var capture = Capture{};

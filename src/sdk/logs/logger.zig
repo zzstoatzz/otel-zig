@@ -71,7 +71,7 @@ pub const Logger = struct {
         //
         // assumes logging is less likely to be enabled in release modes.
         const branch_hint = comptime switch (@import("builtin").mode) {
-            .Debug => std.builtin.BranchHint.unpredictable,
+            .debug => std.builtin.BranchHint.unpredictable,
             else => std.builtin.BranchHint.unlikely,
         };
         if (self.enabled(ctx, record_severity)) {
@@ -117,7 +117,7 @@ pub const Logger = struct {
 
         // Compare severity levels for filtering
         const min_severity = self.min_severity.load(.monotonic);
-        if (@intFromEnum(actual_severity) < @intFromEnum(min_severity)) {
+        if (@backingInt(actual_severity) < @backingInt(min_severity)) {
             return false;
         }
 
@@ -152,7 +152,7 @@ pub const Logger = struct {
 
         // Compare severity levels for filtering
         const min_severity = self.min_severity.load(.monotonic);
-        if (@intFromEnum(actual_severity) < @intFromEnum(min_severity)) {
+        if (@backingInt(actual_severity) < @backingInt(min_severity)) {
             return false;
         }
 

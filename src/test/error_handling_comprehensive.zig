@@ -10,7 +10,8 @@
 //! essential error handling behavior.
 
 const std = @import("std");
-const io = std.Options.debug_io;const testing = std.testing;
+const io = std.Options.debug_io;
+const testing = std.testing;
 const otel_api = @import("otel-api");
 
 const AttributeKeyValue = otel_api.common.AttributeKeyValue;

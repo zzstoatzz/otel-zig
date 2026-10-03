@@ -14,11 +14,11 @@
 //! ## Usage
 //! ```zig
 //! const semconv = @import("otel-semconv");
-//! 
+//!
 //! // Use standard attribute names
 //! resource.addAttribute(semconv.resource.SERVICE_NAME, "my-service");
 //! resource.addAttribute(semconv.resource.SERVICE_VERSION, "1.0.0");
-//! 
+//!
 //! // Use standard HTTP attributes
 //! span.setAttribute(semconv.trace.HTTP_METHOD, "GET");
 //! span.setAttribute(semconv.trace.HTTP_STATUS_CODE, 200);
@@ -28,7 +28,7 @@
 //! Semantic conventions may be:
 //! - **Stable**: Guaranteed not to change
 //! - **Experimental**: May change in future versions
-//! 
+//!
 //! This module follows the OpenTelemetry semantic conventions specification:
 //! https://github.com/open-telemetry/opentelemetry-specification/tree/main/specification/semantic-conventions
 
@@ -71,23 +71,23 @@ pub const AttributeValue = struct {
     pub const HTTP_FLAVOR_1_1 = "1.1";
     pub const HTTP_FLAVOR_2_0 = "2.0";
     pub const HTTP_FLAVOR_3_0 = "3.0";
-    
+
     pub const NET_TRANSPORT_TCP = "ip_tcp";
     pub const NET_TRANSPORT_UDP = "ip_udp";
     pub const NET_TRANSPORT_PIPE = "pipe";
     pub const NET_TRANSPORT_UNIX = "unix";
-    
+
     pub const DB_SYSTEM_MYSQL = "mysql";
     pub const DB_SYSTEM_POSTGRESQL = "postgresql";
     pub const DB_SYSTEM_MONGODB = "mongodb";
     pub const DB_SYSTEM_REDIS = "redis";
     pub const DB_SYSTEM_SQLITE = "sqlite";
-    
+
     pub const MESSAGING_SYSTEM_KAFKA = "kafka";
     pub const MESSAGING_SYSTEM_RABBITMQ = "rabbitmq";
     pub const MESSAGING_SYSTEM_AWS_SQS = "aws_sqs";
     pub const MESSAGING_SYSTEM_GCP_PUBSUB = "gcp_pubsub";
-    
+
     pub const RPC_SYSTEM_GRPC = "grpc";
     pub const RPC_SYSTEM_JAVA_RMI = "java_rmi";
     pub const RPC_SYSTEM_DOTNET_WCF = "dotnet_wcf";

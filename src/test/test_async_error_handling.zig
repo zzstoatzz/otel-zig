@@ -5,7 +5,8 @@
 //! policy enforcement, and performance monitoring.
 
 const std = @import("std");
-const io = std.Options.debug_io;const testing = std.testing;
+const io = std.Options.debug_io;
+const testing = std.testing;
 const otel_api = @import("otel-api");
 const otel_sdk = @import("otel-sdk");
 

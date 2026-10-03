@@ -100,7 +100,7 @@ pub const Units = struct {
     pub const MINUTE = "min";
     pub const HOUR = "h";
     pub const DAY = "d";
-    
+
     // Bytes
     pub const BYTES = "By";
     pub const KIBIBYTES = "KiBy";
@@ -111,26 +111,26 @@ pub const Units = struct {
     pub const MEGABYTES = "MBy";
     pub const GIGABYTES = "GBy";
     pub const TERABYTES = "TBy";
-    
+
     // Throughput
     pub const BYTES_PER_SECOND = "By/s";
     pub const KIBIBYTES_PER_SECOND = "KiBy/s";
     pub const MEBIBYTES_PER_SECOND = "MiBy/s";
     pub const GIBIBYTES_PER_SECOND = "GiBy/s";
     pub const TEBIBYTES_PER_SECOND = "TiBy/s";
-    
+
     // Frequency
     pub const HERTZ = "Hz";
     pub const KILOHERTZ = "kHz";
     pub const MEGAHERTZ = "MHz";
     pub const GIGAHERTZ = "GHz";
-    
+
     // Percentage
     pub const PERCENT = "%";
-    
+
     // Count
     pub const UNIT = "1";
-    
+
     // Other
     pub const CELSIUS = "Cel";
     pub const REQUESTS = "{requests}";

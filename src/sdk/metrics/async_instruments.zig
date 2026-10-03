@@ -4,7 +4,8 @@
 //! It includes callback management, metric collection, and performance monitoring.
 
 const std = @import("std");
-const io = std.Options.debug_io;const api = @import("otel-api");
+const io = std.Options.debug_io;
+const api = @import("otel-api");
 
 const sdk = struct {
     const AggregationTemporality = @import("aggregations.zig").AggregationTemporality;

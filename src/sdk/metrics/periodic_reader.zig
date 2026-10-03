@@ -8,7 +8,8 @@
 //! metrics from all registered meters and export them via the configured exporter.
 
 const std = @import("std");
-const io = std.Options.debug_io;const api = @import("otel-api");
+const io = std.Options.debug_io;
+const api = @import("otel-api");
 const c = std.c;
 
 const sdk = struct {

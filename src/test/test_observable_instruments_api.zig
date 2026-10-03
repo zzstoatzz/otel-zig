@@ -4,7 +4,8 @@
 //! including callback registration, type erasure, and ObservableResult interface.
 
 const std = @import("std");
-const io = std.Options.debug_io;const testing = std.testing;
+const io = std.Options.debug_io;
+const testing = std.testing;
 const otel_api = @import("otel-api");
 
 const ObservableCounter = otel_api.metrics.ObservableCounter;

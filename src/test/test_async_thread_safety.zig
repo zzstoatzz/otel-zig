@@ -4,7 +4,8 @@
 //! concurrent callback registration, concurrent collection, and race conditions.
 
 const std = @import("std");
-const io = std.Options.debug_io;const testing = std.testing;
+const io = std.Options.debug_io;
+const testing = std.testing;
 const otel_api = @import("otel-api");
 const otel_sdk = @import("otel-sdk");
 
@@ -223,7 +224,7 @@ test "concurrent collection" {
 
     // Start threads that collect concurrently
     for (0..num_threads) |i| {
-        results[i] = [_]bool{false} ** collections_per_thread;
+        results[i] = @as([collections_per_thread]bool, @splat(false));
         const args = .{
             .gauge_ptr = &gauge,
             .allocator_ptr = allocator,

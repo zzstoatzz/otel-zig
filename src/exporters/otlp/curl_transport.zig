@@ -132,7 +132,7 @@ pub fn perform(
     const easy = curl.easy_init() orelse return error.LibcurlInitializationFailed;
     defer curl.easy_cleanup(easy);
 
-    const owned_url = try allocator.dupeZ(u8, url);
+    const owned_url = try allocator.dupeSentinel(u8, url, 0);
     defer allocator.free(owned_url);
     try setopt(curl, easy, curlopt_url, owned_url.ptr);
     try setopt(curl, easy, curlopt_post, @as(c_long, 1));
@@ -155,19 +155,19 @@ pub fn perform(
     var ca_path: ?[:0]u8 = null;
     defer if (ca_path) |path| allocator.free(path);
     if (tls.ca_file) |path| {
-        ca_path = try allocator.dupeZ(u8, path);
+        ca_path = try allocator.dupeSentinel(u8, path, 0);
         try setopt(curl, easy, curlopt_cainfo, ca_path.?.ptr);
     }
     var cert_path: ?[:0]u8 = null;
     defer if (cert_path) |path| allocator.free(path);
     if (tls.cert_file) |path| {
-        cert_path = try allocator.dupeZ(u8, path);
+        cert_path = try allocator.dupeSentinel(u8, path, 0);
         try setopt(curl, easy, curlopt_sslcert, cert_path.?.ptr);
     }
     var key_path: ?[:0]u8 = null;
     defer if (key_path) |path| allocator.free(path);
     if (tls.key_file) |path| {
-        key_path = try allocator.dupeZ(u8, path);
+        key_path = try allocator.dupeSentinel(u8, path, 0);
         try setopt(curl, easy, curlopt_sslkey, key_path.?.ptr);
     }
 
@@ -185,7 +185,7 @@ pub fn perform(
     if (curl.easy_getinfo(easy, curlinfo_response_code, &response_code) != curle_ok) return error.LibcurlRequestFailed;
     if (response_code < 100 or response_code > 599) return error.InvalidHttpResponse;
     return .{
-        .status = @enumFromInt(@as(u10, @intCast(response_code))),
+        .status = @fromBackingInt(@intCast(@as(u10, @intCast(response_code)))),
         .body = try capture.body.toOwnedSlice(allocator),
         .retry_after_millis = capture.retry_after_millis,
     };

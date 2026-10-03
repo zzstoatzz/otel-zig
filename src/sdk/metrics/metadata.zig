@@ -37,7 +37,7 @@ pub const MetricMetadata = struct {
         hasher.update(unit);
 
         // Hash instrument type
-        const instrument_type_bytes = std.mem.asBytes(&@intFromEnum(instrument_type));
+        const instrument_type_bytes = std.mem.asBytes(&@backingInt(instrument_type));
         hasher.update(instrument_type_bytes);
 
         // Hash scope name

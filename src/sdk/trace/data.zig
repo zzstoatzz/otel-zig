@@ -5,7 +5,8 @@
 //! and becomes immutable after ending.
 
 const std = @import("std");
-const io = std.Options.debug_io;const api = @import("otel-api");
+const io = std.Options.debug_io;
+const api = @import("otel-api");
 
 const Span = api.trace.Span;
 const AttributeValue = api.common.AttributeValue;

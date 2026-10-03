@@ -70,7 +70,7 @@ pub const LogRecord = struct {
 
     /// Get the severity number as an integer
     pub inline fn severityNumber(self: *const LogRecord) i32 {
-        return @intFromEnum(self.severity_number);
+        return @backingInt(self.severity_number);
     }
 
     /// Deep copy a LogRecord. Must call `deinitOwned` on the return instance.
@@ -143,8 +143,8 @@ test "LogRecord initOwned and deinitOwned" {
         .body = .{ .string = "Test message" },
         .event_name = "test.event",
         .attributes = attributes,
-        .trace_id = api.common.TraceId.fromBytes([_]u8{1} ++ [_]u8{0} ** 15),
-        .span_id = api.common.SpanId.fromBytes([_]u8{2} ++ [_]u8{0} ** 7),
+        .trace_id = api.common.TraceId.fromBytes([_]u8{1} ++ @as([15]u8, @splat(0))),
+        .span_id = api.common.SpanId.fromBytes([_]u8{2} ++ @as([7]u8, @splat(0))),
         .flags = 0x01,
     };
 

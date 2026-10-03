@@ -4,7 +4,8 @@
 //! to maintain independent aggregation states for the same instruments.
 
 const std = @import("std");
-const io = std.Options.debug_io;const api = @import("otel-api");
+const io = std.Options.debug_io;
+const api = @import("otel-api");
 
 const sdk = struct {
     const AttributeAggregationMap = @import("attribute_aggregation_map.zig").AttributeAggregationMap;

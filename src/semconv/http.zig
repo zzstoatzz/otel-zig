@@ -89,23 +89,23 @@ pub const HttpStatusClass = struct {
     pub fn isInformational(code: u16) bool {
         return code >= 100 and code < 200;
     }
-    
+
     pub fn isSuccess(code: u16) bool {
         return code >= 200 and code < 300;
     }
-    
+
     pub fn isRedirection(code: u16) bool {
         return code >= 300 and code < 400;
     }
-    
+
     pub fn isClientError(code: u16) bool {
         return code >= 400 and code < 500;
     }
-    
+
     pub fn isServerError(code: u16) bool {
         return code >= 500 and code < 600;
     }
-    
+
     pub fn isError(code: u16) bool {
         return code >= 400;
     }

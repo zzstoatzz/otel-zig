@@ -37,7 +37,7 @@ pub const ExceptionTypes = struct {
     pub const JAVA_UNSUPPORTED_OPERATION = "java.lang.UnsupportedOperationException";
     pub const JAVA_IO = "java.io.IOException";
     pub const JAVA_SQL = "java.sql.SQLException";
-    
+
     // Python exceptions
     pub const PYTHON_VALUE_ERROR = "ValueError";
     pub const PYTHON_TYPE_ERROR = "TypeError";
@@ -48,7 +48,7 @@ pub const ExceptionTypes = struct {
     pub const PYTHON_NOT_IMPLEMENTED_ERROR = "NotImplementedError";
     pub const PYTHON_OS_ERROR = "OSError";
     pub const PYTHON_IO_ERROR = "IOError";
-    
+
     // .NET exceptions
     pub const DOTNET_NULL_REFERENCE = "System.NullReferenceException";
     pub const DOTNET_ARGUMENT = "System.ArgumentException";
@@ -59,7 +59,7 @@ pub const ExceptionTypes = struct {
     pub const DOTNET_NOT_IMPLEMENTED = "System.NotImplementedException";
     pub const DOTNET_INDEX_OUT_OF_RANGE = "System.IndexOutOfRangeException";
     pub const DOTNET_FORMAT = "System.FormatException";
-    
+
     // JavaScript/TypeScript errors
     pub const JS_ERROR = "Error";
     pub const JS_TYPE_ERROR = "TypeError";
@@ -67,30 +67,30 @@ pub const ExceptionTypes = struct {
     pub const JS_RANGE_ERROR = "RangeError";
     pub const JS_SYNTAX_ERROR = "SyntaxError";
     pub const JS_URI_ERROR = "URIError";
-    
+
     // Go errors (typically just the type name)
     pub const GO_ERROR = "error";
-    
+
     // Rust errors (typically the type path)
     pub const RUST_PANIC = "panic";
-    
+
     // C++ exceptions
     pub const CPP_EXCEPTION = "std::exception";
     pub const CPP_RUNTIME_ERROR = "std::runtime_error";
     pub const CPP_LOGIC_ERROR = "std::logic_error";
     pub const CPP_OUT_OF_RANGE = "std::out_of_range";
     pub const CPP_INVALID_ARGUMENT = "std::invalid_argument";
-    
+
     // Database exceptions
     pub const DB_CONNECTION_ERROR = "DatabaseConnectionError";
     pub const DB_TIMEOUT_ERROR = "DatabaseTimeoutError";
     pub const DB_CONSTRAINT_VIOLATION = "ConstraintViolationError";
-    
+
     // Network exceptions
     pub const NETWORK_TIMEOUT = "NetworkTimeoutError";
     pub const NETWORK_CONNECTION_REFUSED = "ConnectionRefusedError";
     pub const NETWORK_DNS_ERROR = "DNSResolutionError";
-    
+
     // HTTP exceptions
     pub const HTTP_CLIENT_ERROR = "HTTPClientError";
     pub const HTTP_SERVER_ERROR = "HTTPServerError";

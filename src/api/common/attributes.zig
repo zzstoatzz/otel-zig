@@ -105,7 +105,7 @@ pub const AttributeValue = union(enum) {
     /// Hash the AttributeValue for use in hash maps
     pub fn hash(self: AttributeValue, hasher: *std.hash.Wyhash) void {
         // Hash the type tag first to distinguish different types
-        const tag = @as(u8, @intFromEnum(@as(std.meta.Tag(AttributeValue), self)));
+        const tag = @as(u8, @backingInt(@as(std.meta.Tag(AttributeValue), self)));
         hasher.update(std.mem.asBytes(&tag));
 
         switch (self) {

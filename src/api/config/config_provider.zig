@@ -64,7 +64,7 @@ pub const ConfigProviderBridge = struct {
         };
 
         return .{
-            .ctx = @constCast(@ptrCast(ptr)),
+            .ctx = @ptrCast(@constCast(ptr)),
             .getInstrumentationConfigFn = VTable.getInstrumentationConfig,
         };
     }

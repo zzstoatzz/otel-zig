@@ -417,7 +417,7 @@ pub const Gauge = struct {
 
 pub const Sum = struct {
     data_points: std.ArrayListUnmanaged(NumberDataPoint) = .empty,
-    aggregation_temporality: AggregationTemporality = @enumFromInt(0),
+    aggregation_temporality: AggregationTemporality = @fromBackingInt(@intCast(0)),
     is_monotonic: bool = false,
 
     pub const _desc_table = .{
@@ -492,7 +492,7 @@ pub const Sum = struct {
 
 pub const Histogram = struct {
     data_points: std.ArrayListUnmanaged(HistogramDataPoint) = .empty,
-    aggregation_temporality: AggregationTemporality = @enumFromInt(0),
+    aggregation_temporality: AggregationTemporality = @fromBackingInt(@intCast(0)),
 
     pub const _desc_table = .{
         .data_points = fd(1, .{ .repeated = .submessage }),
@@ -565,7 +565,7 @@ pub const Histogram = struct {
 
 pub const ExponentialHistogram = struct {
     data_points: std.ArrayListUnmanaged(ExponentialHistogramDataPoint) = .empty,
-    aggregation_temporality: AggregationTemporality = @enumFromInt(0),
+    aggregation_temporality: AggregationTemporality = @fromBackingInt(@intCast(0)),
 
     pub const _desc_table = .{
         .data_points = fd(1, .{ .repeated = .submessage }),

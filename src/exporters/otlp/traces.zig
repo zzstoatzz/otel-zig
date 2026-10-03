@@ -326,8 +326,8 @@ fn testSpan(name: []const u8) otel_sdk.trace.SpanData {
     return .{
         .scope = .{ .name = "offline-test" },
         .ctx = .{
-            .trace_id = .{ .bytes = [_]u8{1} ** 16 },
-            .span_id = .{ .bytes = [_]u8{2} ** 8 },
+            .trace_id = .{ .bytes = @as([16]u8, @splat(1)) },
+            .span_id = .{ .bytes = @as([8]u8, @splat(2)) },
             .trace_flags = 1,
             .trace_state = null,
             .is_remote = false,
@@ -567,7 +567,7 @@ fn convertToOtlpFormat(allocator: std.mem.Allocator, spans: []const otel_sdk.tra
                 .start_time_unix_nano = @intCast(span_data.start_time),
                 .end_time_unix_nano = @intCast(span_data.end_time),
                 .flags = @intCast(span_data.ctx.trace_flags),
-                .kind = @enumFromInt(@intFromEnum(span_data.kind)),
+                .kind = @fromBackingInt(@intCast(@backingInt(span_data.kind))),
                 .trace_state = if (span_data.ctx.trace_state) |ts| try allocator.dupe(u8, ts) else &.{},
                 .dropped_attributes_count = 0,
                 .dropped_events_count = 0,
@@ -577,7 +577,7 @@ fn convertToOtlpFormat(allocator: std.mem.Allocator, spans: []const otel_sdk.tra
             // sub objects
             if (span_data.status.code != .unset) {
                 span.status = trace_v1.Status{
-                    .code = @enumFromInt(@intFromEnum(span_data.status.code)),
+                    .code = @fromBackingInt(@intCast(@backingInt(span_data.status.code))),
                     .message = if (span_data.status.description) |desc| try allocator.dupe(u8, desc) else &.{},
                 };
             }

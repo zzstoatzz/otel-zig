@@ -38,7 +38,7 @@ pub fn main() !void {
     defer otel_api.provider_registry.unsetAllProviders();
 
     // Setup global OTel logging provider with console exporter
-    var stderr_buffer = [_]u8{0} ** 1024;
+    var stderr_buffer = @as([1024]u8, @splat(0));
     const stderr_fh = std.Io.File.stderr();
     var stderr = stderr_fh.writer(io, &stderr_buffer);
     const provider = try otel_sdk.logs.setupGlobalProvider(

@@ -6,7 +6,8 @@
 //! allow end users to change the library's default error handling behavior.
 
 const std = @import("std");
-const io = std.Options.debug_io;const builtin = @import("builtin");
+const io = std.Options.debug_io;
+const builtin = @import("builtin");
 
 /// Function signature for custom error handlers
 /// The allocator parameter is optional and can be used for detailed message formatting
@@ -177,7 +178,7 @@ var handler_mutex: std.Io.Mutex = std.Io.Mutex.init;
 /// - `true` in debug builds (validation enabled)
 /// - `false` in release builds (validation disabled, zero-cost)
 pub inline fn isValidatingMode() bool {
-    return builtin.mode == .Debug;
+    return builtin.mode == .debug;
 }
 
 /// Default error handler that logs to stderr

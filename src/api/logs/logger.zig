@@ -9,7 +9,8 @@
 //! See: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/logs/api.md#logger
 
 const std = @import("std");
-const io = std.Options.debug_io;const api = struct {
+const io = std.Options.debug_io;
+const api = struct {
     const AttributeKeyValue = @import("../common/root.zig").AttributeKeyValue;
     const AttributeValue = @import("../common/root.zig").AttributeValue;
     const ContextKeyValue = @import("../context/context.zig").ContextKeyValue;
