@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Versions
 
-The code targets zig version 0.15.1. This often means you should ask the human what the current way to do things is. For example, *Io.Writers, ArrayList, and the Http library all had large refactors in the upgrade to 0.15, which was after your training data set.
+The code targets zig version 0.17.0. This often means you should ask the human what the current way to do things is. For example, *Io.Writers, ArrayList, and the Http library all had large refactors in the upgrade to 0.15, which was after your training data set.
 
 ## Build Commands
 

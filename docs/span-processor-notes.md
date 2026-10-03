@@ -71,6 +71,7 @@ The repo carries two parallel lines off base `1ba5a15`:
 |---|---|---|---|---|
 | `trunk` | 0.15 | `std.Thread.Mutex` | `Arwalk/zig-protobuf` master | the 0.15 maintenance line; **does not build on 0.16** (`std.process.getEnvVarOwned` gone + no `std.Thread.Mutex`) |
 | `zig-0.16` | 0.16 | `std.Io.Mutex` | `zzstoatzz/zig-protobuf` `zig-0.16` fork (protobuf 4.0.0) | `logfire-zig` 0.2.3 pins `d369ad2` here; leaflet/typeahead compile this |
+| `main` from `v0.1.0-alpha.1` | 0.17 | `std.Io.Mutex` | `Arwalk/zig-protobuf` `zig-master` (protobuf 5.0.0) | the last 0.16 commit on `main` is tagged `v0.0.2` |
 
 The "pinned-protobuf-breaks-on-0.16" smell is a **trunk-only** artifact — the
 0.16 line already uses the fork. Always confirm which branch a dependency pins
