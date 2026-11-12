@@ -212,21 +212,21 @@ fn performWithTimeout(
     };
     var outcomes: [2]Outcome = undefined;
     var pending = std.Io.Select(Outcome).init(config.io, &outcomes);
+    // Both tasks point at `pending`, which lives in this frame, so neither
+    // may outlive it on any return path. A request that failed while its
+    // timeout was left asleep had that task wake into the retry's select and
+    // abort the process from std.Io.Threaded's group accounting.
+    defer pending.cancelDiscard();
     pending.async(.request, Run.run, .{ client_allocator, allocator, config, url, uri, content_type, extra_headers, payload, timeout_ms });
     pending.async(.timeout, std.Io.sleep, .{
         config.io,
         .{ .nanoseconds = @intCast(timeout_ms *| std.time.ns_per_ms) },
         .awake,
     });
-    const result = switch (try pending.await()) {
-        .request => |request_result| try request_result,
-        .timeout => {
-            pending.cancelDiscard();
-            return error.Timeout;
-        },
+    return switch (try pending.await()) {
+        .request => |request_result| request_result,
+        .timeout => error.Timeout,
     };
-    pending.cancelDiscard();
-    return result;
 }
 
 pub fn isRetryableStatus(status: std.http.Status) bool {
@@ -286,4 +286,53 @@ test "signal url preserves configured paths" {
     const fixed = try signalUrl(testing.allocator, .{ .endpoint = "https://x/only-logs", .append_signal_path = false }, "/v1/logs");
     defer testing.allocator.free(fixed);
     try testing.expectEqualStrings("https://x/only-logs", fixed);
+}
+
+/// A collector that drops its first connection unanswered and answers the
+/// second with 200 after `delay_ms`.
+const TestFlakyCollector = struct {
+    fn run(listener: *std.Io.net.Server, io: std.Io, delay_ms: u64) !void {
+        const dropped = try listener.accept(io);
+        dropped.close(io);
+
+        var stream = try listener.accept(io);
+        defer stream.close(io);
+        var read_buffer: [4096]u8 = undefined;
+        var write_buffer: [256]u8 = undefined;
+        var reader = stream.reader(io, &read_buffer);
+        var writer = stream.writer(io, &write_buffer);
+        var server = std.http.Server.init(&reader.interface, &writer.interface);
+        var request = try server.receiveHead();
+        var body_buffer: [256]u8 = undefined;
+        _ = try request.readerExpectNone(&body_buffer).discardRemaining();
+        try io.sleep(.fromMilliseconds(@intCast(delay_ms)), .awake);
+        try request.respond("", .{ .status = .ok, .keep_alive = false });
+    }
+};
+
+test "a request that fails outright does not leave its timeout running into the retry" {
+    const testing = std.testing;
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var listener = try (std.Io.net.IpAddress{ .ip4 = .loopback(0) }).listen(io, .{ .reuse_address = true });
+    defer listener.deinit(io);
+
+    // The first attempt fails at once and the retry begins 1 s later. Its
+    // answer comes 1.5 s after that: inside the retry's own 2 s timeout, and
+    // after the moment the first attempt's timeout would have fired.
+    var collector = try io.concurrent(TestFlakyCollector.run, .{ &listener, io, 1_500 });
+    defer _ = collector.cancel(io) catch {};
+
+    var url_buffer: [64]u8 = undefined;
+    const url = try std.fmt.bufPrint(&url_buffer, "http://127.0.0.1:{d}/v1/logs", .{listener.socket.address.getPort()});
+    const result = post(testing.allocator, testing.allocator, .{
+        .endpoint = url,
+        .io = io,
+        .timeout_millis = 2_000,
+        .export_timeout_millis = 10_000,
+        .retry_config = .{ .initial_interval_millis = 1_000, .jitter = false },
+    }, url, "application/x-protobuf", &.{}, "payload", "logs");
+    try testing.expectEqual(ExportResult.success, try result);
+    try collector.await(io);
 }
